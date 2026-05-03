@@ -3,10 +3,11 @@ name: methodology-researcher
 description: Reads the Variance Analyst's JSON and queries the retail-deposit whitepaper corpus to explain each material delta — methodology change vs scenario input vs portfolio addition.
 model: gpt-oss-120b
 max_tokens: 1500
-# 5 top movers × up to 2 rag_search queries each + final synthesis = 11
-# turns. Bumping the cap so the agent finishes instead of erroring with
+# Hard prompt-level budget is 5 rag_search calls + 1 synthesis. The
+# extra headroom here covers occasional model retries after a tool
+# error envelope (e.g. doc_dir not found) without re-erroring with
 # `MaxTurnsExceeded`.
-max_turns: 25
+max_turns: 40
 color: "#0891B2"
 icon: book-open
 tools:
@@ -84,14 +85,25 @@ The previous phase's output (from `[Context]`) is a JSON object with:
 
 ## Procedure
 
+⚠ **One `rag_search` call covers ALL 8 whitepapers at once.** The tool
+runs a token-frequency scan across the entire corpus and returns the
+top-k chunks from anywhere in it — across every model component's
+whitepaper. **Do NOT call `rag_search` once per whitepaper.** That
+pattern blows past the turn limit and returns redundant chunks.
+
+**Hard budget**: at most **one `rag_search` per top mover**, and at
+most **5 top movers**. That's 5 retrieval calls + 1 synthesis turn.
+If you've made 5 retrieval calls and still don't have enough
+evidence, write what you have — Agent 4 will flag any un-narrated
+movers.
+
 1. **Sort `by_product` by absolute variance, descending.** Focus on
    the top 3-5 movers — small noise items don't need attribution.
-2. **For each top mover, formulate one or two retrieval queries**
-   targeting `rag_search` (built-in). Pass `top_k` = 4 and **omit
-   `doc_dir`** so the tool uses its default — a recursive scan over
-   the whole `sample_docs/` corpus including any Knowledge Base
-   uploads. The query should aim at one of the eight suite components
-   — the table above is your map. Examples:
+2. **For each top mover, run ONE `rag_search` call.** Use `top_k=4`
+   and omit `doc_dir` so the tool scans the whole `sample_docs/`
+   corpus (curated whitepapers + Knowledge Base uploads). Aim the
+   query at one of the eight suite components — the table above is
+   your map. Examples:
    - "CD rate Big 6 Big 8 benchmark"     → CD Rate component.
    - "DFS frontbook attrition cohort"    → Frontbook Balance.
    - "Backbook churn beta competitor"    → Backbook Balance.
@@ -99,6 +111,9 @@ The previous phase's output (from `[Context]`) is a JSON object with:
    - "Liquid-CD migration spread"        → Liquid-CD Migration.
    - "Branch checking sticky"            → Branch Balance.
    - "360 Savings overlay"               → Liquid Rate (overlay path).
+
+   The single call returns chunks from MULTIPLE whitepapers — that's
+   intentional. Read all of them; don't re-query the same concept.
 3. **Read the returned chunks**, identify the model component +
    portfolio scope, and write **one bullet per attribution**:
    - Component name (e.g. `PRED_RETAILDEPOSIT_CDRATE`).
@@ -106,6 +121,10 @@ The previous phase's output (from `[Context]`) is a JSON object with:
    - Tag whether it's a **methodology change**, **scenario input
      change**, or **portfolio addition** (e.g. DFS onboarding) —
      these three categories must be **explicitly distinguished**.
+
+**Stop calling tools after ≤5 `rag_search` invocations.** Even if you
+think a sixth query would help, you've reached the budget — synthesize
+the JSON output with what you have and exit.
 
 ## Output format
 
