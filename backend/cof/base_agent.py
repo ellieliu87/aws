@@ -209,7 +209,11 @@ def _extract_trace(result) -> list[dict]:
 class CofBaseAgent:
     """A single specialist agent backed by openai-agents."""
 
-    MAX_TURNS = 10
+    # Default cap on turns (one turn = one model call that may emit tool
+    # calls). Skills with heavier tool-use patterns — e.g.
+    # methodology-researcher running 5 movers × 2 rag_search queries +
+    # synthesis — can override per-skill via `max_turns:` in frontmatter.
+    MAX_TURNS = 20
 
     def __init__(
         self,
@@ -300,10 +304,14 @@ class CofBaseAgent:
             # incomplete), so a streaming call returns nothing while the
             # non-streaming path goes through. Trace steps are derived after
             # the run from `result.new_items`.
+            # Per-skill override of MAX_TURNS via `max_turns:` in YAML
+            # frontmatter — the AgentSkill default (0) means "use the
+            # class default", any positive value caps the run.
+            turn_cap = getattr(self.skill, "max_turns", 0) or self.MAX_TURNS
             result: RunResult = await Runner.run(
                 starting_agent=self._agent,
                 input=messages,
-                max_turns=self.MAX_TURNS,
+                max_turns=turn_cap,
             )
 
             trace = _extract_trace(result)

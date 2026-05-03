@@ -52,6 +52,11 @@ class AgentSkill:
     mcp_servers: list[str] = field(default_factory=list)
     sub_agents: list[str] = field(default_factory=list)
     max_tokens: int = 2048
+    # Optional cap on how many tool-call turns the agent may run. 0 means
+    # "use CofBaseAgent.MAX_TURNS"; bump it for skills that genuinely
+    # need many tool calls (e.g. methodology-researcher running multiple
+    # rag_search queries per top mover).
+    max_turns: int = 0
     quick_queries: list[str] = field(default_factory=list)
     color: str | None = None
     icon: str | None = None
@@ -146,6 +151,7 @@ def _load_one(path: Path, source: str, pack_id: str | None = None) -> AgentSkill
         mcp_servers=meta.get("mcp_servers", []) if isinstance(meta.get("mcp_servers", []), list) else [],
         sub_agents=meta.get("sub_agents", []) if isinstance(meta.get("sub_agents", []), list) else [],
         max_tokens=int(meta.get("max_tokens", 2048)),
+        max_turns=int(meta.get("max_turns", 0) or 0),
         quick_queries=meta.get("quick_queries", []) if isinstance(meta.get("quick_queries", []), list) else [],
         color=meta.get("color"),
         icon=meta.get("icon"),

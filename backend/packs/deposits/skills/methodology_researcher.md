@@ -3,6 +3,10 @@ name: methodology-researcher
 description: Reads the Variance Analyst's JSON and queries the retail-deposit whitepaper corpus to explain each material delta — methodology change vs scenario input vs portfolio addition.
 model: gpt-oss-120b
 max_tokens: 1500
+# 5 top movers × up to 2 rag_search queries each + final synthesis = 11
+# turns. Bumping the cap so the agent finishes instead of erroring with
+# `MaxTurnsExceeded`.
+max_turns: 25
 color: "#0891B2"
 icon: book-open
 tools:

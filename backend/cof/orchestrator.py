@@ -321,7 +321,9 @@ class AsyncOrchestrator:
             result = await Runner.run(
                 starting_agent=agent,
                 input=messages,
-                max_turns=12,
+                # Match the specialist default; the orchestrator may
+                # delegate-tool-call several specialists in one chat.
+                max_turns=20,
             )
             return result.final_output or ""
         except Exception as e:
