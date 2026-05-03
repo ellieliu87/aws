@@ -37,20 +37,54 @@ def register_python_tools(ctx: PackContext) -> None:
     ctx.register_python_tool(
         name="compute_variance_walk",
         description=(
-            "Decompose the dollar variance between two scenarios on a "
-            "given metric (e.g. Interest_Expense_mm) into Rate / Volume / "
-            "Mix components, summed across all (Portfolio, Product_L1) "
-            "pairs and broken down per pair."
+            "Decompose the dollar variance between a **stress** scenario "
+            "(BHCS or FedSA) and a **baseline** scenario (BHCB or FedB) "
+            "into Rate / Volume / Mix components, attributed per "
+            "product. Operates on long-format retail-model output rows: "
+            "`scenario`, `Run_ID`, `variable_name`, `snap_date`, "
+            "`variable_value`, `additional_dimensions{product_name, "
+            "variable_type}`. The corresponding macro inputs (rate "
+            "paths, etc.) are NOT consumed by this tool — they live in "
+            "the input CSV the methodology-researcher reads via "
+            "rag_search."
         ),
         parameters=[
             {"name": "current_scenario",   "type": "string",
-             "description": "Scenario name to evaluate (e.g. 'CCAR_26_BHC_Stress').",
-             "required": True},
+             "description": (
+                 "Stress scenario code. Defaults to BHCS when omitted "
+                 "(falls back to FedSA if BHCS is absent from the file)."
+             ),
+             "required": False},
             {"name": "benchmark_scenario", "type": "string",
-             "description": "Scenario to compare against (e.g. 'CCAR_25_BHC_Stress').",
-             "required": True},
+             "description": (
+                 "Baseline scenario code. Defaults to BHCB when omitted "
+                 "(falls back to FedB if BHCB is absent from the file)."
+             ),
+             "required": False},
             {"name": "metric",             "type": "string",
-             "description": "Metric to attribute (default: 'Interest_Expense_mm').",
+             "description": (
+                 "`variable_name` to attribute, e.g. "
+                 "'interest_expense_mm'. Default 'interest_expense_mm'."
+             ),
+             "required": False},
+            {"name": "rate_var_name",      "type": "string",
+             "description": (
+                 "`variable_name` carrying the deposit rate paid. "
+                 "Default 'rate_paid'."
+             ),
+             "required": False},
+            {"name": "balance_var_name",   "type": "string",
+             "description": (
+                 "`variable_name` carrying the average balance. "
+                 "Default 'balance_mm'."
+             ),
+             "required": False},
+            {"name": "period_factor",      "type": "number",
+             "description": (
+                 "Annualization factor applied to (rate × balance). "
+                 "Default 0.0833 (= 1/12, monthly snap_dates). Set to "
+                 "0.25 for quarterly data."
+             ),
              "required": False},
             {"name": "playbook_id",        "type": "string",
              "description": (
@@ -64,20 +98,37 @@ def register_python_tools(ctx: PackContext) -> None:
              "required": False},
             {"name": "csv_path",           "type": "string",
              "description": (
-                 "Explicit path to a CSV with columns (Scenario, Quarter_ID, "
-                 "Portfolio, Product_L1, Metric, Value). Use this only when "
-                 "the analyst named a file outside the playbook uploads. "
-                 "Falls back to the function's bundled retail PPNR sample "
-                 "when both `playbook_id` and `csv_path` are omitted."
+                 "Explicit path to a CSV with the long-format retail-output "
+                 "schema (scenario, Run_ID, variable_name, snap_date, "
+                 "variable_value, additional_dimensions). Use this only when "
+                 "the analyst named a file outside the playbook uploads."
              ),
              "required": False},
         ],
         python_source=(
-            'def compute_variance_walk(current_scenario, benchmark_scenario,\n'
-            '                           metric="Interest_Expense_mm",\n'
+            'def compute_variance_walk(current_scenario=None, benchmark_scenario=None,\n'
+            '                           metric="interest_expense_mm",\n'
+            '                           rate_var_name="rate_paid",\n'
+            '                           balance_var_name="balance_mm",\n'
+            '                           period_factor=None,\n'
             '                           playbook_id=None, csv_path=None):\n'
-            '    """Rate/Volume/Mix decomposition of a metric between two scenarios."""\n'
-            '    import os, json, glob\n'
+            '    """Rate/Volume/Mix decomposition of a retail-model metric between\n'
+            '    a baseline and a stress scenario, on long-format output data.\n'
+            '\n'
+            '    Expected schema (one row per scenario × snap_date × product ×\n'
+            '    variable):\n'
+            '       scenario               BHCB | BHCS | FedB | FedSA\n'
+            '       Run_ID                 (carried through, not aggregated on)\n'
+            '       variable_name          rate_paid | balance_mm | interest_expense_mm | ...\n'
+            '       snap_date              ISO date or YYYY-MM\n'
+            '       variable_value         numeric\n'
+            '       additional_dimensions  dict / JSON string with at least\n'
+            '                              `product_name`. May also carry\n'
+            '                              `variable_type`.\n'
+            '\n'
+            '    Defaults: stress = BHCS (fallback FedSA), baseline = BHCB\n'
+            '    (fallback FedB). Period factor defaults to 1/12 (monthly)."""\n'
+            '    import os, json, ast, glob\n'
             '    import pandas as pd\n'
             '\n'
             '    def _find_repo_root():\n'
@@ -100,7 +151,8 @@ def register_python_tools(ctx: PackContext) -> None:
             '            return os.path.join(env_root, "uploads") if not env_root.rstrip("/\\\\").endswith("uploads") else env_root\n'
             '        return os.path.join(_find_repo_root(), "sample_docs", "uploads")\n'
             '\n'
-            '    NEEDED = {"Scenario", "Quarter_ID", "Portfolio", "Product_L1", "Metric", "Value"}\n'
+            '    NEEDED = {"scenario", "Run_ID", "variable_name", "snap_date",\n'
+            '              "variable_value", "additional_dimensions"}\n'
             '\n'
             '    # Auto-discover from the playbook upload folder when the agent\n'
             '    # passes `playbook_id` instead of a path. We scan every .csv /\n'
@@ -138,11 +190,14 @@ def register_python_tools(ctx: PackContext) -> None:
             '                    candidates.append({"path": p, "score": 0,\n'
             '                                        "reason": f"missing cols: {sorted(missing)}"})\n'
             '                    continue\n'
-            '                scenarios = set(peek["Scenario"].astype(str).unique())\n'
-            '                hits = (1 if current_scenario in scenarios else 0) \\\n'
-            '                     + (1 if benchmark_scenario in scenarios else 0)\n'
-            '                # 1 point per scenario hit; bonus for both — that\'s\n'
-            '                # the file we want. Schema-match alone scores 1.\n'
+            '                scenarios = set(peek["scenario"].astype(str).unique())\n'
+            '                # Score schema-match alone at 1; +1 for each\n'
+            '                # named scenario present (or default-pair present).\n'
+            '                pair_for_scoring = (\n'
+            '                    [s for s in [current_scenario, benchmark_scenario] if s]\n'
+            '                    or ["BHCS", "BHCB"]\n'
+            '                )\n'
+            '                hits = sum(1 for s in pair_for_scoring if s in scenarios)\n'
             '                candidates.append({"path": p, "score": 1 + hits,\n'
             '                                    "scenarios_in_file": sorted(scenarios)[:8],\n'
             '                                    "reason": "ok"})\n'
@@ -180,75 +235,131 @@ def register_python_tools(ctx: PackContext) -> None:
             '            }\n'
             '\n'
             '    df = pd.read_csv(csv_path)\n'
-            '    needed = {"Scenario", "Quarter_ID", "Portfolio", "Product_L1", "Metric", "Value"}\n'
             '    actual = set(df.columns)\n'
-            '    missing = needed - actual\n'
+            '    missing = NEEDED - actual\n'
             '    if missing:\n'
             '        return {\n'
             '            "error":           "csv missing required columns",\n'
             '            "missing_columns": sorted(missing),\n'
             '            "actual_columns":  sorted(actual),\n'
             '            "csv_path":        csv_path,\n'
-            '            "hint":            ("Expected long-format CSV with one row per (Scenario, "\n'
-            '                                "Quarter_ID, Portfolio, Product_L1, Metric, Value)."),\n'
+            '            "hint":            ("Expected long-format retail-output CSV with columns "\n'
+            '                                "(scenario, Run_ID, variable_name, snap_date, "\n'
+            '                                "variable_value, additional_dimensions). The "\n'
+            '                                "additional_dimensions cell holds a dict / JSON "\n'
+            '                                "with at least `product_name`."),\n'
             '        }\n'
             '\n'
-            '    metrics_in_csv = sorted(df["Metric"].unique().tolist())\n'
-            '    pivot = df[df["Metric"].isin(["Average_Balance_mm", "Rate_Paid_APR", metric])]\n'
-            '    wide = pivot.pivot_table(\n'
-            '        index=["Scenario", "Quarter_ID", "Portfolio", "Product_L1"],\n'
-            '        columns="Metric", values="Value", aggfunc="first",\n'
-            '    ).reset_index()\n'
+            '    # Parse additional_dimensions (dict, JSON string, or Python\n'
+            '    # literal) and pull `product_name` to a top-level column.\n'
+            '    def _get_product(v):\n'
+            '        if isinstance(v, dict):\n'
+            '            return v.get("product_name")\n'
+            '        if isinstance(v, str) and v.strip():\n'
+            '            try:\n'
+            '                d = json.loads(v)\n'
+            '            except Exception:\n'
+            '                try:\n'
+            '                    d = ast.literal_eval(v)\n'
+            '                except Exception:\n'
+            '                    return None\n'
+            '            return d.get("product_name") if isinstance(d, dict) else None\n'
+            '        return None\n'
+            '    df["product_name"] = df["additional_dimensions"].apply(_get_product)\n'
             '\n'
-            '    cur = wide[wide["Scenario"] == current_scenario]\n'
-            '    ben = wide[wide["Scenario"] == benchmark_scenario]\n'
-            '    if cur.empty or ben.empty:\n'
+            '    # Auto-default scenarios. Stress = BHCS, fallback FedSA;\n'
+            '    # baseline = BHCB, fallback FedB. Surfaced in `assumptions`\n'
+            '    # so the next agent can challenge.\n'
+            '    scenarios_in_file = set(df["scenario"].astype(str).unique())\n'
+            '    assumption_notes = []\n'
+            '    if not current_scenario:\n'
+            '        if "BHCS" in scenarios_in_file:\n'
+            '            current_scenario = "BHCS"\n'
+            '        elif "FedSA" in scenarios_in_file:\n'
+            '            current_scenario = "FedSA"\n'
+            '            assumption_notes.append("BHCS not in file; defaulted to FedSA.")\n'
+            '        else:\n'
+            '            return {\n'
+            '                "error": "no stress scenario in csv",\n'
+            '                "expected_one_of": ["BHCS", "FedSA"],\n'
+            '                "available_scenarios": sorted(scenarios_in_file),\n'
+            '                "csv_path": csv_path,\n'
+            '            }\n'
+            '    if not benchmark_scenario:\n'
+            '        if "BHCB" in scenarios_in_file:\n'
+            '            benchmark_scenario = "BHCB"\n'
+            '        elif "FedB" in scenarios_in_file:\n'
+            '            benchmark_scenario = "FedB"\n'
+            '            assumption_notes.append("BHCB not in file; defaulted to FedB.")\n'
+            '        else:\n'
+            '            return {\n'
+            '                "error": "no baseline scenario in csv",\n'
+            '                "expected_one_of": ["BHCB", "FedB"],\n'
+            '                "available_scenarios": sorted(scenarios_in_file),\n'
+            '                "csv_path": csv_path,\n'
+            '            }\n'
+            '\n'
+            '    if current_scenario not in scenarios_in_file or benchmark_scenario not in scenarios_in_file:\n'
             '        return {\n'
             '            "error":              "scenario(s) not found in csv",\n'
             '            "current_scenario":   current_scenario,\n'
             '            "benchmark_scenario": benchmark_scenario,\n'
-            '            "current_found":      not cur.empty,\n'
-            '            "benchmark_found":    not ben.empty,\n'
-            '            "available_scenarios": sorted(df["Scenario"].unique().tolist()),\n'
+            '            "current_found":      current_scenario in scenarios_in_file,\n'
+            '            "benchmark_found":    benchmark_scenario in scenarios_in_file,\n'
+            '            "available_scenarios": sorted(scenarios_in_file),\n'
             '            "csv_path":           csv_path,\n'
             '        }\n'
-            '    if metric not in metrics_in_csv:\n'
-            '        return {\n'
-            '            "error":             f"metric `{metric}` not in csv",\n'
-            '            "available_metrics": metrics_in_csv,\n'
-            '            "csv_path":          csv_path,\n'
-            '        }\n'
             '\n'
-            '    join_keys = ["Quarter_ID", "Portfolio", "Product_L1"]\n'
+            '    variable_names = set(df["variable_name"].astype(str).unique())\n'
+            '    for need_var, label in [(metric, "metric"),\n'
+            '                              (rate_var_name, "rate_var_name"),\n'
+            '                              (balance_var_name, "balance_var_name")]:\n'
+            '        if need_var not in variable_names:\n'
+            '            return {\n'
+            '                "error":               f"`{label}={need_var!r}` not in csv `variable_name`",\n'
+            '                "available_variables": sorted(variable_names),\n'
+            '                "csv_path":            csv_path,\n'
+            '            }\n'
+            '\n'
+            '    # Pivot to wide form: one row per (scenario, snap_date,\n'
+            '    # product_name) with rate / balance / metric columns.\n'
+            '    pivot_src = df[df["variable_name"].isin([rate_var_name, balance_var_name, metric])]\n'
+            '    wide = pivot_src.pivot_table(\n'
+            '        index=["scenario", "snap_date", "product_name"],\n'
+            '        columns="variable_name", values="variable_value",\n'
+            '        aggfunc="sum",\n'
+            '    ).reset_index()\n'
+            '\n'
+            '    cur = wide[wide["scenario"] == current_scenario]\n'
+            '    ben = wide[wide["scenario"] == benchmark_scenario]\n'
+            '\n'
+            '    join_keys = ["snap_date", "product_name"]\n'
             '    m = cur.merge(ben, on=join_keys, how="outer", suffixes=("_cur", "_ben"))\n'
             '    m = m.fillna(0.0)\n'
             '\n'
-            '    # Total dollar variance (cur - ben) for the metric.\n'
-            '    total_var = (m[f"{metric}_cur"] - m[f"{metric}_ben"]).sum()\n'
+            '    # Period factor — annualization scaler from rate × balance to\n'
+            '    # interest expense. Default 1/12 (monthly snap_dates).\n'
+            '    if period_factor is None:\n'
+            '        period_factor = 1.0 / 12.0\n'
+            '        assumption_notes.append("Period factor defaulted to 1/12 (monthly snap_dates).")\n'
             '\n'
-            '    # Rate/Volume/Mix decomp using the standard CCAR walk:\n'
-            '    #   rate   = (rate_cur - rate_ben) * vol_ben * 0.0025  (qtr quarter-share)\n'
-            '    #   volume = (vol_cur - vol_ben)   * rate_ben          * 0.0025\n'
-            '    #   mix    = (rate_cur - rate_ben) * (vol_cur - vol_ben) * 0.0025\n'
-            '    rate_d = m["Rate_Paid_APR_cur"]      - m["Rate_Paid_APR_ben"]\n'
-            '    vol_d  = m["Average_Balance_mm_cur"] - m["Average_Balance_mm_ben"]\n'
-            '    rate_eff = (rate_d / 100.0) * m["Average_Balance_mm_ben"] * 0.25\n'
-            '    vol_eff  = vol_d * (m["Rate_Paid_APR_ben"] / 100.0) * 0.25\n'
-            '    mix_eff  = (rate_d / 100.0) * vol_d * 0.25\n'
-            '    if metric == "NII_mm":\n'
-            '        # NII rises when rate paid falls — flip sign on rate / mix effects.\n'
-            '        rate_eff, mix_eff = -rate_eff, -mix_eff\n'
+            '    # Total dollar variance (stress - baseline) for the metric.\n'
+            '    total_var = float((m[f"{metric}_cur"] - m[f"{metric}_ben"]).sum())\n'
             '\n'
-            '    # Starting-point variance: PQ0 delta carried as the persistent base.\n'
-            '    pq0 = m[m["Quarter_ID"] == "PQ0"]\n'
-            '    starting_pt = float((pq0[f"{metric}_cur"] - pq0[f"{metric}_ben"]).sum() * 9)\n'
+            '    # Rate / Volume / Mix decomposition. Rate paid is in pct so\n'
+            '    # divide by 100 before multiplying by balance.\n'
+            '    rate_d = m[f"{rate_var_name}_cur"]    - m[f"{rate_var_name}_ben"]\n'
+            '    vol_d  = m[f"{balance_var_name}_cur"] - m[f"{balance_var_name}_ben"]\n'
+            '    rate_eff = (rate_d / 100.0) * m[f"{balance_var_name}_ben"] * period_factor\n'
+            '    vol_eff  = vol_d * (m[f"{rate_var_name}_ben"] / 100.0)    * period_factor\n'
+            '    mix_eff  = (rate_d / 100.0) * vol_d * period_factor\n'
             '\n'
             '    by_product = (\n'
             '        m.assign(\n'
             '            total_var=m[f"{metric}_cur"] - m[f"{metric}_ben"],\n'
             '            rate_eff=rate_eff, vol_eff=vol_eff, mix_eff=mix_eff,\n'
             '        )\n'
-            '        .groupby(["Portfolio", "Product_L1"], dropna=False)\n'
+            '        .groupby(["product_name"], dropna=False)\n'
             '        .agg(total_var=("total_var", "sum"),\n'
             '             rate_effect_mm=("rate_eff", "sum"),\n'
             '             volume_effect_mm=("vol_eff", "sum"),\n'
@@ -256,7 +367,7 @@ def register_python_tools(ctx: PackContext) -> None:
             '        .reset_index()\n'
             '    )\n'
             '    by_product_rows = [\n'
-            '        {"portfolio": r["Portfolio"], "product": r["Product_L1"],\n'
+            '        {"product": r["product_name"],\n'
             '         "total_variance_mm": round(float(r["total_var"]), 2),\n'
             '         "rate_effect_mm":    round(float(r["rate_effect_mm"]), 2),\n'
             '         "volume_effect_mm":  round(float(r["volume_effect_mm"]), 2),\n'
@@ -265,19 +376,25 @@ def register_python_tools(ctx: PackContext) -> None:
             '    ]\n'
             '    by_product_rows.sort(key=lambda r: -abs(r["total_variance_mm"]))\n'
             '\n'
+            '    run_ids = sorted(df["Run_ID"].astype(str).unique().tolist())\n'
+            '\n'
             '    return {\n'
             '        "current_scenario":           current_scenario,\n'
             '        "benchmark_scenario":         benchmark_scenario,\n'
             '        "metric":                     metric,\n'
+            '        "rate_var_name":              rate_var_name,\n'
+            '        "balance_var_name":           balance_var_name,\n'
+            '        "period_factor":              round(float(period_factor), 4),\n'
             '        "csv_path_used":              csv_path,\n'
             '        "playbook_id":                playbook_id,\n'
-            '        "total_variance_mm":          round(float(total_var), 2),\n'
-            '        "starting_point_variance_mm": round(starting_pt, 2),\n'
-            '        "scenario_change_mm":         round(float(total_var) - starting_pt, 2),\n'
+            '        "run_ids":                    run_ids[:8],\n'
+            '        "snap_dates":                 sorted(df["snap_date"].astype(str).unique().tolist())[:24],\n'
+            '        "total_variance_mm":          round(total_var, 2),\n'
             '        "rate_effect_mm":             round(float(rate_eff.sum()), 2),\n'
             '        "volume_effect_mm":           round(float(vol_eff.sum()),  2),\n'
             '        "mix_effect_mm":              round(float(mix_eff.sum()),  2),\n'
             '        "by_product":                 by_product_rows,\n'
+            '        "assumptions":                "; ".join(assumption_notes) or None,\n'
             '    }\n'
         ),
     )
