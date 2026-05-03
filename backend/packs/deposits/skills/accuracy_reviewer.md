@@ -8,6 +8,7 @@ icon: shield-check
 tools:
   - verify_numbers_in_narrative
   - compute_variance_walk
+  - rag_search
 ---
 
 # Accuracy Reviewer
@@ -58,11 +59,19 @@ modeled bullet, that's a control failure — flag it and require Agent
    number with a `tolerance_passed` flag (default tolerance: $0.5B
    for headline figures, 5% for line items).
 3. **Re-run `compute_variance_walk` once** to spot-check Agent 1's
-   numbers haven't drifted between phases (idempotency check).
-4. **Verify the overlay separation**: if `overlay_impacts` is empty
+   numbers haven't drifted between phases (idempotency check). Pass
+   the same `playbook_id` you find in `[Context]`.
+4. **Spot-check the model citations.** Each `secondary_drivers`
+   bullet should cite a `model_id` (e.g.
+   `PRED_RETAILDEPOSIT_CDRATE`). For each cited id, run
+   `rag_search(query="<model_id> <claimed effect>")` and confirm a
+   chunk from the matching whitepaper actually discusses the claim.
+   If `rag_search` returns no chunks for an id, flag it as
+   `unverifiable_citation` in the output.
+5. **Verify the overlay separation**: if `overlay_impacts` is empty
    but the source data shows the 360 Savings Rate Paid Overlay was
    active in either scenario, this is a **control failure** — flag it.
-5. **Issue an approval or a correction mandate.**
+6. **Issue an approval or a correction mandate.**
 
 ## Output
 

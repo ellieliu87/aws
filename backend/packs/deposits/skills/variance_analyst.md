@@ -94,23 +94,56 @@ block before calling any tool.
 - **`--- input dataset ---`** sections — datasets bound via the
   playbook editor. Use `get_dataset_preview(dataset_id)` to inspect.
 
-### Source resolution — let the tool find the file
+### Source resolution — `playbook_id` is mandatory in this playbook
 
-The simplest call pattern (omit `current_scenario`/`benchmark_scenario`
-to get the BHCS-vs-BHCB default):
+⚠ **You MUST pass `playbook_id` to `compute_variance_walk`.** The
+tool will return `"error": "no source file specified"` if you call it
+without `playbook_id` AND without `csv_path`. There is no bundled
+sample to fall back on.
+
+#### How to read `playbook_id` from `[Context]`
+
+The phase context has a line that looks exactly like this:
+
+```
+playbook_id: pbk-19ed7072c2
+```
+
+Copy the value (everything after `playbook_id: `) and pass it as the
+`playbook_id` argument to `compute_variance_walk`. It usually starts
+with `pbk-` followed by 10 hex chars, but treat the value as opaque —
+copy it verbatim.
+
+#### The simplest call
 
 ```
 compute_variance_walk(
-    metric="interest_expense_mm",
-    playbook_id="<from [Context]: playbook_id: …>"
+    playbook_id="pbk-19ed7072c2",
+    metric="interest_expense_mm"
 )
 ```
 
-The tool auto-discovers the right CSV in the playbook upload folder,
-auto-defaults to **BHCS vs BHCB** (or `FedSA vs FedB` if BHC codes
-aren't in the file), and emits the walk. Pass explicit
-`current_scenario` / `benchmark_scenario` only when the analyst names
-a non-default pair in `[PROBLEM STATEMENT]`.
+That's it. The tool auto-discovers the uploaded CSV in
+`sample_docs/uploads/playbook/pbk-19ed7072c2/`, auto-defaults to
+**BHCS vs BHCB** (or `FedSA vs FedB` when BHC codes aren't in the
+file), and emits the walk. Pass explicit `current_scenario` /
+`benchmark_scenario` only when the analyst names a non-default pair
+in `[PROBLEM STATEMENT]`.
+
+#### When `playbook_id` is absent from `[Context]`
+
+It shouldn't be — every playbook has one. If you genuinely don't see
+the `playbook_id:` line, return:
+
+```json
+{
+  "error": "playbook_id missing from context",
+  "next_steps": "Re-open the playbook and re-run the phase; the orchestrator should inject playbook_id automatically."
+}
+```
+
+Don't try to call the tool with no args — that just produces a
+generic `no source file specified` error.
 
 **Never** pass a file path to `get_dataset_preview` — that tool only
 resolves registered dataset ids. For uploaded files, use
