@@ -1011,6 +1011,7 @@ function RunView({
   const [error, setError] = useState<string | null>(null)
   const [publishTitle, setPublishTitle] = useState('')
   const [publishing, setPublishing] = useState(false)
+  const [reportPreviewOpen, setReportPreviewOpen] = useState(false)
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchRun = async () => {
@@ -1062,46 +1063,88 @@ function RunView({
     }
   }
 
-  const downloadHTML = () => {
-    if (!run) return
-    const md = run.final_report || ''
-    const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>${run.playbook_name}</title>
+  const _saveBlob = (blob: Blob, filename: string) => {
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = filename
+    document.body.appendChild(a); a.click(); document.body.removeChild(a)
+    URL.revokeObjectURL(a.href)
+  }
+
+  const _baseFilename = () => {
+    if (!run) return 'report'
+    return `${run.playbook_name.replace(/[^a-z0-9]+/gi, '_')}-${run.id}`
+  }
+
+  const _styledHTML = (md: string) => `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>${run!.playbook_name}</title>
 <style>
-  body { font-family: 'Instrument Sans', system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #0B0F19; line-height: 1.6; }
-  h1, h2, h3 { font-family: 'Playfair Display', Georgia, serif; }
-  h1 { border-bottom: 2px solid #004977; padding-bottom: 8px; }
-  h2 { color: #004977; margin-top: 32px; }
-  blockquote { border-left: 3px solid #004977; padding-left: 12px; color: #2C384A; margin: 12px 0; }
-  code { background: #F0F2F5; padding: 1px 5px; border-radius: 3px; font-family: monospace; }
+  body { font-family: 'Source Serif Pro', Georgia, serif; max-width: 78ch; margin: 40px auto; padding: 0 20px; color: #0B0F19; line-height: 1.72; }
+  h1, h2, h3 { font-family: 'Source Serif Pro', Georgia, serif; }
+  h1 { font-size: 1.7em; border-bottom: 2px solid #004977; padding-bottom: 8px; }
+  h2 { font-size: 1.28em; color: #004977; margin-top: 32px; border-bottom: 1px solid #D8DBE0; padding-bottom: 4px; }
+  h3 { font-size: 1.05em; }
+  p { text-align: justify; hyphens: auto; }
+  blockquote { border-left: 3px solid #004977; padding-left: 12px; color: #2C384A; margin: 12px 0; font-style: italic; }
+  code { background: #F0F2F5; padding: 1px 5px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; }
   pre { background: #F0F2F5; padding: 12px; border-radius: 6px; overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; font-family: 'JetBrains Mono', monospace; }
   th, td { border: 1px solid #D8DBE0; padding: 4px 8px; text-align: left; }
   th { background: #004977; color: white; }
 </style></head>
 <body>
 ${markdownToHTML(md)}
 <hr style="margin-top:40px;border:none;border-top:1px solid #D8DBE0;">
-<p style="font-size:11px;color:#768192;text-align:center;">
-  CMA Workbench Playbook · ${new Date().toLocaleString()} · run ${run.id}
+<p style="font-size:11px;color:#768192;text-align:center;font-family:sans-serif;">
+  CMA Workbench Playbook · ${new Date().toLocaleString()} · run ${run!.id}
 </p>
 </body></html>`
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `${run.playbook_name.replace(/[^a-z0-9]+/gi, '_')}-${run.id}.html`
-    document.body.appendChild(a); a.click(); document.body.removeChild(a)
-    URL.revokeObjectURL(a.href)
+
+  const downloadMarkdown = () => {
+    if (!run) return
+    const md = run.final_report || ''
+    _saveBlob(new Blob([md], { type: 'text/markdown;charset=utf-8' }),
+              `${_baseFilename()}.md`)
+  }
+
+  const downloadHTML = () => {
+    if (!run) return
+    _saveBlob(new Blob([_styledHTML(run.final_report || '')], { type: 'text/html;charset=utf-8' }),
+              `${_baseFilename()}.html`)
+  }
+
+  // Word can open .doc files that contain HTML. The MS Office namespace
+  // declarations + meta tags below tell Word to interpret it as a Word
+  // document rather than a generic web archive.
+  const downloadDoc = () => {
+    if (!run) return
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
+                        xmlns:w="urn:schemas-microsoft-com:office:word"
+                        xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="utf-8">
+<meta http-equiv="Content-Type" content="application/msword; charset=utf-8">
+<title>${run.playbook_name}</title>
+<style>
+  body { font-family: 'Calibri', sans-serif; font-size: 11pt; line-height: 1.5; }
+  h1 { font-size: 18pt; color: #004977; border-bottom: 2px solid #004977; padding-bottom: 6pt; }
+  h2 { font-size: 14pt; color: #004977; margin-top: 18pt; border-bottom: 1px solid #999; padding-bottom: 3pt; }
+  h3 { font-size: 12pt; color: #004977; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #999; padding: 4pt 8pt; }
+  th { background: #004977; color: white; }
+  blockquote { border-left: 3px solid #004977; padding-left: 12pt; color: #555; margin: 12pt 0; }
+  code, pre { font-family: 'Consolas', monospace; background: #F4F4F4; }
+  pre { padding: 8pt; }
+</style></head>
+<body>${markdownToHTML(run.final_report || '')}</body></html>`
+    _saveBlob(new Blob(['﻿' + html], { type: 'application/msword' }),
+              `${_baseFilename()}.doc`)
   }
 
   const downloadJSON = () => {
     if (!run) return
-    const blob = new Blob([JSON.stringify(run, null, 2)], { type: 'application/json' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `${run.playbook_name.replace(/[^a-z0-9]+/gi, '_')}-${run.id}.json`
-    document.body.appendChild(a); a.click(); document.body.removeChild(a)
-    URL.revokeObjectURL(a.href)
+    _saveBlob(new Blob([JSON.stringify(run, null, 2)], { type: 'application/json' }),
+              `${_baseFilename()}.json`)
   }
 
   if (!run) {
@@ -1183,18 +1226,15 @@ ${markdownToHTML(md)}
       {done && run.final_report && (
         <div className="mt-4">
           <div className="section-title">Final Report</div>
-          <div
-            className="panel"
-            style={{
-              padding: '32px 36px',
-              background: '#FFFFFF',
-              border: '1px solid var(--border)',
-              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-              borderRadius: 8,
-            }}
-          >
-            <MarkdownBody md={run.final_report} variant="report" />
-          </div>
+          <FinalReportCard
+            run={run}
+            previewOpen={reportPreviewOpen}
+            onTogglePreview={() => setReportPreviewOpen((v) => !v)}
+            downloadMd={downloadMarkdown}
+            downloadHtml={downloadHTML}
+            downloadDoc={downloadDoc}
+            downloadJson={downloadJSON}
+          />
 
           {run.status === 'completed' && (
             <div
@@ -1456,7 +1496,7 @@ function PhaseRunCard({
                 borderRadius: 8, padding: 12,
               }}
             >
-              <MarkdownBody md={phase.output} />
+              <PhaseOutput phase={phase} />
             </div>
           )}
           {phase.gate_decision && (
@@ -1763,6 +1803,316 @@ function MarkdownBody({ md, variant = 'phase' }: { md: string; variant?: 'phase'
           font-family: 'JetBrains Mono', monospace; font-size: 12px;
         }
       `}</style>
+    </div>
+  )
+}
+
+// ── Final Report card — download-first, optional inline preview ────────
+function FinalReportCard({
+  run, previewOpen, onTogglePreview,
+  downloadMd, downloadHtml, downloadDoc, downloadJson,
+}: {
+  run: PlaybookRun
+  previewOpen: boolean
+  onTogglePreview: () => void
+  downloadMd: () => void
+  downloadHtml: () => void
+  downloadDoc: () => void
+  downloadJson: () => void
+}) {
+  const md = run.final_report || ''
+  const wordCount = md.trim().split(/\s+/).filter(Boolean).length
+  const headingCount = (md.match(/^#{1,6}\s+\S/gm) || []).length
+  return (
+    <div
+      className="panel"
+      style={{
+        padding: 0,
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        className="flex items-center gap-4 px-5 py-4"
+        style={{
+          background: 'linear-gradient(135deg, rgba(0,73,119,0.06), rgba(124,58,237,0.04))',
+          borderBottom: '1px solid var(--border)',
+        }}
+      >
+        <div
+          className="w-11 h-11 rounded-lg flex items-center justify-center shrink-0"
+          style={{ background: 'rgba(0,73,119,0.10)', color: 'var(--accent)' }}
+        >
+          <FileText size={20} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="font-display text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
+            {run.playbook_name}
+          </div>
+          <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+            {wordCount.toLocaleString()} words · {headingCount} section{headingCount === 1 ? '' : 's'} · {run.phases?.length ?? 0} phase{run.phases?.length === 1 ? '' : 's'}
+          </div>
+        </div>
+        <button
+          onClick={onTogglePreview}
+          className="px-3 py-1.5 rounded-md text-xs flex items-center gap-1 shrink-0"
+          style={{
+            background: 'var(--bg-card)', border: '1px solid var(--border)',
+            color: 'var(--text-secondary)', fontWeight: 600,
+          }}
+          title={previewOpen ? 'Hide preview' : 'Show preview'}
+        >
+          {previewOpen
+            ? <><ChevronDown size={11} /> Hide preview</>
+            : <><ChevronRight size={11} /> Preview</>}
+        </button>
+      </div>
+
+      <div className="px-5 py-4">
+        <div
+          className="text-[10px] font-bold uppercase tracking-widest mb-2"
+          style={{ color: 'var(--text-secondary)' }}
+        >
+          Download
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <DownloadBtn icon={FileText} label="Markdown (.md)" onClick={downloadMd} accent="#7C3AED" />
+          <DownloadBtn icon={FileText} label="Word (.doc)"     onClick={downloadDoc}  accent="#2563EB" />
+          <DownloadBtn icon={FileText} label="HTML"            onClick={downloadHtml} accent="#0891B2" />
+          <DownloadBtn icon={FileText} label="Run JSON"        onClick={downloadJson} accent="#64748B" />
+        </div>
+        <div
+          className="text-[11px] mt-3"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          The Word and HTML exports include styled headings, tables, and the regulator-grade typography. Markdown is the raw agent output — useful if you want to paste into another writing tool.
+        </div>
+
+        {previewOpen && (
+          <div
+            className="mt-4 p-5 rounded-lg"
+            style={{ background: '#FFFFFF', border: '1px solid var(--border)' }}
+          >
+            <MarkdownBody md={md} variant="report" />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DownloadBtn({
+  icon: Icon, label, onClick, accent,
+}: { icon: any; label: string; onClick: () => void; accent: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className="px-3 py-2 rounded-md text-[12px] font-semibold flex items-center gap-1.5"
+      style={{
+        background: 'var(--bg-card)',
+        border: `1px solid ${accent}40`,
+        color: accent,
+      }}
+    >
+      <Download size={12} /> {label}
+    </button>
+  )
+}
+
+// ── Phase output renderer — pretty-prints variance-analyst JSON, falls
+// back to MarkdownBody for everything else. Detects JSON by trying to
+// parse a fenced ```json block first, then the whole text.
+function PhaseOutput({ phase }: { phase: PhaseExecution }) {
+  if (!phase.output) return null
+  const variance = _extractVarianceJSON(phase.output)
+  if (variance) {
+    return <VarianceWalkOutput data={variance} rawOutput={phase.output} />
+  }
+  return <MarkdownBody md={phase.output} />
+}
+
+function _extractVarianceJSON(text: string): any | null {
+  // Try fenced JSON block first.
+  const fence = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/)
+  const candidates: string[] = []
+  if (fence) candidates.push(fence[1])
+  // Then try the whole text (sometimes the agent emits raw JSON).
+  candidates.push(text.trim())
+  for (const c of candidates) {
+    try {
+      const parsed = JSON.parse(c)
+      if (parsed && typeof parsed === 'object'
+          && 'total_variance_mm' in parsed
+          && Array.isArray(parsed.by_product)) {
+        return parsed
+      }
+    } catch { /* try next */ }
+  }
+  return null
+}
+
+function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
+  const [showRaw, setShowRaw] = useState(false)
+  const fmt = (mm: number | null | undefined) => {
+    if (mm === null || mm === undefined) return '—'
+    const abs = Math.abs(mm)
+    const sign = mm < 0 ? '-' : ''
+    if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(2)}B`
+    return `${sign}$${abs.toFixed(0)}M`
+  }
+  const products: any[] = data.by_product || []
+
+  const kpis: { label: string; value: number; tone: 'pos' | 'neg' | 'neutral' | 'highlight' }[] = [
+    { label: 'Total Δ',          value: data.total_variance_mm,          tone: 'highlight' },
+    { label: 'Starting point',   value: data.starting_point_variance_mm, tone: 'neutral' },
+    { label: 'Rate effect',      value: data.rate_effect_mm,             tone: data.rate_effect_mm < 0 ? 'neg' : 'pos' },
+    { label: 'Volume effect',    value: data.volume_effect_mm,           tone: data.volume_effect_mm < 0 ? 'neg' : 'pos' },
+    { label: 'Mix effect',       value: data.mix_effect_mm,              tone: data.mix_effect_mm < 0 ? 'neg' : 'pos' },
+  ]
+
+  const toneColor = (t: string) =>
+    t === 'pos' ? '#059669'
+    : t === 'neg' ? '#DC2626'
+    : t === 'highlight' ? '#1E3A8A'
+    : '#475569'
+
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2 mb-2 flex-wrap">
+        <div className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
+          <strong style={{ color: 'var(--text-primary)' }}>{data.current_scenario}</strong>
+          {' '}vs{' '}
+          <strong style={{ color: 'var(--text-primary)' }}>{data.benchmark_scenario}</strong>
+          {data.metric ? ` · ${data.metric}` : ''}
+        </div>
+        <button
+          onClick={() => setShowRaw((v) => !v)}
+          className="text-[10px] font-semibold flex items-center gap-1"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {showRaw
+            ? <><ChevronDown size={10} /> Hide JSON</>
+            : <><ChevronRight size={10} /> View raw JSON</>}
+        </button>
+      </div>
+
+      {/* KPI strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-3">
+        {kpis.map((k) => (
+          <div
+            key={k.label}
+            className="rounded-md p-2.5"
+            style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border)',
+              borderLeft: `3px solid ${toneColor(k.tone)}`,
+            }}
+          >
+            <div
+              className="text-[9px] font-bold uppercase tracking-widest mb-0.5"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              {k.label}
+            </div>
+            <div
+              className="font-mono text-[15px] font-bold"
+              style={{ color: toneColor(k.tone) }}
+            >
+              {fmt(k.value)}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* by_product table */}
+      {products.length > 0 && (
+        <div>
+          <div
+            className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            By Product ({products.length})
+          </div>
+          <div
+            className="overflow-auto rounded-md"
+            style={{ border: '1px solid var(--border)', maxHeight: 360 }}
+          >
+            <table className="w-full text-xs font-mono">
+              <thead style={{ background: 'var(--bg-elevated)', position: 'sticky', top: 0 }}>
+                <tr>
+                  {['Portfolio', 'Product', 'Total Δ', 'Rate Δ', 'Volume Δ', 'Mix Δ'].map((c) => (
+                    <th
+                      key={c}
+                      className="text-left py-2 px-3 whitespace-nowrap"
+                      style={{
+                        fontSize: 10, fontWeight: 700, letterSpacing: '0.05em',
+                        textTransform: 'uppercase', color: 'var(--text-secondary)',
+                        borderBottom: '1px solid var(--border)',
+                      }}
+                    >
+                      {c}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {products.map((row, i) => (
+                  <tr key={i}>
+                    <td className="py-1.5 px-3" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      {row.portfolio ?? '—'}
+                    </td>
+                    <td className="py-1.5 px-3" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      {row.product ?? row.product_l1 ?? '—'}
+                    </td>
+                    <td className="py-1.5 px-3 text-right" style={{
+                      borderBottom: '1px solid var(--border-subtle)',
+                      color: row.total_variance_mm < 0 ? '#DC2626' : row.total_variance_mm > 0 ? '#059669' : 'inherit',
+                      fontWeight: 600,
+                    }}>
+                      {fmt(row.total_variance_mm)}
+                    </td>
+                    <td className="py-1.5 px-3 text-right" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      {fmt(row.rate_effect_mm)}
+                    </td>
+                    <td className="py-1.5 px-3 text-right" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      {fmt(row.volume_effect_mm)}
+                    </td>
+                    <td className="py-1.5 px-3 text-right" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                      {fmt(row.mix_effect_mm)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Optional metadata footer */}
+      {(data.assumptions || data.csv_path_used || data.input_file_path) && (
+        <div
+          className="text-[10px] mt-2"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {data.assumptions && <div><strong>Assumptions:</strong> {data.assumptions}</div>}
+          {(data.csv_path_used || data.input_file_path) && (
+            <div className="font-mono">
+              <strong>Source:</strong> {data.csv_path_used || data.input_file_path}
+            </div>
+          )}
+        </div>
+      )}
+
+      {showRaw && (
+        <pre
+          className="mt-3 rounded-md p-3 text-[10px] font-mono whitespace-pre-wrap break-words"
+          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', maxHeight: 320, overflow: 'auto' }}
+        >
+          {rawOutput}
+        </pre>
+      )}
     </div>
   )
 }
