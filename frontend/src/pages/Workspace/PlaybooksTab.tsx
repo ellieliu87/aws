@@ -995,50 +995,54 @@ function PhaseEditor({
                 )
               })()}
             </select>
-            <label
-              className="flex items-center gap-1 text-[11px] shrink-0 cursor-pointer"
-              style={{ color: phase.gate ? 'var(--accent)' : 'var(--text-muted)' }}
-              title="Pause for analyst approve / modify / reject / rerun before continuing"
+            {/* Toggle pills — gate (pause for analyst review) and parallel
+                (run concurrently with previous phase). Both styled the
+                same way so they're easy to spot in the phase header. */}
+            <button
+              type="button"
+              onClick={() => onChange({ gate: !phase.gate })}
+              title={phase.gate
+                ? 'Gated: phase pauses for analyst approve / modify / reject / rerun'
+                : 'Click to gate: pause this phase for analyst review'}
+              className="px-2 py-1 rounded-md text-[11px] font-semibold flex items-center gap-1 shrink-0"
+              style={{
+                background: phase.gate ? 'rgba(217,119,6,0.12)' : 'var(--bg-elevated)',
+                color:      phase.gate ? '#D97706'              : 'var(--text-muted)',
+                border:     phase.gate ? '1px solid #D97706'    : '1px solid var(--border)',
+              }}
             >
-              <input
-                type="checkbox"
-                checked={phase.gate}
-                onChange={(e) => onChange({ gate: e.target.checked })}
-              />
-              gate
-            </label>
-            {idx > 0 && (
-              <label
-                className="flex items-center gap-1 text-[11px] shrink-0 cursor-pointer"
-                style={{
-                  color: (phase.depends_on && phase.depends_on.length > 0
-                          && _isParallelWithPrev(phase, allPhases, idx))
-                    ? 'var(--accent)' : 'var(--text-muted)',
-                }}
-                title="Run this phase concurrently with the previous one (shares its dependencies)"
-              >
-                <input
-                  type="checkbox"
-                  checked={_isParallelWithPrev(phase, allPhases, idx)}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      // Sibling: copy previous phase's depends_on. If
-                      // the previous phase has none (DAG root), default
-                      // to depending on the phase before it.
+              <Lock size={10} /> {phase.gate ? 'Gated' : 'Gate'}
+            </button>
+            {idx > 0 && (() => {
+              const isParallel = _isParallelWithPrev(phase, allPhases, idx)
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isParallel) {
                       const prev = allPhases[idx - 1]
                       const prevDeps = (prev?.depends_on && prev.depends_on.length > 0)
                         ? prev.depends_on
                         : (idx >= 2 ? [allPhases[idx - 2].id] : [])
                       onChange({ depends_on: prevDeps })
                     } else {
-                      // Linear: clear depends_on (backend defaults to previous phase).
                       onChange({ depends_on: [] })
                     }
                   }}
-                />
-                parallel
-              </label>
-            )}
+                  title={isParallel
+                    ? 'This phase runs in parallel with the previous one. Click to make it sequential.'
+                    : 'Click to run this phase in parallel with the previous one (they share dependencies and execute concurrently).'}
+                  className="px-2 py-1 rounded-md text-[11px] font-semibold flex items-center gap-1 shrink-0"
+                  style={{
+                    background: isParallel ? 'var(--accent-light)' : 'var(--bg-elevated)',
+                    color:      isParallel ? 'var(--accent)'        : 'var(--text-muted)',
+                    border:     isParallel ? '1px solid var(--accent)' : '1px solid var(--border)',
+                  }}
+                >
+                  <ArrowRight size={10} /> {isParallel ? 'Parallel' : 'Sequential'}
+                </button>
+              )
+            })()}
             <button
               onClick={onRemove}
               className="p-1 rounded-md"
