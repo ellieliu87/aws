@@ -193,14 +193,26 @@ inspect a specific file before running the walk.
    BHC pair isn't in the file). Use the analyst's named pair only if
    they specified one in `[PROBLEM STATEMENT]`.
 3. **Call `compute_variance_walk`** with `playbook_id` (and `metric`
-   if non-default). The tool returns:
-   - `current_scenario`, `benchmark_scenario` — what was actually compared
-   - `total_variance_mm` (stress − baseline, $MM)
-   - `rate_effect_mm`   (Δ rate × old balance × period_factor)
-   - `volume_effect_mm` (Δ balance × old rate × period_factor)
-   - `mix_effect_mm`    (Δ rate × Δ balance × period_factor)
-   - `by_product` — same decomposition per `product_name`
-   - `csv_path_used`, `run_ids`, `snap_dates`, `assumptions`
+   if non-default). The tool runs a **sequential V/M/R decomposition**
+   that reconciles exactly to ΔIE — no residual term. Each effect is
+   evaluated at a specific lock state of the other variables:
+
+   - **`volume_effect_mm`** = `(B_tot,S − B_tot,B) × Σ(m_B × r_B)` × period_factor
+     — what changes if the total deposit pie grows/shrinks, holding mix
+     and rate at baseline.
+   - **`mix_effect_mm`** = `B_tot,S × Σ((m_S − m_B) × r_B)` × period_factor
+     — what changes if customers shift between products, holding total
+     at stress level and rates at baseline.
+   - **`rate_effect_mm`** = `Σ(B_S × (r_S − r_B))` × period_factor
+     — what changes if rates reprice, holding the stress portfolio
+     size and mix.
+   - `total_variance_mm` = volume + mix + rate (always reconciles).
+   - `by_product` — per-product split where the effects sum back to
+     the totals.
+   - `data_ie_delta_mm` — the file's own `interest_expense` ΔIE if a
+     column exists. The decomposition follows the formula-based ΔIE,
+     not this column. Any gap is surfaced in `assumptions`.
+
 4. **Emit the JSON.** No prose. Agent 3 writes the narrative; you
    give them numbers.
 
@@ -210,14 +222,15 @@ inspect a specific file before running the walk.
 {
   "current_scenario":   "BHCS",
   "benchmark_scenario": "BHCB",
-  "metric":             "interest_expense_mm",
-  "total_variance_mm":  -212.5,
-  "rate_effect_mm":     -100.0,
-  "volume_effect_mm":   -117.5,
-  "mix_effect_mm":      5.0,
+  "metric":             "interest_expense",
+  "total_variance_mm":  -100.0,
+  "volume_effect_mm":    116.67,
+  "mix_effect_mm":      -16.67,
+  "rate_effect_mm":     -200.00,
+  "data_ie_delta_mm":   -100.0,
   "by_product":         [
-    {"product": "PSAV",   "total_variance_mm": -106.25, "rate_effect_mm": -50.0, "volume_effect_mm": -58.75, "mix_effect_mm": 2.5},
-    {"product": "DFS_CD", "total_variance_mm": -106.25, "rate_effect_mm": -50.0, "volume_effect_mm": -58.75, "mix_effect_mm": 2.5}
+    {"product": "DFS_CD", "total_variance_mm": -175.0, "volume_effect_mm":  41.67, "mix_effect_mm": -166.67, "rate_effect_mm": -50.0},
+    {"product": "PSAV",   "total_variance_mm":   75.0, "volume_effect_mm":  75.0,  "mix_effect_mm":  150.0,  "rate_effect_mm": -150.0}
   ],
   "csv_path_used":      "<resolved by the tool>",
   "snap_dates":         ["2026-01-31", "..."],

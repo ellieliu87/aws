@@ -1,6 +1,6 @@
 """Pydantic schemas for the CMA Workbench API."""
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Auth ────────────────────────────────────────────────────────────────────
@@ -1011,15 +1011,19 @@ class VarianceWalkResult(BaseModel):
     playbook_id:        str | None = None
     run_ids:            list[str] = Field(default_factory=list)
     snap_dates:         list[str] = Field(default_factory=list)
+    # Computed via the sequential V/M/R framework — always reconciles
+    # exactly: total_variance_mm = volume_effect_mm + mix_effect_mm + rate_effect_mm.
     total_variance_mm:  float
     rate_effect_mm:     float
     volume_effect_mm:   float
     mix_effect_mm:      float
-    # Residual = actual ΔIE - (rate + volume + mix). The arithmetic
-    # decomposition is exact only when IE = balance × rate × period_factor;
-    # when IE comes from a richer model output, the residual makes the
-    # gap visible (and the waterfall reconciles when plotted with it).
-    residual_mm:        float = 0.0
+    # When the source CSV carries its own interest_expense column, this
+    # is the ΔIE read directly from that column. The decomposition
+    # follows the computed value (balance × rate × period_factor); any
+    # gap between this and `total_variance_mm` is surfaced in
+    # `assumptions` so the analyst can see whether the model output
+    # reconciles to the formula.
+    data_ie_delta_mm:   float | None = None
     by_product:         list[ProductVariance] = Field(default_factory=list)
     assumptions:        str | None = None
 
@@ -1041,9 +1045,28 @@ class TopMover(BaseModel):
 class Attribution(BaseModel):
     """Detailed per-driver attribution row."""
     driver:           str
-    category:         Literal["methodology", "scenario", "portfolio"]
+    # Canonical values are 'methodology' / 'scenario' / 'portfolio'.
+    # The validator below is tolerant of common variants the LLM
+    # produces ('scenario input change', 'methodology change',
+    # 'portfolio addition', etc.) and normalizes them to canonical.
+    category:         str
     model_component:  str
     explanation:      str
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _normalize_category(cls, v: str) -> str:
+        s = str(v or "").strip().lower()
+        if "method" in s:
+            return "methodology"
+        if "scen" in s or "input" in s:
+            return "scenario"
+        if "port" in s or "addition" in s:
+            return "portfolio"
+        raise ValueError(
+            f"category must be 'methodology' / 'scenario' / 'portfolio' "
+            f"(or a variant containing those keywords), got {v!r}"
+        )
 
 
 class AttributionsResult(BaseModel):
