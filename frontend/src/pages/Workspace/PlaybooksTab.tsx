@@ -1927,23 +1927,27 @@ function DownloadBtn({
 // JSON-toggle icon in its top-right corner so the analyst can inspect
 // the raw agent payload without it dominating the screen.
 function PhaseOutput({ phase }: { phase: PhaseExecution }) {
-  if (!phase.output) return null
-  const parsed = _tryParseAgentJSON(phase.output)
+  if (!phase.output && !phase.structured_output) return null
+  // Prefer the backend-validated structured payload when present —
+  // it's already passed through the typed schema for this skill, so
+  // the renderer doesn't have to re-guess the JSON shape.
+  const parsed = phase.structured_output ?? (phase.output ? _tryParseAgentJSON(phase.output) : null)
+  const rawOutput = phase.output ?? (parsed ? JSON.stringify(parsed, null, 2) : '')
   if (parsed) {
     if ('total_variance_mm' in parsed && Array.isArray(parsed.by_product)) {
-      return <VarianceWalkOutput data={parsed} rawOutput={phase.output} />
+      return <VarianceWalkOutput data={parsed} rawOutput={rawOutput} />
     }
-    if (Array.isArray(parsed.attributions)) {
-      return <AttributionsOutput data={parsed} rawOutput={phase.output} />
+    if (Array.isArray(parsed.top_movers) || Array.isArray(parsed.attributions)) {
+      return <AttributionsOutput data={parsed} rawOutput={rawOutput} />
     }
     if ('slide_header' in parsed || 'primary_driver' in parsed) {
-      return <CommentaryOutput data={parsed} rawOutput={phase.output} />
+      return <CommentaryOutput data={parsed} rawOutput={rawOutput} />
     }
     if ('decision' in parsed && Array.isArray(parsed.checks)) {
-      return <AccuracyOutput data={parsed} rawOutput={phase.output} />
+      return <AccuracyOutput data={parsed} rawOutput={rawOutput} />
     }
   }
-  return <MarkdownBody md={phase.output} />
+  return <MarkdownBody md={phase.output ?? ''} />
 }
 
 // Try to extract a JSON object from a (possibly markdown-wrapped) agent
@@ -2182,9 +2186,10 @@ function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string 
   )
 }
 
-// ── methodology-researcher: list of attribution cards ───────────────────
+// ── methodology-researcher: top movers + detailed attributions ─────────
 function AttributionsOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
-  const items: any[] = data.attributions || []
+  const movers: any[] = data.top_movers || []
+  const items: any[]  = data.attributions || []
   const categoryColor = (cat: string) => {
     const c = String(cat || '').toLowerCase()
     if (c.includes('methodology')) return '#7C3AED'
@@ -2192,6 +2197,12 @@ function AttributionsOutput({ data, rawOutput }: { data: any; rawOutput: string 
     if (c.includes('scenario'))    return '#D97706'
     return '#475569'
   }
+  const effectColor = (e: string) =>
+    e === 'rate'   ? '#0891B2'
+    : e === 'volume' ? '#059669'
+    : e === 'mix'    ? '#7C3AED'
+    : 'var(--text-muted)'
+
   const headerLeft = (
     <div className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
       Methodology attributions
@@ -2202,55 +2213,137 @@ function AttributionsOutput({ data, rawOutput }: { data: any; rawOutput: string 
       )}
     </div>
   )
+
   return (
     <AgentOutputShell rawOutput={rawOutput} headerLeft={headerLeft}>
-      {items.length === 0 ? (
-        <div className="text-xs italic" style={{ color: 'var(--text-muted)' }}>
-          No attributions returned.
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {items.map((it, i) => (
-            <div
-              key={i}
-              className="rounded-md p-3"
-              style={{
-                background: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderLeft: `3px solid ${categoryColor(it.category)}`,
-              }}
-            >
-              <div className="flex items-baseline justify-between gap-2 mb-1 flex-wrap">
-                <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                  {it.driver || `Driver ${i + 1}`}
+      {/* Top movers — the ranked, filtered list commentary-drafter narrates from */}
+      {movers.length > 0 && (
+        <div className="mb-3">
+          <div
+            className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            Material movers ({movers.length}) — commentary draws from this list only
+          </div>
+          <div className="space-y-1.5">
+            {movers.map((m, i) => (
+              <div
+                key={i}
+                className="rounded-md p-2.5 flex items-center gap-3"
+                style={{
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--border)',
+                  borderLeft: `3px solid ${effectColor(m.primary_effect)}`,
+                }}
+              >
+                <span
+                  className="font-mono text-[11px] font-bold w-6 text-center shrink-0"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  #{m.rank ?? i + 1}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                      {m.product}
+                    </span>
+                    {m.primary_effect && (
+                      <span
+                        className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
+                        style={{ background: `${effectColor(m.primary_effect)}1A`, color: effectColor(m.primary_effect) }}
+                      >
+                        {m.primary_effect}-driven
+                      </span>
+                    )}
+                    {m.model_component && (
+                      <span className="text-[10px] font-mono" style={{ color: 'var(--accent)' }}>
+                        {m.model_component}
+                      </span>
+                    )}
+                  </div>
+                  {m.attribution_summary && (
+                    <div className="text-[12px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                      {m.attribution_summary}
+                    </div>
+                  )}
                 </div>
-                {it.category && (
-                  <span
-                    className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded"
-                    style={{
-                      background: `${categoryColor(it.category)}1A`,
-                      color: categoryColor(it.category),
-                    }}
+                <div className="text-right shrink-0">
+                  <div
+                    className="font-mono text-[14px] font-bold"
+                    style={{ color: m.total_variance_mm < 0 ? '#DC2626' : '#059669' }}
                   >
-                    {it.category}
-                  </span>
+                    {_fmtMm(m.total_variance_mm)}
+                  </div>
+                  {m.contribution_pct !== undefined && m.contribution_pct !== null && (
+                    <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {Number(m.contribution_pct).toFixed(0)}% of total
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Detailed attributions */}
+      {items.length > 0 && (
+        <div>
+          <div
+            className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            Detailed attribution rows ({items.length})
+          </div>
+          <div className="space-y-2">
+            {items.map((it, i) => (
+              <div
+                key={i}
+                className="rounded-md p-3"
+                style={{
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--border)',
+                  borderLeft: `3px solid ${categoryColor(it.category)}`,
+                }}
+              >
+                <div className="flex items-baseline justify-between gap-2 mb-1 flex-wrap">
+                  <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    {it.driver || `Driver ${i + 1}`}
+                  </div>
+                  {it.category && (
+                    <span
+                      className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded"
+                      style={{
+                        background: `${categoryColor(it.category)}1A`,
+                        color: categoryColor(it.category),
+                      }}
+                    >
+                      {it.category}
+                    </span>
+                  )}
+                </div>
+                {it.model_component && (
+                  <div
+                    className="text-[10px] font-mono mb-1.5"
+                    style={{ color: 'var(--accent)' }}
+                  >
+                    {it.model_component}
+                  </div>
+                )}
+                {it.explanation && (
+                  <div className="text-[12px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                    {it.explanation}
+                  </div>
                 )}
               </div>
-              {it.model_component && (
-                <div
-                  className="text-[10px] font-mono mb-1.5"
-                  style={{ color: 'var(--accent)' }}
-                >
-                  {it.model_component}
-                </div>
-              )}
-              {it.explanation && (
-                <div className="text-[12px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                  {it.explanation}
-                </div>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
+        </div>
+      )}
+
+      {movers.length === 0 && items.length === 0 && (
+        <div className="text-xs italic" style={{ color: 'var(--text-muted)' }}>
+          No attributions returned.
         </div>
       )}
     </AgentOutputShell>
@@ -2259,13 +2352,55 @@ function AttributionsOutput({ data, rawOutput }: { data: any; rawOutput: string 
 
 // ── commentary-drafter: memo-style layout ──────────────────────────────
 function CommentaryOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
+  const claims: any[] = data.numeric_claims || []
+  const failures: string[] = data.verification_failures || []
+  const verified = !!data.numbers_verified
+
   const headerLeft = (
-    <div className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
-      Executive commentary
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
+        Executive commentary
+      </span>
+      {claims.length > 0 && (
+        <span
+          className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded flex items-center gap-1"
+          style={{
+            background: verified ? 'var(--success-bg)' : 'var(--error-bg)',
+            color:      verified ? 'var(--success)'    : 'var(--error)',
+          }}
+          title={verified
+            ? 'Every numeric claim verified exactly against variance-analyst'
+            : 'One or more numeric claims failed exact verification'}
+        >
+          {verified ? <CheckCircle2 size={10} /> : <AlertCircle size={10} />}
+          {verified
+            ? `${claims.length} claim${claims.length === 1 ? '' : 's'} verified`
+            : `${failures.length} verification failure${failures.length === 1 ? '' : 's'}`}
+        </span>
+      )}
     </div>
   )
+
   return (
     <AgentOutputShell rawOutput={rawOutput} headerLeft={headerLeft}>
+      {/* Verification failure banner */}
+      {failures.length > 0 && (
+        <div
+          className="rounded-md p-3 mb-3"
+          style={{ background: 'var(--error-bg)', border: '1px solid var(--error)' }}
+        >
+          <div
+            className="text-[10px] font-bold uppercase tracking-widest mb-1.5 flex items-center gap-1"
+            style={{ color: 'var(--error)' }}
+          >
+            <AlertCircle size={11} /> Numbers don't tie to variance JSON
+          </div>
+          <ul className="text-[12px] leading-relaxed list-disc pl-5 space-y-1" style={{ color: 'var(--text-primary)' }}>
+            {failures.map((f, i) => <li key={i}>{f}</li>)}
+          </ul>
+        </div>
+      )}
+
       <div
         className="rounded-lg p-4"
         style={{

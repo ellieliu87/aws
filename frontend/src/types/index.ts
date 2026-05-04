@@ -593,6 +593,11 @@ export interface PhaseExecution {
   skill_name: string
   status: 'idle' | 'running' | 'awaiting_gate' | 'completed' | 'rejected' | 'failed'
   output?: string | null
+  // Validated, parsed result of the agent — populated when the
+  // phase's skill has a registered Pydantic schema in the backend
+  // (variance-analyst, methodology-researcher, commentary-drafter).
+  // Frontend renderers prefer this over re-parsing `output` text.
+  structured_output?: Record<string, any> | null
   agent_id?: string | null
   gate_decision?: 'approve' | 'modify' | 'reject' | null
   gate_notes?: string | null

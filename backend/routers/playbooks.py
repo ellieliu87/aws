@@ -29,6 +29,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from agent.skill_loader import list_skills
 from models.schemas import (
+    AttributionsResult,
+    CommentaryResult,
     GateDecisionRequest,
     PhaseExecution,
     Playbook,
@@ -39,6 +41,7 @@ from models.schemas import (
     PublishedReport,
     PublishRequest,
     TraceStep,
+    VarianceWalkResult,
 )
 from routers.auth import get_current_user, get_user_record
 from routers.datasets import _DATASETS, _read_dataframe, _resolve_path, _synthesize_sample
@@ -88,6 +91,133 @@ def _summarize_scenario(scenario_id: str) -> str | None:
         f"`{s.name}` (id={s.id}) — severity={s.severity}, "
         f"variables={s.variables}, horizon_months={s.horizon_months}"
     )
+
+
+# ── Typed phase-result extraction ──────────────────────────────────────
+# Maps each skill_name to the Pydantic schema its output should fit
+# into. After the agent completes, we parse the raw text into the
+# matching model and store it on PhaseExecution.structured_output.
+# Downstream phases get the re-serialized JSON instead of the raw
+# (possibly noisy) agent prose, eliminating a whole class of bugs
+# where one agent misreads another's output.
+_SKILL_RESULT_SCHEMAS: dict[str, type] = {
+    "variance-analyst":        VarianceWalkResult,
+    "methodology-researcher":  AttributionsResult,
+    "commentary-drafter":      CommentaryResult,
+}
+
+
+def _try_parse_json(text: str) -> Any | None:
+    """Pull a JSON object out of an agent's text output. Tries a
+    fenced ```json block first, then the whole text. Returns the
+    parsed dict or None."""
+    import json
+    import re
+    if not text:
+        return None
+    fence = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", text)
+    candidates: list[str] = []
+    if fence:
+        candidates.append(fence.group(1))
+    candidates.append(text.strip())
+    for c in candidates:
+        try:
+            v = json.loads(c)
+            if isinstance(v, dict):
+                return v
+        except Exception:
+            continue
+    return None
+
+
+def _extract_structured_result(skill_name: str, raw_output: str) -> tuple[dict | None, str | None]:
+    """Parse `raw_output` against the skill's registered result schema.
+
+    Returns `(structured_dict, error_msg)`. `structured_dict` is the
+    validated, JSON-serializable result; `error_msg` is non-None when
+    parsing or validation fails."""
+    schema = _SKILL_RESULT_SCHEMAS.get(skill_name)
+    if schema is None:
+        return None, None  # no schema registered — skip extraction quietly
+
+    parsed = _try_parse_json(raw_output)
+    if parsed is None:
+        return None, f"could not parse JSON from {skill_name} output"
+
+    try:
+        validated = schema.model_validate(parsed)
+    except Exception as e:
+        return None, f"{skill_name} output did not validate against {schema.__name__}: {e}"
+
+    return validated.model_dump(mode="json"), None
+
+
+def _verify_commentary_claims(
+    commentary: dict,
+    variance: dict | None,
+) -> tuple[bool, list[str]]:
+    """Cross-reference each NumericClaim in the commentary against the
+    matching field in variance-analyst's structured output. Exact match
+    after rounding to 2 decimal places ($MM precision). Returns
+    `(all_verified, failures)`."""
+    if not variance:
+        return False, ["no variance-analyst structured_output found upstream"]
+    claims = commentary.get("numeric_claims") or []
+    if not claims:
+        # No claims to verify — treat as a fail loudly so the agent has to
+        # at least name what it's claiming. (The schema allows empty but
+        # commentary worth its salt always has at least the headline.)
+        return False, ["commentary emitted no numeric_claims; can't verify any numbers"]
+
+    by_product = {row.get("product"): row for row in (variance.get("by_product") or [])}
+
+    failures: list[str] = []
+    for c in claims:
+        text = c.get("text", "<no text>")
+        claimed = c.get("value_mm")
+        source = c.get("source_field", "")
+        if claimed is None or not source:
+            failures.append(f"claim {text!r}: missing value_mm or source_field")
+            continue
+
+        # Resolve source_field. Two shapes supported:
+        #   - top-level field, e.g. "total_variance_mm" / "rate_effect_mm"
+        #   - by-product cell, e.g. "by_product[PSAV].rate_effect_mm"
+        source_value = None
+        m = __import__("re").match(r"by_product\[(.+?)\]\.(\w+)$", source)
+        if m:
+            prod = m.group(1)
+            field = m.group(2)
+            row = by_product.get(prod)
+            if row is None:
+                failures.append(
+                    f"claim {text!r}: source_field references product {prod!r} which "
+                    f"is not in by_product (have: {sorted(by_product.keys())})"
+                )
+                continue
+            source_value = row.get(field)
+        else:
+            source_value = variance.get(source)
+
+        if source_value is None:
+            failures.append(
+                f"claim {text!r}: source_field {source!r} not found in variance JSON"
+            )
+            continue
+
+        try:
+            expected = round(float(source_value), 2)
+            actual   = round(float(claimed), 2)
+        except (TypeError, ValueError):
+            failures.append(f"claim {text!r}: non-numeric value or source ({claimed!r} vs {source_value!r})")
+            continue
+
+        if expected != actual:
+            failures.append(
+                f"claim {text!r}: value_mm={actual} doesn't match {source}={expected}"
+            )
+
+    return (len(failures) == 0), failures
 
 
 def _build_phase_context(
@@ -156,11 +286,23 @@ def _build_phase_context(
                 ctx_parts.append(f"--- input scenario ---\n{summary}")
         elif inp.kind == "phase_output" and inp.ref_id:
             prior = next((p for p in run.phases if p.phase_id == inp.ref_id), None)
-            if prior and prior.output:
-                ctx_parts.append(
-                    f"--- output of prior phase `{inp.ref_id}` ({prior.phase_name}) ---\n"
-                    + prior.output[:3000]
-                )
+            if prior:
+                # Prefer the validated structured_output — re-serialized
+                # cleanly so the agent never sees the previous agent's
+                # raw prose / hallucinated wrappers.
+                if prior.structured_output:
+                    import json as _json
+                    body = _json.dumps(prior.structured_output, indent=2, default=str)
+                    ctx_parts.append(
+                        f"--- structured output of prior phase `{inp.ref_id}` "
+                        f"({prior.phase_name}) — validated against the skill's schema ---\n"
+                        + body[:6000]
+                    )
+                elif prior.output:
+                    ctx_parts.append(
+                        f"--- output of prior phase `{inp.ref_id}` ({prior.phase_name}) ---\n"
+                        + prior.output[:3000]
+                    )
         elif inp.kind == "prompt" and inp.text:
             ctx_parts.append(f"--- prompt ---\n{inp.text}")
 
@@ -223,6 +365,28 @@ async def _execute_phase(
         )
         pe.output = text
         pe.agent_id = phase.skill_name
+
+        # Try to parse the agent's output into the typed schema for this
+        # skill. On success, downstream phases see the validated +
+        # re-serialized JSON instead of the agent's raw prose.
+        structured, parse_err = _extract_structured_result(phase.skill_name, text)
+        if structured is not None:
+            # commentary-drafter gets a backend post-hoc verification of
+            # every NumericClaim against variance-analyst's structured_output.
+            if phase.skill_name == "commentary-drafter":
+                variance_struct = _find_prior_structured(run, "variance-analyst")
+                ok, failures = _verify_commentary_claims(structured, variance_struct)
+                structured["numbers_verified"]      = ok
+                structured["verification_failures"] = failures
+            pe.structured_output = structured
+        elif parse_err:
+            # Couldn't validate the output — keep the raw text for the
+            # analyst to see, but mark as failed so the chain doesn't
+            # silently propagate garbage downstream.
+            pe.status = "failed"
+            pe.error = parse_err
+            return
+
         pe.status = "awaiting_gate" if phase.gate else "completed"
     except Exception as e:
         pe.status = "failed"
@@ -231,6 +395,17 @@ async def _execute_phase(
         completed = datetime.utcnow()
         pe.completed_at = completed.isoformat() + "Z"
         pe.duration_ms = (completed - started).total_seconds() * 1000
+
+
+def _find_prior_structured(run: PlaybookRun, skill_name: str) -> dict | None:
+    """Look back through `run.phases` for the most recent completed phase
+    whose `skill_name` matches and which has a structured_output. Used by
+    verification to find variance-analyst's numbers from the
+    commentary-drafter phase."""
+    for p in run.phases:
+        if p.skill_name == skill_name and p.structured_output:
+            return p.structured_output
+    return None
 
 
 async def _run_to_next_gate(run: PlaybookRun, playbook: Playbook) -> None:

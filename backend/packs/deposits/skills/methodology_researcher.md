@@ -145,34 +145,70 @@ the JSON output with what you have and exit.
 
 ## Output format
 
-Return a JSON object so Agent 3 can consume it programmatically:
+Return a JSON object with **two fields**: `top_movers` (a ranked,
+filtered list of 3–5 material products — this is what
+commentary-drafter narrates from) and `attributions` (the detailed
+"why" rows you produce per driver). The two are linked by
+`model_component` and `product`.
+
+`top_movers` is the **single source of truth for materiality** — any
+product not on this list won't be discussed downstream, so be
+deliberate. Rank by `abs(total_variance_mm)` descending, take the
+top 3–5, drop anything below ~5% of the absolute total variance.
 
 ```json
 {
-  "current_scenario":  "CCAR_26_BHC_Stress",
-  "benchmark_scenario": "CCAR_25_BHC_Stress",
+  "current_scenario":   "BHCS",
+  "benchmark_scenario": "BHCB",
+  "top_movers": [
+    {
+      "rank":                1,
+      "product":             "PSAV",
+      "total_variance_mm":   -106.25,
+      "contribution_pct":    50.0,
+      "primary_effect":      "rate",
+      "attribution_summary": "Lower stress-path Liquid Rate flows through to PSAV rate paid (-20 bps).",
+      "model_component":     "PRED_RETAILDEPOSIT_LIQUIDRATE"
+    },
+    {
+      "rank":                2,
+      "product":             "DFS_CD",
+      "total_variance_mm":   -106.25,
+      "contribution_pct":    50.0,
+      "primary_effect":      "volume",
+      "attribution_summary": "Backbook attrition runs faster under stress; CD balance -5%.",
+      "model_component":     "PRED_RETAILDEPOSIT_CDATTRITION"
+    }
+  ],
   "attributions": [
     {
-      "driver": "Consumer_CD rate paid +12 bps",
-      "category": "methodology",
+      "driver":          "Consumer_CD rate paid +12 bps",
+      "category":        "methodology",
       "model_component": "PRED_RETAILDEPOSIT_CDRATE",
-      "explanation": "Benchmark index reconstituted from Big 8 to Big 6 to remove the post-DFS double-counting; Big 6 publishes ~12-18 bps higher CD rates."
-    },
-    ...
+      "explanation":     "Benchmark index reconstituted from Big 8 to Big 6 to remove the post-DFS double-counting; Big 6 publishes ~12-18 bps higher CD rates."
+    }
   ]
 }
 ```
 
+`primary_effect` should match whichever of `rate_effect_mm`,
+`volume_effect_mm`, `mix_effect_mm` has the largest absolute value
+for that product in variance-analyst's `by_product` row. `attribution_summary`
+is a one-sentence explanation that commentary-drafter can quote.
+
 ## Rules
 
+- **Top-movers ranking is binding.** If a product isn't in
+  `top_movers`, commentary-drafter won't talk about it. Don't omit
+  products that move >5% of total variance just to keep the list
+  short — split them out explicitly.
 - **Always cite the `model_id`** from the whitepaper frontmatter so
   Agent 4 can verify.
 - **Never invent methodology**. If `rag_search` returns nothing
   relevant, say so explicitly: `"explanation": "No matching
   whitepaper — methodology source unknown."` — let Agent 3 escalate.
 - **Categorize precisely**: methodology change vs scenario input vs
-  portfolio addition. The DFS frontbook appearing in CCAR-26 is a
-  **portfolio addition** — it shows up as starting-point variance,
-  not as a stress signal.
-- Three to five bullets. The slide commentary downstream cannot fit
+  portfolio addition. The DFS frontbook appearing as a new product
+  is a **portfolio addition**, not a stress signal.
+- Three to five movers. The slide commentary downstream cannot fit
   more.

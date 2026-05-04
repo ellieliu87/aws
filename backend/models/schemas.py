@@ -956,7 +956,14 @@ class PhaseExecution(BaseModel):
     phase_name: str
     skill_name: str
     status: Literal["idle", "running", "awaiting_gate", "completed", "rejected", "failed"]
-    output: str | None = None  # markdown response from the agent
+    output: str | None = None  # raw markdown / text response from the agent
+    # Validated, parsed result of the agent run — populated when the
+    # phase's skill_name has a registered result schema (see
+    # routers/playbooks.py:_extract_structured_result). Downstream
+    # phases receive this re-serialized as a clean JSON block in
+    # `[Context]`, instead of the raw output text. Renderers prefer
+    # this when present.
+    structured_output: dict[str, Any] | None = None
     agent_id: str | None = None
     gate_decision: Literal["approve", "modify", "reject"] | None = None
     gate_notes: str | None = None
@@ -965,6 +972,101 @@ class PhaseExecution(BaseModel):
     started_at: str | None = None
     completed_at: str | None = None
     trace: list[TraceStep] = Field(default_factory=list)
+
+
+# ── Typed phase results — used by the deposit pack pipeline ──────────────
+# Each playbook skill that emits structured JSON has a corresponding
+# Pydantic model here. The playbook executor parses the agent's raw
+# text output into the matching model and stores it on
+# PhaseExecution.structured_output. Downstream phases see a freshly
+# re-serialized version, so they can never get tripped up by sloppy
+# agent prose or JSON shape drift.
+
+class ProductVariance(BaseModel):
+    """One row of the variance walk's by_product table."""
+    product: str
+    total_variance_mm:  float
+    rate_effect_mm:     float
+    volume_effect_mm:   float
+    mix_effect_mm:      float
+
+
+class VarianceWalkResult(BaseModel):
+    """Output of `variance-analyst`. Numbers come straight from
+    `compute_variance_walk`."""
+    current_scenario:   str
+    benchmark_scenario: str
+    metric:             str
+    metric_requested:   str | None = None
+    rate_var_name:      str | None = None
+    balance_var_name:   str | None = None
+    period_factor:      float | None = None
+    csv_path_used:      str | None = None
+    playbook_id:        str | None = None
+    run_ids:            list[str] = Field(default_factory=list)
+    snap_dates:         list[str] = Field(default_factory=list)
+    total_variance_mm:  float
+    rate_effect_mm:     float
+    volume_effect_mm:   float
+    mix_effect_mm:      float
+    by_product:         list[ProductVariance] = Field(default_factory=list)
+    assumptions:        str | None = None
+
+
+class TopMover(BaseModel):
+    """One ranked, material delta methodology-researcher hands to
+    commentary-drafter. Single source of truth for "what's worth
+    talking about" — replaces commentary-drafter independently
+    re-deciding from `by_product`."""
+    rank:                int
+    product:             str
+    total_variance_mm:   float
+    contribution_pct:    float | None = None  # |this| / |total| as %
+    primary_effect:      Literal["rate", "volume", "mix"] | None = None
+    attribution_summary: str | None = None    # one-line "why" from methodology
+    model_component:     str | None = None    # cited PRED_RETAIL... id
+
+
+class Attribution(BaseModel):
+    """Detailed per-driver attribution row."""
+    driver:           str
+    category:         Literal["methodology", "scenario", "portfolio"]
+    model_component:  str
+    explanation:      str
+
+
+class AttributionsResult(BaseModel):
+    """Output of `methodology-researcher`. `top_movers` is the curated
+    short-list commentary-drafter narrates from."""
+    current_scenario:   str
+    benchmark_scenario: str
+    top_movers:         list[TopMover] = Field(default_factory=list)
+    attributions:       list[Attribution] = Field(default_factory=list)
+
+
+class NumericClaim(BaseModel):
+    """A specific number commentary-drafter is asserting in its prose,
+    annotated with the source field in `VarianceWalkResult` so the
+    backend can verify it exactly. The `text` field is how it appears
+    in the prose; `value_mm` is the precise value being claimed."""
+    text:         str   # e.g. "~$3.0B" — display form
+    value_mm:     float # e.g. -3043.2 — exact value behind the display
+    source_field: str   # e.g. "total_variance_mm" or "by_product[PSAV].rate_effect_mm"
+
+
+class CommentaryResult(BaseModel):
+    """Output of `commentary-drafter`. Includes structured numeric
+    claims so the backend can verify each $ figure in the narrative
+    against the variance JSON exactly (no tolerance bands)."""
+    slide_header:        str
+    primary_driver:      str
+    secondary_drivers:   list[str] = Field(default_factory=list)
+    overlay_impacts:     list[str] = Field(default_factory=list)
+    numeric_claims:      list[NumericClaim] = Field(default_factory=list)
+    # Populated by the backend, not the agent. True only when every
+    # numeric_claim ties exactly to the variance JSON.
+    numbers_verified:    bool = False
+    verification_failures: list[str] = Field(default_factory=list)
 
 
 class PlaybookRun(BaseModel):
