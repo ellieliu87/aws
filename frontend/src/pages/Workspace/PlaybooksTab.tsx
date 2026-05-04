@@ -2363,12 +2363,21 @@ function _fmtMm(mm: number | null | undefined): string {
 function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
   const products: any[] = data.by_product || []
 
+  // Show residual only when it's not trivially small. The "show" threshold
+  // is $0.5M absolute — anything smaller is just rounding noise from the
+  // decomposition arithmetic.
+  const residual: number | undefined = data.residual_mm
+  const showResidual = residual !== undefined && residual !== null && Math.abs(residual) > 0.5
+
   const kpis: { label: string; value: number; tone: 'pos' | 'neg' | 'neutral' | 'highlight' }[] = [
     { label: 'Total Δ',       value: data.total_variance_mm, tone: 'highlight' },
     { label: 'Rate effect',   value: data.rate_effect_mm,    tone: data.rate_effect_mm   < 0 ? 'neg' : 'pos' },
     { label: 'Volume effect', value: data.volume_effect_mm,  tone: data.volume_effect_mm < 0 ? 'neg' : 'pos' },
     { label: 'Mix effect',    value: data.mix_effect_mm,     tone: data.mix_effect_mm    < 0 ? 'neg' : 'pos' },
   ]
+  if (showResidual) {
+    kpis.push({ label: 'Residual', value: residual!, tone: 'neutral' })
+  }
 
   const toneColor = (t: string) =>
     t === 'pos' ? '#059669'
@@ -2377,19 +2386,25 @@ function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string 
     : '#475569'
 
   // Build a waterfall spec automatically from variance-analyst's actual
-  // numbers. This guarantees the chart never disagrees with the KPI
-  // strip — both come from the same source.
+  // numbers. The residual bar (when non-trivial) makes the chart
+  // reconcile to total — without it, IE values that aren't exactly
+  // bal*rate*period_factor would leave a visible gap between the sum
+  // of effects and the total.
+  const waterfallComponents: { label: string; value_mm: number }[] = [
+    { label: 'Rate effect',   value_mm: data.rate_effect_mm   ?? 0 },
+    { label: 'Volume effect', value_mm: data.volume_effect_mm ?? 0 },
+    { label: 'Mix effect',    value_mm: data.mix_effect_mm    ?? 0 },
+  ]
+  if (showResidual) {
+    waterfallComponents.push({ label: 'Residual', value_mm: residual! })
+  }
   const waterfallSpec: WaterfallSpec = {
     title:           'Variance walk — stress vs baseline',
     current_label:   data.current_scenario,
     benchmark_label: data.benchmark_scenario,
     metric:          data.metric,
     starting_point_mm: 0,
-    components: [
-      { label: 'Rate effect',   value_mm: data.rate_effect_mm   ?? 0 },
-      { label: 'Volume effect', value_mm: data.volume_effect_mm ?? 0 },
-      { label: 'Mix effect',    value_mm: data.mix_effect_mm    ?? 0 },
-    ],
+    components: waterfallComponents,
     total_mm: data.total_variance_mm ?? 0,
   }
 

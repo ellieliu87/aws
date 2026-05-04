@@ -281,15 +281,28 @@ def _verify_commentary_claims(
             continue
 
         try:
-            expected = round(float(source_value), 2)
-            actual   = round(float(claimed), 2)
+            expected = float(source_value)
+            actual   = float(claimed)
         except (TypeError, ValueError):
             failures.append(f"claim {text!r}: non-numeric value or source ({claimed!r} vs {source_value!r})")
             continue
 
-        if expected != actual:
+        # Tolerance: accept if the values match exactly after rounding to
+        # $MM precision OR if the relative difference is ≤1% OR the
+        # absolute difference is ≤$0.01M. Stops false failures from
+        # rounding while still catching real misstatements (e.g. claim
+        # says "$3B" when actual is "$30B").
+        TOL_RELATIVE = 0.01
+        TOL_ABSOLUTE = 0.01
+        abs_diff = abs(expected - actual)
+        rel_diff = abs_diff / max(abs(expected), 1e-9)
+        rounded_match = round(expected, 2) == round(actual, 2)
+
+        if not rounded_match and abs_diff > TOL_ABSOLUTE and rel_diff > TOL_RELATIVE:
             failures.append(
-                f"claim {text!r}: value_mm={actual} doesn't match {source}={expected}"
+                f"claim {text!r}: value_mm={round(actual, 2)} doesn't match "
+                f"{source}={round(expected, 2)} (Δ={round(abs_diff, 2)}, "
+                f"{rel_diff*100:.1f}% — exceeds 1% tolerance)"
             )
 
     return (len(failures) == 0), failures
@@ -362,6 +375,48 @@ def _build_phase_context(
             + "\n".join(rendered)
         )
 
+    # Track which prior phases have already been included so we don't
+    # double-paste them when they're both an explicit input AND a
+    # depends_on dep.
+    surfaced_phase_ids: set[str] = set()
+
+    def _surface_phase(prior: PhaseExecution, label_prefix: str = "") -> None:
+        if prior.phase_id in surfaced_phase_ids:
+            return
+        surfaced_phase_ids.add(prior.phase_id)
+        if prior.structured_output:
+            import json as _json
+            body = _json.dumps(prior.structured_output, indent=2, default=str)
+            ctx_parts.append(
+                f"--- {label_prefix}structured output of prior phase "
+                f"`{prior.phase_id}` ({prior.phase_name}) — validated "
+                f"against the skill's schema ---\n"
+                + body[:6000]
+            )
+        elif prior.output:
+            ctx_parts.append(
+                f"--- {label_prefix}output of prior phase `{prior.phase_id}` "
+                f"({prior.phase_name}) ---\n"
+                + prior.output[:3000]
+            )
+
+    # Auto-flow: every phase listed in `depends_on` gets its
+    # structured_output included automatically. The analyst doesn't have
+    # to wire `phase_output` inputs explicitly — the depends_on edge IS
+    # the data dependency. Falls back to the immediately-preceding phase
+    # by index when depends_on is empty (matches the executor's default).
+    deps = list(phase.depends_on or [])
+    if not deps:
+        playbook_phase_ids = [p.id for p in playbook.phases]
+        if phase.id in playbook_phase_ids:
+            i = playbook_phase_ids.index(phase.id)
+            if i > 0:
+                deps = [playbook_phase_ids[i - 1]]
+    for dep_id in deps:
+        prior = next((p for p in run.phases if p.phase_id == dep_id), None)
+        if prior:
+            _surface_phase(prior, label_prefix="(auto, via depends_on) ")
+
     for inp in phase.inputs:
         if inp.kind == "dataset" and inp.ref_id:
             summary = _summarize_dataset(inp.ref_id)
@@ -374,22 +429,7 @@ def _build_phase_context(
         elif inp.kind == "phase_output" and inp.ref_id:
             prior = next((p for p in run.phases if p.phase_id == inp.ref_id), None)
             if prior:
-                # Prefer the validated structured_output — re-serialized
-                # cleanly so the agent never sees the previous agent's
-                # raw prose / hallucinated wrappers.
-                if prior.structured_output:
-                    import json as _json
-                    body = _json.dumps(prior.structured_output, indent=2, default=str)
-                    ctx_parts.append(
-                        f"--- structured output of prior phase `{inp.ref_id}` "
-                        f"({prior.phase_name}) — validated against the skill's schema ---\n"
-                        + body[:6000]
-                    )
-                elif prior.output:
-                    ctx_parts.append(
-                        f"--- output of prior phase `{inp.ref_id}` ({prior.phase_name}) ---\n"
-                        + prior.output[:3000]
-                    )
+                _surface_phase(prior)
         elif inp.kind == "prompt" and inp.text:
             ctx_parts.append(f"--- prompt ---\n{inp.text}")
 

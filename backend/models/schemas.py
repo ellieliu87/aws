@@ -1015,6 +1015,11 @@ class VarianceWalkResult(BaseModel):
     rate_effect_mm:     float
     volume_effect_mm:   float
     mix_effect_mm:      float
+    # Residual = actual ΔIE - (rate + volume + mix). The arithmetic
+    # decomposition is exact only when IE = balance × rate × period_factor;
+    # when IE comes from a richer model output, the residual makes the
+    # gap visible (and the waterfall reconciles when plotted with it).
+    residual_mm:        float = 0.0
     by_product:         list[ProductVariance] = Field(default_factory=list)
     assumptions:        str | None = None
 
