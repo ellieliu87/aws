@@ -108,18 +108,58 @@ _SKILL_RESULT_SCHEMAS: dict[str, type] = {
 
 
 def _try_parse_json(text: str) -> Any | None:
-    """Pull a JSON object out of an agent's text output. Tries a
-    fenced ```json block first, then the whole text. Returns the
-    parsed dict or None."""
+    """Pull a JSON object out of an agent's text output.
+
+    Strategy (most-specific first):
+      1. Fenced ```json / ```JSON block.
+      2. Any fenced ``` block (no language tag or other language).
+      3. Greedy top-level `{...}` extraction via brace-counting — the
+         first balanced object in the text.
+      4. The whole text, stripped.
+
+    Returns the parsed dict, or None if every strategy fails.
+    """
     import json
     import re
     if not text:
         return None
-    fence = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", text)
     candidates: list[str] = []
-    if fence:
-        candidates.append(fence.group(1))
+    # 1) Explicitly tagged json fence.
+    m = re.search(r"```\s*json\s*\n([\s\S]*?)\n```", text, flags=re.IGNORECASE)
+    if m:
+        candidates.append(m.group(1))
+    # 2) Any fenced block.
+    for m in re.finditer(r"```(?:\w+)?\s*\n([\s\S]*?)\n```", text):
+        candidates.append(m.group(1))
+    # 3) Greedy brace extraction — find the first { and its matching }.
+    start = text.find("{")
+    if start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            c = text[i]
+            if esc:
+                esc = False
+                continue
+            if c == "\\":
+                esc = True
+                continue
+            if c == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start:i + 1])
+                    break
+    # 4) Whole text as-is.
     candidates.append(text.strip())
+
     for c in candidates:
         try:
             v = json.loads(c)
@@ -142,12 +182,47 @@ def _extract_structured_result(skill_name: str, raw_output: str) -> tuple[dict |
 
     parsed = _try_parse_json(raw_output)
     if parsed is None:
-        return None, f"could not parse JSON from {skill_name} output"
+        # Surface a preview of what the agent actually said so the
+        # analyst can see WHY parsing failed (e.g. agent narrated
+        # instead of emitting JSON).
+        preview = (raw_output or "").strip()[:400]
+        if len(raw_output or "") > 400:
+            preview += "…"
+        return None, (
+            f"could not parse JSON from {skill_name} output. The agent "
+            f"likely emitted prose instead of a JSON block. First 400 "
+            f"chars of the output:\n---\n{preview}\n---"
+        )
+
+    # Agent-reported error envelope: `{"error": "...", "next_steps": "..."}`.
+    # The agent ran a tool that returned an error and decided to surface
+    # it (per the variance-analyst skill's "fail-loud" rule). Pass the
+    # error straight through to pe.error — much more useful than a
+    # schema-validation message about missing fields.
+    if isinstance(parsed, dict) and "error" in parsed and not any(
+        k in parsed for k in ("total_variance_mm", "top_movers", "slide_header")
+    ):
+        err = str(parsed.get("error") or "")
+        nxt = parsed.get("next_steps") or parsed.get("hint") or ""
+        msg = err
+        if nxt:
+            msg = f"{err}\nNext steps: {nxt}"
+        return None, msg
 
     try:
         validated = schema.model_validate(parsed)
     except Exception as e:
-        return None, f"{skill_name} output did not validate against {schema.__name__}: {e}"
+        # Tell the analyst which fields were present and which the
+        # schema expected — much more actionable than a bare validation
+        # error.
+        present = sorted(parsed.keys()) if isinstance(parsed, dict) else []
+        expected = sorted(schema.model_fields.keys()) if hasattr(schema, "model_fields") else []
+        return None, (
+            f"{skill_name} output did not validate against "
+            f"{schema.__name__}: {e}\n"
+            f"  fields present:  {present}\n"
+            f"  fields expected: {expected}"
+        )
 
     return validated.model_dump(mode="json"), None
 
