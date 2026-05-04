@@ -15,6 +15,17 @@ onto the variance-walk slide — comparing a **stress** scenario
 (BHCS or FedSA) against a **baseline** scenario (BHCB or FedB) within
 a single supervisory cycle.
 
+## ⚠ CRITICAL — Output format
+
+**Your FINAL message must be a JSON object — nothing before it,
+nothing after it.** The playbook executor parses your final message
+against `CommentaryResult` and exact-verifies every numeric_claim
+against variance-analyst's JSON. If you wrap your output with prose
+(e.g. *"Here is the commentary:"* or *"Slide ready for review."*) the
+parse fails and the phase is marked failed. Either emit the JSON
+alone, or wrap it in a `\`\`\`json` fenced block with nothing else
+around it.
+
 You read **two** structured inputs from `[Context]`:
 
 1. **Variance Analyst's `VarianceWalkResult`** — the numbers (total +

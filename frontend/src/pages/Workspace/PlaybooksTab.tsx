@@ -1754,14 +1754,41 @@ function PhaseRunCard({
       {open && (
         <div className="px-3 pb-3" style={{ borderTop: '1px solid var(--border-subtle)' }}>
           {phase.error && (
-            <div className="mt-2 px-2 py-1.5 rounded-md text-[11px] font-mono" style={{ background: 'var(--error-bg)', color: 'var(--error)' }}>
+            <div
+              className="mt-2 px-3 py-2 rounded-md text-[11px] font-mono whitespace-pre-wrap break-words"
+              style={{ background: 'var(--error-bg)', color: 'var(--error)' }}
+            >
               {phase.error}
             </div>
+          )}
+          {/* Failed phases: render the raw agent output as a pre block so
+              the analyst can see exactly what the agent emitted vs. what
+              the schema expected. The structured renderers can't run
+              when validation failed, so MarkdownBody is the wrong
+              fallback here — it would re-interpret the prose. */}
+          {phase.status === 'failed' && phase.output && (
+            <details
+              className="mt-2 rounded-md"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+            >
+              <summary
+                className="cursor-pointer px-3 py-2 text-[11px] font-semibold uppercase tracking-widest"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                Raw agent output ({phase.output.length} chars)
+              </summary>
+              <pre
+                className="text-[10px] font-mono whitespace-pre-wrap break-words px-3 pb-3 m-0"
+                style={{ color: 'var(--text-secondary)', maxHeight: 400, overflow: 'auto' }}
+              >
+                {phase.output}
+              </pre>
+            </details>
           )}
           {phase.trace && phase.trace.length > 0 && (
             <TracePanel trace={phase.trace} />
           )}
-          {phase.output && (
+          {phase.status !== 'failed' && phase.output && (
             <div
               className="mt-2"
               style={{
