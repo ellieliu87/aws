@@ -11,7 +11,7 @@ import {
   ListChecks, Plus, Trash2, X, Play, BookOpen, Save, Download, Send, Sparkles,
   CheckCircle2, AlertCircle, Loader2, ArrowRight, Database, FlaskConical, Type,
   Pencil, Pin, FileText, Wrench, MessageSquare, Brain, ChevronRight, ChevronDown,
-  Settings as SettingsIcon, ExternalLink, Upload, Paperclip,
+  Settings as SettingsIcon, ExternalLink, Upload, Paperclip, Code2,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -1921,55 +1921,121 @@ function DownloadBtn({
   )
 }
 
-// ── Phase output renderer — pretty-prints variance-analyst JSON, falls
-// back to MarkdownBody for everything else. Detects JSON by trying to
-// parse a fenced ```json block first, then the whole text.
+// ── Phase output renderer — detects each of the 4 deposit-pack agents'
+// JSON shapes and routes to a specialized component. Falls back to
+// MarkdownBody for free-form prose. Each specialized component has a
+// JSON-toggle icon in its top-right corner so the analyst can inspect
+// the raw agent payload without it dominating the screen.
 function PhaseOutput({ phase }: { phase: PhaseExecution }) {
   if (!phase.output) return null
-  const variance = _extractVarianceJSON(phase.output)
-  if (variance) {
-    return <VarianceWalkOutput data={variance} rawOutput={phase.output} />
+  const parsed = _tryParseAgentJSON(phase.output)
+  if (parsed) {
+    if ('total_variance_mm' in parsed && Array.isArray(parsed.by_product)) {
+      return <VarianceWalkOutput data={parsed} rawOutput={phase.output} />
+    }
+    if (Array.isArray(parsed.attributions)) {
+      return <AttributionsOutput data={parsed} rawOutput={phase.output} />
+    }
+    if ('slide_header' in parsed || 'primary_driver' in parsed) {
+      return <CommentaryOutput data={parsed} rawOutput={phase.output} />
+    }
+    if ('decision' in parsed && Array.isArray(parsed.checks)) {
+      return <AccuracyOutput data={parsed} rawOutput={phase.output} />
+    }
   }
   return <MarkdownBody md={phase.output} />
 }
 
-function _extractVarianceJSON(text: string): any | null {
-  // Try fenced JSON block first.
+// Try to extract a JSON object from a (possibly markdown-wrapped) agent
+// output. Tries the fenced ```json block first, then the whole text.
+function _tryParseAgentJSON(text: string): any | null {
   const fence = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/)
   const candidates: string[] = []
   if (fence) candidates.push(fence[1])
-  // Then try the whole text (sometimes the agent emits raw JSON).
   candidates.push(text.trim())
   for (const c of candidates) {
     try {
       const parsed = JSON.parse(c)
-      if (parsed && typeof parsed === 'object'
-          && 'total_variance_mm' in parsed
-          && Array.isArray(parsed.by_product)) {
-        return parsed
-      }
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
     } catch { /* try next */ }
   }
   return null
 }
 
-function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
-  const [showRaw, setShowRaw] = useState(false)
-  const fmt = (mm: number | null | undefined) => {
-    if (mm === null || mm === undefined) return '—'
-    const abs = Math.abs(mm)
-    const sign = mm < 0 ? '-' : ''
-    if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(2)}B`
-    return `${sign}$${abs.toFixed(0)}M`
+// ── Reusable shell: corner JSON toggle, consistent across all four agents
+function AgentOutputShell({
+  rawOutput, headerLeft, headerRight, children,
+}: {
+  rawOutput: string
+  headerLeft?: React.ReactNode
+  headerRight?: React.ReactNode
+  children: React.ReactNode
+}) {
+  const [showJson, setShowJson] = useState(false)
+  return (
+    <div>
+      <div className="flex items-start justify-between gap-2 mb-2 flex-wrap">
+        <div className="flex-1 min-w-0">{headerLeft}</div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {headerRight}
+          <button
+            onClick={() => setShowJson((v) => !v)}
+            className="p-1 rounded-md transition-colors"
+            style={{
+              color: showJson ? 'var(--accent)' : 'var(--text-muted)',
+              background: showJson ? 'var(--accent-light)' : 'transparent',
+              border: '1px solid ' + (showJson ? 'var(--accent)' : 'var(--border)'),
+            }}
+            title={showJson ? 'Hide JSON payload' : 'View JSON payload'}
+          >
+            <Code2 size={11} />
+          </button>
+        </div>
+      </div>
+      {children}
+      {showJson && (
+        <pre
+          className="mt-3 rounded-md p-3 text-[10px] font-mono whitespace-pre-wrap break-words"
+          style={{
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border)',
+            maxHeight: 360, overflow: 'auto',
+          }}
+        >
+          {_prettifyJson(rawOutput)}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+function _prettifyJson(text: string): string {
+  // Re-format if the output is parseable JSON; otherwise show it as-is.
+  const fence = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/)
+  const src = fence ? fence[1] : text.trim()
+  try {
+    return JSON.stringify(JSON.parse(src), null, 2)
+  } catch {
+    return text
   }
+}
+
+function _fmtMm(mm: number | null | undefined): string {
+  if (mm === null || mm === undefined || isNaN(mm as any)) return '—'
+  const abs = Math.abs(mm)
+  const sign = mm < 0 ? '-' : ''
+  if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(2)}B`
+  return `${sign}$${abs.toFixed(0)}M`
+}
+
+function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
   const products: any[] = data.by_product || []
 
   const kpis: { label: string; value: number; tone: 'pos' | 'neg' | 'neutral' | 'highlight' }[] = [
-    { label: 'Total Δ',          value: data.total_variance_mm,          tone: 'highlight' },
-    { label: 'Starting point',   value: data.starting_point_variance_mm, tone: 'neutral' },
-    { label: 'Rate effect',      value: data.rate_effect_mm,             tone: data.rate_effect_mm < 0 ? 'neg' : 'pos' },
-    { label: 'Volume effect',    value: data.volume_effect_mm,           tone: data.volume_effect_mm < 0 ? 'neg' : 'pos' },
-    { label: 'Mix effect',       value: data.mix_effect_mm,              tone: data.mix_effect_mm < 0 ? 'neg' : 'pos' },
+    { label: 'Total Δ',       value: data.total_variance_mm, tone: 'highlight' },
+    { label: 'Rate effect',   value: data.rate_effect_mm,    tone: data.rate_effect_mm   < 0 ? 'neg' : 'pos' },
+    { label: 'Volume effect', value: data.volume_effect_mm,  tone: data.volume_effect_mm < 0 ? 'neg' : 'pos' },
+    { label: 'Mix effect',    value: data.mix_effect_mm,     tone: data.mix_effect_mm    < 0 ? 'neg' : 'pos' },
   ]
 
   const toneColor = (t: string) =>
@@ -1978,28 +2044,39 @@ function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string 
     : t === 'highlight' ? '#1E3A8A'
     : '#475569'
 
+  // Build a waterfall spec automatically from variance-analyst's actual
+  // numbers. This guarantees the chart never disagrees with the KPI
+  // strip — both come from the same source.
+  const waterfallSpec: WaterfallSpec = {
+    title:           'Variance walk — stress vs baseline',
+    current_label:   data.current_scenario,
+    benchmark_label: data.benchmark_scenario,
+    metric:          data.metric,
+    starting_point_mm: 0,
+    components: [
+      { label: 'Rate effect',   value_mm: data.rate_effect_mm   ?? 0 },
+      { label: 'Volume effect', value_mm: data.volume_effect_mm ?? 0 },
+      { label: 'Mix effect',    value_mm: data.mix_effect_mm    ?? 0 },
+    ],
+    total_mm: data.total_variance_mm ?? 0,
+  }
+
+  const headerLeft = (
+    <div className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
+      <strong style={{ color: 'var(--text-primary)' }}>{data.current_scenario}</strong>
+      {' '}vs{' '}
+      <strong style={{ color: 'var(--text-primary)' }}>{data.benchmark_scenario}</strong>
+      {data.metric ? ` · ${data.metric}` : ''}
+    </div>
+  )
+
   return (
-    <div>
-      <div className="flex items-baseline justify-between gap-2 mb-2 flex-wrap">
-        <div className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
-          <strong style={{ color: 'var(--text-primary)' }}>{data.current_scenario}</strong>
-          {' '}vs{' '}
-          <strong style={{ color: 'var(--text-primary)' }}>{data.benchmark_scenario}</strong>
-          {data.metric ? ` · ${data.metric}` : ''}
-        </div>
-        <button
-          onClick={() => setShowRaw((v) => !v)}
-          className="text-[10px] font-semibold flex items-center gap-1"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          {showRaw
-            ? <><ChevronDown size={10} /> Hide JSON</>
-            : <><ChevronRight size={10} /> View raw JSON</>}
-        </button>
-      </div>
+    <AgentOutputShell rawOutput={rawOutput} headerLeft={headerLeft}>
+      {/* Auto-generated waterfall — always reconciles with the numbers below */}
+      <WaterfallChart spec={waterfallSpec} />
 
       {/* KPI strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 mt-3">
         {kpis.map((k) => (
           <div
             key={k.label}
@@ -2020,7 +2097,7 @@ function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string 
               className="font-mono text-[15px] font-bold"
               style={{ color: toneColor(k.tone) }}
             >
-              {fmt(k.value)}
+              {_fmtMm(k.value)}
             </div>
           </div>
         ))}
@@ -2042,7 +2119,7 @@ function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string 
             <table className="w-full text-xs font-mono">
               <thead style={{ background: 'var(--bg-elevated)', position: 'sticky', top: 0 }}>
                 <tr>
-                  {['Portfolio', 'Product', 'Total Δ', 'Rate Δ', 'Volume Δ', 'Mix Δ'].map((c) => (
+                  {['Product', 'Total Δ', 'Rate Δ', 'Volume Δ', 'Mix Δ'].map((c) => (
                     <th
                       key={c}
                       className="text-left py-2 px-3 whitespace-nowrap"
@@ -2061,9 +2138,6 @@ function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string 
                 {products.map((row, i) => (
                   <tr key={i}>
                     <td className="py-1.5 px-3" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                      {row.portfolio ?? '—'}
-                    </td>
-                    <td className="py-1.5 px-3" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                       {row.product ?? row.product_l1 ?? '—'}
                     </td>
                     <td className="py-1.5 px-3 text-right" style={{
@@ -2071,16 +2145,16 @@ function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string 
                       color: row.total_variance_mm < 0 ? '#DC2626' : row.total_variance_mm > 0 ? '#059669' : 'inherit',
                       fontWeight: 600,
                     }}>
-                      {fmt(row.total_variance_mm)}
+                      {_fmtMm(row.total_variance_mm)}
                     </td>
                     <td className="py-1.5 px-3 text-right" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                      {fmt(row.rate_effect_mm)}
+                      {_fmtMm(row.rate_effect_mm)}
                     </td>
                     <td className="py-1.5 px-3 text-right" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                      {fmt(row.volume_effect_mm)}
+                      {_fmtMm(row.volume_effect_mm)}
                     </td>
                     <td className="py-1.5 px-3 text-right" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                      {fmt(row.mix_effect_mm)}
+                      {_fmtMm(row.mix_effect_mm)}
                     </td>
                   </tr>
                 ))}
@@ -2091,29 +2165,297 @@ function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string 
       )}
 
       {/* Optional metadata footer */}
-      {(data.assumptions || data.csv_path_used || data.input_file_path) && (
+      {(data.assumptions || data.csv_path_used) && (
         <div
           className="text-[10px] mt-2"
           style={{ color: 'var(--text-muted)' }}
         >
           {data.assumptions && <div><strong>Assumptions:</strong> {data.assumptions}</div>}
-          {(data.csv_path_used || data.input_file_path) && (
-            <div className="font-mono">
-              <strong>Source:</strong> {data.csv_path_used || data.input_file_path}
+          {data.csv_path_used && (
+            <div className="font-mono break-all">
+              <strong>Source:</strong> {data.csv_path_used}
             </div>
           )}
         </div>
       )}
+    </AgentOutputShell>
+  )
+}
 
-      {showRaw && (
-        <pre
-          className="mt-3 rounded-md p-3 text-[10px] font-mono whitespace-pre-wrap break-words"
-          style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', maxHeight: 320, overflow: 'auto' }}
-        >
-          {rawOutput}
-        </pre>
+// ── methodology-researcher: list of attribution cards ───────────────────
+function AttributionsOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
+  const items: any[] = data.attributions || []
+  const categoryColor = (cat: string) => {
+    const c = String(cat || '').toLowerCase()
+    if (c.includes('methodology')) return '#7C3AED'
+    if (c.includes('portfolio'))   return '#0891B2'
+    if (c.includes('scenario'))    return '#D97706'
+    return '#475569'
+  }
+  const headerLeft = (
+    <div className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
+      Methodology attributions
+      {data.current_scenario && data.benchmark_scenario && (
+        <> · <strong style={{ color: 'var(--text-primary)' }}>{data.current_scenario}</strong> vs{' '}
+          <strong style={{ color: 'var(--text-primary)' }}>{data.benchmark_scenario}</strong>
+        </>
       )}
     </div>
+  )
+  return (
+    <AgentOutputShell rawOutput={rawOutput} headerLeft={headerLeft}>
+      {items.length === 0 ? (
+        <div className="text-xs italic" style={{ color: 'var(--text-muted)' }}>
+          No attributions returned.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((it, i) => (
+            <div
+              key={i}
+              className="rounded-md p-3"
+              style={{
+                background: 'var(--bg-card)',
+                border: '1px solid var(--border)',
+                borderLeft: `3px solid ${categoryColor(it.category)}`,
+              }}
+            >
+              <div className="flex items-baseline justify-between gap-2 mb-1 flex-wrap">
+                <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {it.driver || `Driver ${i + 1}`}
+                </div>
+                {it.category && (
+                  <span
+                    className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded"
+                    style={{
+                      background: `${categoryColor(it.category)}1A`,
+                      color: categoryColor(it.category),
+                    }}
+                  >
+                    {it.category}
+                  </span>
+                )}
+              </div>
+              {it.model_component && (
+                <div
+                  className="text-[10px] font-mono mb-1.5"
+                  style={{ color: 'var(--accent)' }}
+                >
+                  {it.model_component}
+                </div>
+              )}
+              {it.explanation && (
+                <div className="text-[12px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                  {it.explanation}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </AgentOutputShell>
+  )
+}
+
+// ── commentary-drafter: memo-style layout ──────────────────────────────
+function CommentaryOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
+  const headerLeft = (
+    <div className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
+      Executive commentary
+    </div>
+  )
+  return (
+    <AgentOutputShell rawOutput={rawOutput} headerLeft={headerLeft}>
+      <div
+        className="rounded-lg p-4"
+        style={{
+          background: '#FFFFFF',
+          border: '1px solid var(--border)',
+          fontFamily: "'Source Serif Pro', Georgia, serif",
+        }}
+      >
+        {data.slide_header && (
+          <h2
+            className="text-[16px] font-bold leading-snug mb-3 pb-2"
+            style={{
+              color: 'var(--text-primary)',
+              borderBottom: '2px solid var(--accent)',
+            }}
+          >
+            {data.slide_header}
+          </h2>
+        )}
+        {data.primary_driver && (
+          <p className="text-[13px] leading-relaxed mb-3" style={{ color: 'var(--text-primary)' }}>
+            <strong>Primary driver: </strong>{data.primary_driver}
+          </p>
+        )}
+        {Array.isArray(data.secondary_drivers) && data.secondary_drivers.length > 0 && (
+          <div className="mb-3">
+            <div
+              className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+              style={{ color: 'var(--text-secondary)', fontFamily: 'Inter, sans-serif' }}
+            >
+              Secondary drivers
+            </div>
+            <ul className="text-[13px] leading-relaxed list-disc pl-5 space-y-1">
+              {data.secondary_drivers.map((d: string, i: number) => (
+                <li key={i} style={{ color: 'var(--text-primary)' }}>{d}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {Array.isArray(data.overlay_impacts) && data.overlay_impacts.length > 0 && (
+          <div
+            className="mt-3 pt-3"
+            style={{ borderTop: '1px solid var(--border)' }}
+          >
+            <div
+              className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+              style={{ color: '#D97706', fontFamily: 'Inter, sans-serif' }}
+            >
+              Overlay impacts (manual, separated)
+            </div>
+            <ul className="text-[12px] leading-relaxed list-disc pl-5 space-y-1">
+              {data.overlay_impacts.map((d: string, i: number) => (
+                <li key={i} style={{ color: 'var(--text-secondary)' }}>{d}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </AgentOutputShell>
+  )
+}
+
+// ── accuracy-reviewer: verdict badge + checks ──────────────────────────
+function AccuracyOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
+  const decision = String(data.decision || '').toLowerCase()
+  const verdictColor =
+    decision === 'approved' ? 'var(--success)'
+    : decision === 'approved_with_concerns' ? 'var(--warning)'
+    : decision === 'needs_correction' ? 'var(--error)'
+    : 'var(--text-muted)'
+  const verdictBg =
+    decision === 'approved' ? 'var(--success-bg)'
+    : decision === 'approved_with_concerns' ? 'var(--warning-bg)'
+    : decision === 'needs_correction' ? 'var(--error-bg)'
+    : 'var(--bg-elevated)'
+
+  const checks: any[] = data.checks || []
+  const passed = checks.filter((c) => c.tolerance_passed).length
+  const failed = checks.length - passed
+
+  const headerLeft = (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span
+        className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest"
+        style={{ background: verdictBg, color: verdictColor }}
+      >
+        {String(data.decision || 'unknown').replace(/_/g, ' ')}
+      </span>
+      <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
+        {checks.length} check{checks.length === 1 ? '' : 's'}
+        {failed > 0 ? ` · ${failed} failed` : ''}
+      </span>
+    </div>
+  )
+
+  return (
+    <AgentOutputShell rawOutput={rawOutput} headerLeft={headerLeft}>
+      {/* Compact gate flags */}
+      <div className="flex flex-wrap gap-2 mb-3">
+        <GateChip label="Numbers tie"        ok={passed === checks.length && checks.length > 0} />
+        <GateChip label="Overlay separation" ok={!!data.overlay_separation_ok} />
+        <GateChip label="Model citations"    ok={!!data.model_citation_ok} />
+      </div>
+
+      {/* Per-claim checks */}
+      {checks.length > 0 && (
+        <div>
+          <div
+            className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            Claim verification ({checks.length})
+          </div>
+          <div className="space-y-1.5">
+            {checks.map((c, i) => (
+              <div
+                key={i}
+                className="rounded-md p-2.5 flex items-start gap-2"
+                style={{
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--border)',
+                  borderLeft: `3px solid ${c.tolerance_passed ? 'var(--success)' : 'var(--error)'}`,
+                }}
+              >
+                {c.tolerance_passed
+                  ? <CheckCircle2 size={13} style={{ color: 'var(--success)', marginTop: 2, flexShrink: 0 }} />
+                  : <AlertCircle  size={13} style={{ color: 'var(--error)',   marginTop: 2, flexShrink: 0 }} />}
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12px]" style={{ color: 'var(--text-primary)' }}>
+                    {c.claim}
+                  </div>
+                  {(c.expected_mm !== undefined || c.claimed_mm !== undefined) && (
+                    <div className="text-[10px] font-mono mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                      {c.claimed_mm !== undefined  && <>claimed: <strong>{_fmtMm(c.claimed_mm)}</strong>  </>}
+                      {c.expected_mm !== undefined && <>expected: <strong>{_fmtMm(c.expected_mm)}</strong>  </>}
+                      {c.matched_value_mm !== undefined && c.matched_value_mm !== null &&
+                        <>matched: <strong>{_fmtMm(c.matched_value_mm)}</strong></>}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Correction mandate */}
+      {Array.isArray(data.correction_mandate) && data.correction_mandate.length > 0 && (
+        <div
+          className="mt-3 rounded-md p-3"
+          style={{ background: 'var(--error-bg)', border: '1px solid var(--error)' }}
+        >
+          <div
+            className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+            style={{ color: 'var(--error)' }}
+          >
+            Correction mandate
+          </div>
+          <ul className="text-[12px] leading-relaxed list-disc pl-5 space-y-1" style={{ color: 'var(--text-primary)' }}>
+            {data.correction_mandate.map((m: string, i: number) => (
+              <li key={i}>{m}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {data.rule_citation && (
+        <div
+          className="text-[10px] mt-2 font-mono"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {data.rule_citation}
+        </div>
+      )}
+    </AgentOutputShell>
+  )
+}
+
+function GateChip({ label, ok }: { label: string; ok: boolean }) {
+  return (
+    <span
+      className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded flex items-center gap-1"
+      style={{
+        background: ok ? 'var(--success-bg)' : 'var(--error-bg)',
+        color:      ok ? 'var(--success)'    : 'var(--error)',
+      }}
+    >
+      {ok ? <CheckCircle2 size={10} /> : <AlertCircle size={10} />}
+      {label}
+    </span>
   )
 }
 

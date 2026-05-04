@@ -57,41 +57,19 @@ Cite at most one model per bullet.
    - Second: **methodology / portfolio addition** drivers (DFS
      onboarding, SBB sub-model suite, Big 8 → Big 6 benchmark).
    - Last: smaller offsets (op-ex, marketing, etc.).
-5. **Emit a waterfall chart** (see "Waterfall plot" below). This is
-   what an exec audience reads first — the bullets explain it.
-6. **Strictly separate "Modeled Impacts" from "Overlay Impacts"**.
+5. **Strictly separate "Modeled Impacts" from "Overlay Impacts"**.
    The 360 Savings Rate Paid Overlay is an example of a manual
    overlay — never lump it into a modeled rate driver.
 
-## Waterfall plot
+## Visualization is handled for you
 
-In your output, include a fenced code block tagged `waterfall`
-**before** the slide header. The frontend renders it as a Recharts
-waterfall chart. Schema:
-
-````
-```waterfall
-{
-  "title":              "Interest Expense walk — stress vs baseline",
-  "current_label":      "BHCS",
-  "benchmark_label":    "BHCB",
-  "metric":             "interest_expense_mm",
-  "starting_point_mm":  0.0,
-  "components": [
-    {"label": "Rate effect",    "value_mm": -100.0},
-    {"label": "Volume effect",  "value_mm": -117.5},
-    {"label": "Mix effect",     "value_mm":   5.0}
-  ],
-  "total_mm":           -212.5
-}
-```
-````
-
-Numbers must come verbatim from Agent 1's JSON (`rate_effect_mm`,
-`volume_effect_mm`, `mix_effect_mm`, `total_variance_mm`).
-`starting_point_mm` is `0.0` for the standard within-cycle walk —
-there's no carried-forward delta to plot. Don't round; the renderer
-formats display.
+The variance walk is already rendered as a waterfall chart on the
+**variance-analyst phase** (built directly from Agent 1's numbers,
+guaranteed to reconcile). You don't need to emit any chart spec,
+fenced code block, or numerical breakdown — focus your output on the
+prose narrative and the `model_id` citations. Numbers may be quoted
+in the slide header / driver text, but they must come verbatim from
+Agent 1's JSON.
 
 ## Output schema
 
