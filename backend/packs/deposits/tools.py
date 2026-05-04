@@ -63,20 +63,24 @@ def register_python_tools(ctx: PackContext) -> None:
              "required": False},
             {"name": "metric",             "type": "string",
              "description": (
-                 "`variable_name` to attribute, e.g. "
-                 "'interest_expense_mm'. Default 'interest_expense_mm'."
+                 "`variable_name` value to attribute. Default "
+                 "'interest_expense'. Matching is case- and "
+                 "suffix-insensitive: 'interest_expense' will match "
+                 "'Interest_Expense', 'interest_expense_mm', etc."
              ),
              "required": False},
             {"name": "rate_var_name",      "type": "string",
              "description": (
-                 "`variable_name` carrying the deposit rate paid. "
-                 "Default 'rate_paid'."
+                 "`variable_name` value carrying the deposit rate. "
+                 "Default 'interest_apy'. Common alternates that match: "
+                 "'interest_apr', 'rate_paid', 'rate_paid_pct'."
              ),
              "required": False},
             {"name": "balance_var_name",   "type": "string",
              "description": (
-                 "`variable_name` carrying the average balance. "
-                 "Default 'balance_mm'."
+                 "`variable_name` value carrying the average balance. "
+                 "Default 'balance'. Common alternates that match: "
+                 "'balance_mm', 'avg_balance'."
              ),
              "required": False},
             {"name": "period_factor",      "type": "number",
@@ -107,9 +111,9 @@ def register_python_tools(ctx: PackContext) -> None:
         ],
         python_source=(
             'def compute_variance_walk(current_scenario=None, benchmark_scenario=None,\n'
-            '                           metric="interest_expense_mm",\n'
-            '                           rate_var_name="rate_paid",\n'
-            '                           balance_var_name="balance_mm",\n'
+            '                           metric="interest_expense",\n'
+            '                           rate_var_name="interest_apy",\n'
+            '                           balance_var_name="balance",\n'
             '                           period_factor=None,\n'
             '                           playbook_id=None, csv_path=None):\n'
             '    """Rate/Volume/Mix decomposition of a retail-model metric between\n'
@@ -376,19 +380,66 @@ def register_python_tools(ctx: PackContext) -> None:
             '        }\n'
             '\n'
             '    variable_names = set(df["variable_name"].astype(str).unique())\n'
+            '\n'
+            '    # Tolerant matching for variable_name values: case-insensitive,\n'
+            '    # underscore-insensitive, AND tolerant of common unit/format\n'
+            '    # suffixes (`_mm`, `_pct`, `_apr`, `_apy`, `_b`). So\n'
+            '    # `interest_expense` matches `interest_expense_mm`, and\n'
+            '    # `balance` matches `balance_mm`.\n'
+            '    _SUFFIXES = ("mm", "pct", "apr", "apy", "b", "billion", "millions",\n'
+            '                  "rate", "amount", "amt")\n'
+            '\n'
+            '    def _var_canon(s):\n'
+            '        return "".join(c for c in str(s).lower() if c.isalnum())\n'
+            '\n'
+            '    def _strip_suffix(s):\n'
+            '        for sfx in _SUFFIXES:\n'
+            '            if s.endswith(sfx) and len(s) > len(sfx):\n'
+            '                return s[:-len(sfx)]\n'
+            '        return s\n'
+            '\n'
+            '    var_index = {}\n'
+            '    for v in variable_names:\n'
+            '        c = _var_canon(v)\n'
+            '        var_index.setdefault(c, v)\n'
+            '        var_index.setdefault(_strip_suffix(c), v)\n'
+            '\n'
+            '    def _resolve_var(target):\n'
+            '        c = _var_canon(target)\n'
+            '        if c in var_index:\n'
+            '            return var_index[c]\n'
+            '        if _strip_suffix(c) in var_index:\n'
+            '            return var_index[_strip_suffix(c)]\n'
+            '        # Try the reverse — target is base, look for suffixed forms.\n'
+            '        for sfx in _SUFFIXES:\n'
+            '            if (c + sfx) in var_index:\n'
+            '                return var_index[c + sfx]\n'
+            '        return None\n'
+            '\n'
+            '    resolved = {}\n'
             '    for need_var, label in [(metric, "metric"),\n'
             '                              (rate_var_name, "rate_var_name"),\n'
             '                              (balance_var_name, "balance_var_name")]:\n'
-            '        if need_var not in variable_names:\n'
+            '        match = _resolve_var(need_var)\n'
+            '        if match is None:\n'
             '            return {\n'
             '                "error":               f"`{label}={need_var!r}` not in csv `variable_name`",\n'
             '                "available_variables": sorted(variable_names),\n'
+            '                "match_rules":         ("matching is case-, underscore-, and "\n'
+            '                                         "suffix-insensitive (_mm, _pct, _apr, _apy)"),\n'
             '                "csv_path":            csv_path,\n'
             '            }\n'
+            '        resolved[label] = match\n'
+            '\n'
+            '    actual_metric           = resolved["metric"]\n'
+            '    actual_rate_var_name    = resolved["rate_var_name"]\n'
+            '    actual_balance_var_name = resolved["balance_var_name"]\n'
             '\n'
             '    # Pivot to wide form: one row per (scenario, snap_date,\n'
             '    # product_name) with rate / balance / metric columns.\n'
-            '    pivot_src = df[df["variable_name"].isin([rate_var_name, balance_var_name, metric])]\n'
+            '    pivot_src = df[df["variable_name"].isin([\n'
+            '        actual_rate_var_name, actual_balance_var_name, actual_metric,\n'
+            '    ])]\n'
             '    wide = pivot_src.pivot_table(\n'
             '        index=["scenario", "snap_date", "product_name"],\n'
             '        columns="variable_name", values="variable_value",\n'
@@ -409,19 +460,19 @@ def register_python_tools(ctx: PackContext) -> None:
             '        assumption_notes.append("Period factor defaulted to 1/12 (monthly snap_dates).")\n'
             '\n'
             '    # Total dollar variance (stress - baseline) for the metric.\n'
-            '    total_var = float((m[f"{metric}_cur"] - m[f"{metric}_ben"]).sum())\n'
+            '    total_var = float((m[f"{actual_metric}_cur"] - m[f"{actual_metric}_ben"]).sum())\n'
             '\n'
             '    # Rate / Volume / Mix decomposition. Rate paid is in pct so\n'
             '    # divide by 100 before multiplying by balance.\n'
-            '    rate_d = m[f"{rate_var_name}_cur"]    - m[f"{rate_var_name}_ben"]\n'
-            '    vol_d  = m[f"{balance_var_name}_cur"] - m[f"{balance_var_name}_ben"]\n'
-            '    rate_eff = (rate_d / 100.0) * m[f"{balance_var_name}_ben"] * period_factor\n'
-            '    vol_eff  = vol_d * (m[f"{rate_var_name}_ben"] / 100.0)    * period_factor\n'
+            '    rate_d = m[f"{actual_rate_var_name}_cur"]    - m[f"{actual_rate_var_name}_ben"]\n'
+            '    vol_d  = m[f"{actual_balance_var_name}_cur"] - m[f"{actual_balance_var_name}_ben"]\n'
+            '    rate_eff = (rate_d / 100.0) * m[f"{actual_balance_var_name}_ben"] * period_factor\n'
+            '    vol_eff  = vol_d * (m[f"{actual_rate_var_name}_ben"] / 100.0)    * period_factor\n'
             '    mix_eff  = (rate_d / 100.0) * vol_d * period_factor\n'
             '\n'
             '    by_product = (\n'
             '        m.assign(\n'
-            '            total_var=m[f"{metric}_cur"] - m[f"{metric}_ben"],\n'
+            '            total_var=m[f"{actual_metric}_cur"] - m[f"{actual_metric}_ben"],\n'
             '            rate_eff=rate_eff, vol_eff=vol_eff, mix_eff=mix_eff,\n'
             '        )\n'
             '        .groupby(["product_name"], dropna=False)\n'
@@ -446,9 +497,10 @@ def register_python_tools(ctx: PackContext) -> None:
             '    return {\n'
             '        "current_scenario":           current_scenario,\n'
             '        "benchmark_scenario":         benchmark_scenario,\n'
-            '        "metric":                     metric,\n'
-            '        "rate_var_name":              rate_var_name,\n'
-            '        "balance_var_name":           balance_var_name,\n'
+            '        "metric":                     actual_metric,\n'
+            '        "metric_requested":           metric,\n'
+            '        "rate_var_name":              actual_rate_var_name,\n'
+            '        "balance_var_name":           actual_balance_var_name,\n'
             '        "period_factor":              round(float(period_factor), 4),\n'
             '        "csv_path_used":              csv_path,\n'
             '        "playbook_id":                playbook_id,\n'
