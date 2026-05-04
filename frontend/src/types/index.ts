@@ -559,6 +559,11 @@ export interface PlaybookPhase {
   instructions?: string | null
   inputs: PlaybookPhaseInput[]
   gate: boolean
+  // Phase ids this phase must wait for. Empty -> backend defaults to
+  // linear (this phase depends on the immediately preceding phase by
+  // index). The "Run in parallel with previous" toggle in the editor
+  // sets this to match the previous phase's depends_on.
+  depends_on?: string[]
 }
 
 export interface Playbook {

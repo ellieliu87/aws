@@ -893,6 +893,12 @@ class PlaybookPhase(BaseModel):
     instructions: str | None = None
     inputs: list[PlaybookPhaseInput] = Field(default_factory=list)
     gate: bool = False         # if True, wait for analyst approve/modify/reject
+    # Phase ids this phase must wait for before running. Empty = run
+    # at the start of the playbook (DAG root) OR run linearly after the
+    # immediately preceding phase if no other phase declares it as a
+    # dependency. The executor uses this to schedule independent
+    # phases concurrently with `asyncio.gather`.
+    depends_on: list[str] = Field(default_factory=list)
 
 
 class Playbook(BaseModel):
@@ -1083,9 +1089,18 @@ class PlaybookRun(BaseModel):
 
 
 class GateDecisionRequest(BaseModel):
-    decision: Literal["approve", "modify", "reject"]
+    decision: Literal["approve", "modify", "reject", "rerun"]
     notes: str | None = None
     modified_output: str | None = None
+    # When `decision="rerun"`, this is the analyst's feedback for the
+    # agent — appended to the phase's `[Context]` as
+    # `[ANALYST FEEDBACK ON PRIOR ATTEMPT]\n<text>` before re-running.
+    feedback: str | None = None
+    # Which phase the decision applies to. Required when multiple
+    # phases can be awaiting a gate simultaneously (parallel siblings).
+    # If omitted, the backend defaults to the first phase whose status
+    # is `awaiting_gate` — preserves single-gate / linear behavior.
+    phase_id: str | None = None
 
 
 class PublishedReport(BaseModel):

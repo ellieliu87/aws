@@ -11,7 +11,8 @@ import {
   ListChecks, Plus, Trash2, X, Play, BookOpen, Save, Download, Send, Sparkles,
   CheckCircle2, AlertCircle, Loader2, ArrowRight, Database, FlaskConical, Type,
   Pencil, Pin, FileText, Wrench, MessageSquare, Brain, ChevronRight, ChevronDown,
-  Settings as SettingsIcon, ExternalLink, Upload, Paperclip, Code2,
+  Settings as SettingsIcon, ExternalLink, Upload, Paperclip, Code2, Lock,
+  RotateCcw,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -43,6 +44,55 @@ const INPUT_KIND_META: Record<PlaybookPhaseInput['kind'], { label: string; icon:
   scenario:      { label: 'Scenario',      icon: FlaskConical, color: '#0891B2' },
   phase_output:  { label: 'Phase Output',  icon: ArrowRight,   color: '#7C3AED' },
   prompt:        { label: 'Free-text',     icon: Type,         color: '#D97706' },
+}
+
+/** Are two depends_on lists equivalent (same set, ignoring order)? */
+function _depsEqual(a: string[] | undefined, b: string[] | undefined): boolean {
+  const A = new Set(a || [])
+  const B = new Set(b || [])
+  if (A.size !== B.size) return false
+  for (const x of A) if (!B.has(x)) return false
+  return true
+}
+
+/** Phase is "parallel with previous" if its depends_on is non-empty AND
+ *  it doesn't depend on the immediately preceding phase. (When checked,
+ *  the editor sets depends_on to the previous phase's deps so they share
+ *  a wave.) */
+function _isParallelWithPrev(phase: PlaybookPhase, all: PlaybookPhase[], idx: number): boolean {
+  if (idx === 0) return false
+  if (!phase.depends_on || phase.depends_on.length === 0) return false
+  // It depends on the previous phase directly → linear, not parallel.
+  if (phase.depends_on.includes(all[idx - 1].id) && phase.depends_on.length === 1) return false
+  return true
+}
+
+/** Group phases into "waves" — each wave is a list of phase ids that
+ *  share the same dependency set (so they run concurrently). Used by
+ *  both the run-confirmation modal and the run timeline.
+ *
+ *  Algorithm: walk phases in order, comparing each phase's resolved
+ *  deps to the previous phase's. If they match, append to the current
+ *  wave; otherwise start a new wave. */
+function _waveify(phases: PlaybookPhase[]): PlaybookPhase[][] {
+  const out: PlaybookPhase[][] = []
+  for (let i = 0; i < phases.length; i++) {
+    const p = phases[i]
+    const resolved = (p.depends_on && p.depends_on.length > 0)
+      ? p.depends_on
+      : (i > 0 ? [phases[i - 1].id] : [])
+    if (i === 0) { out.push([p]); continue }
+    const prev = phases[i - 1]
+    const prevResolved = (prev.depends_on && prev.depends_on.length > 0)
+      ? prev.depends_on
+      : (i > 1 ? [phases[i - 2].id] : [])
+    if (_depsEqual(resolved, prevResolved)) {
+      out[out.length - 1].push(p)
+    } else {
+      out.push([p])
+    }
+  }
+  return out
 }
 
 /** Convert a kebab-case skill name into a human-readable phase name, e.g.
@@ -385,9 +435,19 @@ function PlaybookEditor({
     }
   }
 
-  const runNow = async () => {
+  // Two-step run flow: clicking Run opens the confirmation modal that
+  // shows the workflow chart with gate states; user confirms and we
+  // actually fire off the run.
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  const onClickRun = () => {
     if (phases.length === 0) { setError('Add at least one phase before running.'); return }
     if (!name.trim()) { setError('Name the playbook before running.'); return }
+    setError(null)
+    setConfirmOpen(true)
+  }
+
+  const runNow = async () => {
     setRunning(true); setError(null)
     try {
       // Auto-save (create or update) so the latest phases run, even if the user hasn't clicked Save.
@@ -397,6 +457,7 @@ function PlaybookEditor({
         : (await api.patch<Playbook>(`/api/playbooks/${playbook!.id}`, body)).data
       onSaved(saved)
       const r = await api.post<PlaybookRun>(`/api/playbooks/${saved.id}/run`)
+      setConfirmOpen(false)
       onRunStarted(r.data.id)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Run failed')
@@ -488,16 +549,14 @@ function PlaybookEditor({
             <Save size={12} /> {saving ? 'Saving…' : 'Save'}
           </button>
           <button
-            onClick={runNow}
+            onClick={onClickRun}
             disabled={running || saving || phases.length === 0 || !name.trim()}
             title={
               phases.length === 0
                 ? 'Add at least one phase before running'
                 : !name.trim()
                 ? 'Name the playbook before running'
-                : isNew
-                ? 'Saves the playbook, then runs it'
-                : 'Run this playbook'
+                : 'Review the workflow, then confirm to run'
             }
             className="px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1 disabled:opacity-40"
             style={{ background: 'var(--accent)', color: '#fff' }}
@@ -660,7 +719,173 @@ function PlaybookEditor({
           background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-primary);
         }
       `}</style>
+
+      {confirmOpen && (
+        <RunConfirmModal
+          phases={phases}
+          playbookName={name}
+          running={running}
+          onConfirm={runNow}
+          onCancel={() => setConfirmOpen(false)}
+        />
+      )}
     </div>
+  )
+}
+
+// ── Run confirmation modal — shows the DAG of phases the user is
+// about to run, with gate indicators per phase. Phases that share a
+// dependency set render side-by-side as a "wave" so it's obvious
+// which steps are concurrent. ────────────────────────────────────────
+function RunConfirmModal({
+  phases, playbookName, running, onConfirm, onCancel,
+}: {
+  phases: PlaybookPhase[]
+  playbookName: string
+  running: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const waves = useMemo(() => _waveify(phases), [phases])
+  const gateCount = phases.filter((p) => p.gate).length
+  const parallelCount = waves.filter((w) => w.length > 1).length
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-40"
+        style={{ background: 'rgba(11,15,25,0.55)' }}
+        onClick={running ? undefined : onCancel}
+      />
+      <div
+        className="fixed top-1/2 left-1/2 z-50 flex flex-col"
+        style={{
+          width: 'min(720px, 96vw)',
+          maxHeight: '85vh',
+          transform: 'translate(-50%, -50%)',
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border)',
+          borderRadius: 12,
+          boxShadow: '0 24px 64px rgba(0,0,0,0.32)',
+        }}
+      >
+        <div
+          className="flex items-center justify-between px-5 py-4"
+          style={{
+            background: 'linear-gradient(135deg, var(--accent), var(--teal))',
+            borderBottom: '1px solid var(--border)',
+            borderRadius: '12px 12px 0 0',
+          }}
+        >
+          <div>
+            <div className="font-display text-base font-semibold" style={{ color: '#fff' }}>
+              Run playbook
+            </div>
+            <div className="font-mono" style={{ fontSize: 11, color: 'rgba(255,255,255,0.85)' }}>
+              {playbookName} · {phases.length} phase{phases.length === 1 ? '' : 's'}
+              {gateCount > 0 && ` · ${gateCount} gate${gateCount === 1 ? '' : 's'}`}
+              {parallelCount > 0 && ` · ${parallelCount} parallel wave${parallelCount === 1 ? '' : 's'}`}
+            </div>
+          </div>
+          <button onClick={onCancel} disabled={running} className="p-1.5 rounded-lg disabled:opacity-50" style={{ color: 'rgba(255,255,255,0.85)' }}>
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          <div
+            className="text-[11px] mb-3"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            Review the workflow below. Phases stacked side-by-side run in parallel; the orange lock indicates the analyst will be paused for review.
+          </div>
+
+          <div className="space-y-2">
+            {waves.map((wave, wi) => (
+              <div key={wi}>
+                <div
+                  className={wave.length > 1
+                    ? 'grid grid-cols-1 sm:grid-cols-2 gap-2'
+                    : 'grid grid-cols-1'}
+                >
+                  {wave.map((p) => (
+                    <div
+                      key={p.id}
+                      className="rounded-md p-2.5"
+                      style={{
+                        background: 'var(--bg-elevated)',
+                        border: '1px solid var(--border)',
+                        borderLeft: `3px solid ${p.gate ? '#D97706' : 'var(--accent)'}`,
+                      }}
+                    >
+                      <div className="flex items-baseline justify-between gap-2 mb-0.5">
+                        <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                          {p.id}
+                          {wave.length > 1 && (
+                            <span style={{ color: 'var(--accent)' }}> · parallel</span>
+                          )}
+                        </span>
+                        {p.gate ? (
+                          <span
+                            className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded flex items-center gap-1"
+                            style={{ background: 'rgba(217,119,6,0.12)', color: '#D97706' }}
+                          >
+                            <Lock size={9} /> gate
+                          </span>
+                        ) : (
+                          <span
+                            className="text-[9px] font-bold uppercase tracking-widest"
+                            style={{ color: 'var(--text-muted)' }}
+                          >
+                            auto
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                        {p.name}
+                      </div>
+                      <div className="text-[10px] font-mono" style={{ color: 'var(--text-secondary)' }}>
+                        {p.skill_name}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {wi < waves.length - 1 && (
+                  <div className="flex justify-center" style={{ height: 14 }}>
+                    <div style={{
+                      width: 1,
+                      borderLeft: '2px solid var(--border)',
+                    }} />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div
+          className="flex items-center justify-end gap-2 px-5 py-3"
+          style={{ borderTop: '1px solid var(--border)' }}
+        >
+          <button
+            onClick={onCancel}
+            disabled={running}
+            className="px-3 py-1.5 rounded-md text-xs disabled:opacity-50"
+            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={running}
+            className="px-4 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1 disabled:opacity-50"
+            style={{ background: 'var(--accent)', color: '#fff' }}
+          >
+            <Play size={11} /> {running ? 'Starting…' : 'Confirm and run'}
+          </button>
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -773,7 +998,7 @@ function PhaseEditor({
             <label
               className="flex items-center gap-1 text-[11px] shrink-0 cursor-pointer"
               style={{ color: phase.gate ? 'var(--accent)' : 'var(--text-muted)' }}
-              title="Pause for analyst approve / modify / reject before continuing"
+              title="Pause for analyst approve / modify / reject / rerun before continuing"
             >
               <input
                 type="checkbox"
@@ -782,6 +1007,38 @@ function PhaseEditor({
               />
               gate
             </label>
+            {idx > 0 && (
+              <label
+                className="flex items-center gap-1 text-[11px] shrink-0 cursor-pointer"
+                style={{
+                  color: (phase.depends_on && phase.depends_on.length > 0
+                          && _isParallelWithPrev(phase, allPhases, idx))
+                    ? 'var(--accent)' : 'var(--text-muted)',
+                }}
+                title="Run this phase concurrently with the previous one (shares its dependencies)"
+              >
+                <input
+                  type="checkbox"
+                  checked={_isParallelWithPrev(phase, allPhases, idx)}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      // Sibling: copy previous phase's depends_on. If
+                      // the previous phase has none (DAG root), default
+                      // to depending on the phase before it.
+                      const prev = allPhases[idx - 1]
+                      const prevDeps = (prev?.depends_on && prev.depends_on.length > 0)
+                        ? prev.depends_on
+                        : (idx >= 2 ? [allPhases[idx - 2].id] : [])
+                      onChange({ depends_on: prevDeps })
+                    } else {
+                      // Linear: clear depends_on (backend defaults to previous phase).
+                      onChange({ depends_on: [] })
+                    }
+                  }}
+                />
+                parallel
+              </label>
+            )}
             <button
               onClick={onRemove}
               className="p-1 rounded-md"
@@ -1039,10 +1296,17 @@ function RunView({
     }
   }, [run?.status])
 
-  const submitGate = async (decision: 'approve' | 'modify' | 'reject', notes?: string, modified_output?: string) => {
+  const submitGate = async (
+    decision: 'approve' | 'modify' | 'reject' | 'rerun',
+    opts?: { notes?: string; modified_output?: string; feedback?: string; phase_id?: string },
+  ) => {
     try {
       const r = await api.post<PlaybookRun>(`/api/playbooks/runs/${runId}/gate`, {
-        decision, notes: notes || null, modified_output: modified_output || null,
+        decision,
+        notes:           opts?.notes           || null,
+        modified_output: opts?.modified_output || null,
+        feedback:        opts?.feedback        || null,
+        phase_id:        opts?.phase_id        || null,
       })
       setRun(r.data)
     } catch (e: any) {
@@ -1413,10 +1677,15 @@ function PhaseRunCard({
   idx: number
   phase: PhaseExecution
   isCurrent: boolean
-  onGate: (decision: 'approve' | 'modify' | 'reject', notes?: string, modified_output?: string) => Promise<void>
+  onGate: (
+    decision: 'approve' | 'modify' | 'reject' | 'rerun',
+    opts?: { notes?: string; modified_output?: string; feedback?: string; phase_id?: string },
+  ) => Promise<void>
 }) {
   const [showModify, setShowModify] = useState(false)
+  const [showRerun, setShowRerun] = useState(false)
   const [notes, setNotes] = useState('')
+  const [feedback, setFeedback] = useState('')
   const [modText, setModText] = useState(phase.output || '')
   const [open, setOpen] = useState(
     isCurrent ||
@@ -1514,7 +1783,7 @@ function PhaseRunCard({
             </div>
           )}
 
-          {isCurrent && phase.status === 'awaiting_gate' && (
+          {phase.status === 'awaiting_gate' && (
             <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border-subtle)' }}>
               <div className="text-[11px] font-semibold uppercase tracking-widest mb-1.5" style={{ color: 'var(--text-secondary)' }}>
                 Gate decision
@@ -1522,7 +1791,7 @@ function PhaseRunCard({
               <textarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                placeholder="Optional notes…"
+                placeholder="Optional notes (recorded with the decision)…"
                 rows={2}
                 className="phase-input resize-none mb-2"
               />
@@ -1535,9 +1804,18 @@ function PhaseRunCard({
                   style={{ fontSize: 11 }}
                 />
               )}
-              <div className="flex gap-1.5">
+              {showRerun && (
+                <textarea
+                  value={feedback}
+                  onChange={(e) => setFeedback(e.target.value)}
+                  rows={3}
+                  placeholder="Feedback for the agent — what should change in the rerun?"
+                  className="phase-input resize-y mb-2"
+                />
+              )}
+              <div className="flex gap-1.5 flex-wrap">
                 <button
-                  onClick={() => onGate('approve', notes)}
+                  onClick={() => onGate('approve', { notes, phase_id: phase.phase_id })}
                   className="px-3 py-1.5 rounded-md text-xs font-semibold"
                   style={{ background: 'var(--success)', color: '#fff' }}
                 >
@@ -1545,7 +1823,7 @@ function PhaseRunCard({
                 </button>
                 {!showModify ? (
                   <button
-                    onClick={() => setShowModify(true)}
+                    onClick={() => { setShowModify(true); setShowRerun(false) }}
                     className="px-3 py-1.5 rounded-md text-xs font-semibold"
                     style={{ background: 'var(--warning)', color: '#fff' }}
                   >
@@ -1553,15 +1831,34 @@ function PhaseRunCard({
                   </button>
                 ) : (
                   <button
-                    onClick={() => onGate('modify', notes, modText)}
+                    onClick={() => onGate('modify', { notes, modified_output: modText, phase_id: phase.phase_id })}
                     className="px-3 py-1.5 rounded-md text-xs font-semibold"
                     style={{ background: 'var(--warning)', color: '#fff' }}
                   >
                     Save modification & approve
                   </button>
                 )}
+                {!showRerun ? (
+                  <button
+                    onClick={() => { setShowRerun(true); setShowModify(false) }}
+                    className="px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1"
+                    style={{ background: 'var(--accent)', color: '#fff' }}
+                    title="Re-run this phase with feedback for the agent"
+                  >
+                    <RotateCcw size={11} /> Rerun with feedback
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => onGate('rerun', { notes, feedback, phase_id: phase.phase_id })}
+                    disabled={!feedback.trim()}
+                    className="px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1 disabled:opacity-50"
+                    style={{ background: 'var(--accent)', color: '#fff' }}
+                  >
+                    <RotateCcw size={11} /> Send feedback & rerun
+                  </button>
+                )}
                 <button
-                  onClick={() => onGate('reject', notes)}
+                  onClick={() => onGate('reject', { notes, phase_id: phase.phase_id })}
                   className="px-3 py-1.5 rounded-md text-xs font-semibold"
                   style={{ background: 'var(--error)', color: '#fff' }}
                 >

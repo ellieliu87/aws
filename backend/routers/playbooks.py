@@ -245,6 +245,18 @@ def _build_phase_context(
             "[PROBLEM STATEMENT]\n" + playbook.problem_statement.strip()
         )
 
+    # If this is a re-run after the analyst provided gate feedback,
+    # carry the feedback into the agent's context so it knows what to
+    # change. We stash the feedback on the previous PhaseExecution's
+    # `gate_notes` when the gate decision is "rerun".
+    pe_prev = next((p for p in run.phases if p.phase_id == phase.id), None)
+    if pe_prev and pe_prev.gate_decision == "rerun" and pe_prev.gate_notes:
+        ctx_parts.append(
+            "[ANALYST FEEDBACK ON PRIOR ATTEMPT]\n"
+            + pe_prev.gate_notes.strip()
+            + "\n\nApply the feedback above and re-emit the phase output."
+        )
+
     # Uploaded files — surface paths in a tool-friendly shape.
     #
     # Tools (preview_tabular_file, compute_variance_walk, rag_search)
@@ -408,41 +420,115 @@ def _find_prior_structured(run: PlaybookRun, skill_name: str) -> dict | None:
     return None
 
 
+def _resolve_deps(playbook: Playbook) -> dict[str, list[str]]:
+    """Return `{phase_id: [dep_phase_id, ...]}` for the playbook.
+
+    A phase's `depends_on` is honored as-is when set. Otherwise we
+    fall back to **linear** behavior: phase N depends on phase N-1.
+    The first phase with no explicit deps is a DAG root.
+    """
+    valid_ids = {p.id for p in playbook.phases}
+    deps: dict[str, list[str]] = {}
+    for i, p in enumerate(playbook.phases):
+        if p.depends_on:
+            # Drop any unknown ids quietly.
+            deps[p.id] = [d for d in p.depends_on if d in valid_ids]
+        elif i > 0:
+            deps[p.id] = [playbook.phases[i - 1].id]
+        else:
+            deps[p.id] = []
+    return deps
+
+
 async def _run_to_next_gate(run: PlaybookRun, playbook: Playbook) -> None:
-    """Execute phases starting at run.current_phase_idx, stopping at the next gate
-    or at the end of the playbook (or on the first failure).
+    """Execute phases as a DAG until the next gate, end, or failure.
 
-    Mutates `run.phases[idx]` in place so that GET pollers see partial progress
-    (status flipping idle → running → completed, trace steps appended live)."""
-    while run.current_phase_idx < len(playbook.phases) and run.status == "running":
-        phase = playbook.phases[run.current_phase_idx]
-        # The phase row is pre-populated by start_run / submit_gate; if for some
-        # reason it isn't (legacy run data), create one and slot it in.
-        if run.current_phase_idx >= len(run.phases):
-            run.phases.append(PhaseExecution(
-                phase_id=phase.id,
-                phase_name=phase.name,
-                skill_name=phase.skill_name,
-                status="idle",
-                duration_ms=0.0,
-            ))
-        pe = run.phases[run.current_phase_idx]
-        await _execute_phase(phase, run, playbook, pe)
+    Phases whose dependencies are all completed run **concurrently** via
+    `asyncio.gather`. A phase that hits a gate pauses the run; phases
+    parallel to it that have already started complete normally before
+    the run pauses.
 
-        if pe.status == "failed":
+    Mutates `run.phases[*]` in place so GET pollers see partial progress
+    as it happens (status flipping idle → running → completed, trace
+    steps appended live).
+    """
+    deps_map = _resolve_deps(playbook)
+    pe_by_id = {pe.phase_id: pe for pe in run.phases}
+    phase_def_by_id = {p.id: p for p in playbook.phases}
+
+    # Ensure every phase has a PhaseExecution row (legacy runs may have
+    # been started before this field existed).
+    for p in playbook.phases:
+        if p.id not in pe_by_id:
+            new_pe = PhaseExecution(
+                phase_id=p.id, phase_name=p.name, skill_name=p.skill_name,
+                status="idle", duration_ms=0.0,
+            )
+            run.phases.append(new_pe)
+            pe_by_id[p.id] = new_pe
+
+    def _status_of(pid: str) -> str:
+        return pe_by_id[pid].status
+
+    def _ready() -> list[str]:
+        """Phase ids whose status is idle AND all deps are completed."""
+        out = []
+        for pid, deps in deps_map.items():
+            if _status_of(pid) != "idle":
+                continue
+            if all(_status_of(d) == "completed" for d in deps):
+                out.append(pid)
+        return out
+
+    while run.status == "running":
+        ready = _ready()
+        if not ready:
+            break  # nothing to run — either everything's done or blocked
+
+        # Launch all ready phases in parallel.
+        coros = []
+        for pid in ready:
+            phase = phase_def_by_id[pid]
+            pe = pe_by_id[pid]
+            coros.append(_execute_phase(phase, run, playbook, pe))
+        await asyncio.gather(*coros)
+
+        # Did any phase fail? Stop the run.
+        for pid in ready:
+            if pe_by_id[pid].status == "failed":
+                run.status = "failed"
+                run.completed_at = _now()
+                return
+
+        # Did any phase hit a gate? Pause the run — other parallel phases
+        # in this same wave have already completed.
+        for pid in ready:
+            if pe_by_id[pid].status == "awaiting_gate":
+                run.status = "awaiting_gate"
+                return
+
+    # Nothing more is ready — either everything completed cleanly, or
+    # there's a deps cycle / unsatisfiable dependency. Tally the result.
+    if all(pe_by_id[p.id].status == "completed" for p in playbook.phases):
+        run.status = "completed"
+        run.completed_at = _now()
+        run.final_report = _build_final_report(run, playbook)
+    elif any(pe_by_id[p.id].status == "awaiting_gate" for p in playbook.phases):
+        run.status = "awaiting_gate"
+    else:
+        # Some phases are stuck idle — likely an unsatisfiable depends_on
+        # set (cycle, or a dep on a phase that already failed/rejected).
+        unrun = [p.id for p in playbook.phases if pe_by_id[p.id].status == "idle"]
+        if unrun:
             run.status = "failed"
             run.completed_at = _now()
-            return
-        if pe.status == "awaiting_gate":
-            run.status = "awaiting_gate"
-            return
-        # completed — advance
-        run.current_phase_idx += 1
-
-    # All phases consumed — finalise
-    run.status = "completed"
-    run.completed_at = _now()
-    run.final_report = _build_final_report(run, playbook)
+            # Leave a trail on the first stuck phase
+            stuck = pe_by_id[unrun[0]]
+            stuck.status = "failed"
+            stuck.error = (
+                f"depends_on never satisfied. Stuck phases: {unrun}. "
+                f"Check for cycles or upstream failures."
+            )
 
 
 def _build_final_report(run: PlaybookRun, playbook: Playbook) -> str:
@@ -555,22 +641,69 @@ async def submit_gate(
     if not pb:
         raise HTTPException(status_code=404, detail="Underlying playbook is gone")
 
-    pe = run.phases[run.current_phase_idx]
+    # Resolve which phase the analyst is gating. With parallel phases,
+    # multiple can be awaiting a gate simultaneously — `phase_id` is
+    # required to disambiguate, but for backward-compat (linear) we
+    # fall back to the first phase whose status is awaiting_gate.
+    pe = None
+    if req.phase_id:
+        pe = next((p for p in run.phases if p.phase_id == req.phase_id), None)
+        if not pe:
+            raise HTTPException(status_code=404, detail=f"Phase {req.phase_id} not in run")
+        if pe.status != "awaiting_gate":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Phase {req.phase_id} is not awaiting a gate (status={pe.status})",
+            )
+    else:
+        pe = next((p for p in run.phases if p.status == "awaiting_gate"), None)
+        if not pe:
+            raise HTTPException(status_code=400, detail="No phase is awaiting a gate")
+
     pe.gate_decision = req.decision
     pe.gate_notes = req.notes
+
     if req.decision == "modify" and req.modified_output:
         pe.output = req.modified_output
+        pe.status = "completed"
 
-    if req.decision == "reject":
+    elif req.decision == "approve":
+        pe.status = "completed"
+
+    elif req.decision == "reject":
         pe.status = "rejected"
+        # Reject is terminal — abandons the whole run.
         run.status = "rejected"
         run.completed_at = _now()
         run.final_report = _build_final_report(run, pb)
         return run
 
-    pe.status = "completed"
-    run.current_phase_idx += 1
+    elif req.decision == "rerun":
+        # Append the analyst's feedback as a context block for the
+        # rerun. The phase goes back to idle so the DAG scheduler
+        # picks it up again. We tag the feedback on `gate_notes` so
+        # _build_phase_context can splice it in.
+        pe.gate_notes = (req.feedback or req.notes or "").strip() or None
+        pe.status = "idle"
+        # Clear prior trace + structured_output so the rerun is clean.
+        pe.output = None
+        pe.structured_output = None
+        pe.error = None
+        pe.trace = []
+
+    # Are any other phases still awaiting a gate? If so, stay paused.
+    if any(p.status == "awaiting_gate" for p in run.phases):
+        run.status = "awaiting_gate"
+        return run
+
     run.status = "running"
+    # Bump the legacy current_phase_idx counter for any UI still using
+    # it (it's no longer authoritative under the DAG scheduler — the
+    # DAG runner walks the deps graph itself).
+    run.current_phase_idx = max(
+        (i for i, p in enumerate(run.phases) if p.status != "idle"),
+        default=0,
+    )
     asyncio.create_task(_run_to_next_gate(run, pb))
     return run
 
