@@ -299,10 +299,33 @@ def _verify_commentary_claims(
         rounded_match = round(expected, 2) == round(actual, 2)
 
         if not rounded_match and abs_diff > TOL_ABSOLUTE and rel_diff > TOL_RELATIVE:
+            # Try to detect a unit-scale mistake. If multiplying the claimed
+            # value by 1000 (treating it as $B by accident) lands within
+            # 1% of the source, the LLM almost certainly put a $B-scale
+            # number in value_mm. Surface this cleanly so the analyst
+            # doesn't have to puzzle over a noisy 99.9% delta.
+            unit_hint = ""
+            try:
+                if abs(expected) > 1e-6:
+                    if abs(actual * 1000.0 - expected) / abs(expected) <= 0.01:
+                        unit_hint = (
+                            f" — looks like $B / $MM unit confusion "
+                            f"(value_mm should be ~{round(actual * 1000.0, 2)}; the "
+                            f"prose's $B figure was put in value_mm directly)"
+                        )
+                    elif abs(actual / 1000.0 - expected) / abs(expected) <= 0.01:
+                        unit_hint = (
+                            f" — looks like $MM / $K unit confusion "
+                            f"(value_mm should be ~{round(actual / 1000.0, 2)}; "
+                            f"the prose's $K figure was put in value_mm directly)"
+                        )
+            except (ZeroDivisionError, ValueError):
+                pass
+
             failures.append(
                 f"claim {text!r}: value_mm={round(actual, 2)} doesn't match "
                 f"{source}={round(expected, 2)} (Δ={round(abs_diff, 2)}, "
-                f"{rel_diff*100:.1f}% — exceeds 1% tolerance)"
+                f"{rel_diff*100:.1f}% — exceeds 1% tolerance){unit_hint}"
             )
 
     return (len(failures) == 0), failures
@@ -434,10 +457,18 @@ def _build_phase_context(
             ctx_parts.append(f"--- prompt ---\n{inp.text}")
 
     extra_context = "\n\n".join(ctx_parts)
+    # When the phase has no custom instructions, the default user message
+    # MUST be format-agnostic — each skill defines its own output contract
+    # (variance-analyst demands strict JSON; commentary-drafter demands
+    # CommentaryResult JSON; the orchestrator-style skills want markdown).
+    # The previous default hardcoded "Return a markdown report", which
+    # contradicted JSON-only skills and made the agent emit an "Invalid
+    # output format request" error envelope instead of doing the work.
     user_message = (
         phase.instructions
         or f"Execute phase '{phase.name}' using the inputs in the [Context]. "
-           "Return a markdown report with headers, key numbers, and any recommendations."
+           "Follow the output format defined in your skill prompt — do not "
+           "add or remove fields based on this user message."
     )
     return extra_context, user_message
 
@@ -741,6 +772,33 @@ async def get_run(run_id: str, _: str = Depends(get_current_user)):
     return r
 
 
+def _phase_descendants(pb: "Playbook", target_phase_id: str) -> set[str]:
+    """All phase ids that transitively depend on `target_phase_id`. Considers
+    explicit `depends_on` AND linear-inferred dependencies (a phase with empty
+    depends_on is treated as depending on the immediately preceding phase by
+    index — matching the executor's own scheduling rule). Used by the gate
+    handler's cascade-rerun path: when the analyst reruns variance-analyst,
+    every downstream phase that consumed its output also resets."""
+    effective_deps: dict[str, list[str]] = {}
+    for i, ph in enumerate(pb.phases):
+        if ph.depends_on:
+            effective_deps[ph.id] = list(ph.depends_on)
+        elif i > 0:
+            effective_deps[ph.id] = [pb.phases[i - 1].id]
+        else:
+            effective_deps[ph.id] = []
+
+    descendants: set[str] = set()
+    queue: list[str] = [target_phase_id]
+    while queue:
+        current = queue.pop(0)
+        for ph_id, deps in effective_deps.items():
+            if current in deps and ph_id not in descendants and ph_id != target_phase_id:
+                descendants.add(ph_id)
+                queue.append(ph_id)
+    return descendants
+
+
 @router.post("/runs/{run_id}/gate", response_model=PlaybookRun)
 async def submit_gate(
     run_id: str,
@@ -794,17 +852,60 @@ async def submit_gate(
         return run
 
     elif req.decision == "rerun":
-        # Append the analyst's feedback as a context block for the
-        # rerun. The phase goes back to idle so the DAG scheduler
-        # picks it up again. We tag the feedback on `gate_notes` so
-        # _build_phase_context can splice it in.
-        pe.gate_notes = (req.feedback or req.notes or "").strip() or None
-        pe.status = "idle"
-        # Clear prior trace + structured_output so the rerun is clean.
-        pe.output = None
-        pe.structured_output = None
-        pe.error = None
-        pe.trace = []
+        # Two flavors of rerun:
+        #   (a) Same phase  — analyst tweaks instructions for THIS agent.
+        #       Reset just `pe`; the gate's feedback rides on its
+        #       own gate_notes.
+        #   (b) Upstream    — analyst found a root cause earlier in the
+        #       chain (e.g. attribution-challenger surfaces a variance-
+        #       analyst mistake). The named target phase + every phase
+        #       that depends on it (transitively, including this gate
+        #       phase) is reset to idle. Feedback rides on the upstream
+        #       target's gate_notes so its [Context] sees it; the gate
+        #       phase reruns clean once the chain catches up.
+        feedback_text = (req.feedback or req.notes or "").strip() or None
+
+        if req.rerun_from_phase_id and req.rerun_from_phase_id != pe.phase_id:
+            target_pe = next(
+                (p for p in run.phases if p.phase_id == req.rerun_from_phase_id),
+                None,
+            )
+            if target_pe is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"rerun_from_phase_id `{req.rerun_from_phase_id}` is not a phase in this run",
+                )
+
+            descendants = _phase_descendants(pb, req.rerun_from_phase_id)
+            cascade = descendants | {req.rerun_from_phase_id}
+
+            for p in run.phases:
+                if p.phase_id not in cascade:
+                    continue
+                # Reset everything the rerun is about to recompute.
+                p.status = "idle"
+                p.output = None
+                p.structured_output = None
+                p.error = None
+                p.trace = []
+                if p.phase_id == req.rerun_from_phase_id:
+                    # Target phase carries the feedback so
+                    # _build_phase_context splices it into [Context].
+                    p.gate_decision = "rerun"
+                    p.gate_notes = feedback_text
+                else:
+                    # Cleared so a stale "rerun" decision from a prior
+                    # gate doesn't leak into the new attempt.
+                    p.gate_decision = None
+                    p.gate_notes = None
+        else:
+            # Same-phase rerun (the existing behavior).
+            pe.gate_notes = feedback_text
+            pe.status = "idle"
+            pe.output = None
+            pe.structured_output = None
+            pe.error = None
+            pe.trace = []
 
     # Are any other phases still awaiting a gate? If so, stay paused.
     if any(p.status == "awaiting_gate" for p in run.phases):

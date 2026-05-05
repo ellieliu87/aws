@@ -997,6 +997,33 @@ class ProductVariance(BaseModel):
     mix_effect_mm:      float
 
 
+class VarianceWalkAudit(BaseModel):
+    """Pre-computed checks variance-analyst attaches so attribution-challenger
+    doesn't have to re-derive them from the by_product table. Each field is
+    a concrete signal the challenger's `audit_logic_rules` can act on
+    without re-reading the source CSV."""
+    # Materiality — products contributing > threshold% of |total_variance|.
+    # The challenger flags any of these missing from methodology's top_movers.
+    materiality_threshold_pct: float = 5.0
+    material_products:    list[str] = Field(default_factory=list)
+    immaterial_products:  list[str] = Field(default_factory=list)
+    # Reconciliation diagnostics. By construction V+M+R should equal total
+    # to the unrounded penny, but rounding individual fields can introduce
+    # 1-cent residuals — both numbers exposed so the challenger can
+    # distinguish "real bug" from "display rounding".
+    reconciliation_v_plus_m_plus_r_diff_mm: float = 0.0
+    reconciliation_by_product_sum_diff_mm:  float = 0.0
+    formula_vs_data_gap_mm:                 float | None = None
+    formula_vs_data_gap_pct:                float | None = None
+    # Assumption flags worth a regulator's attention.
+    period_factor_was_defaulted: bool = False
+    fallback_scenarios_used:     bool = False
+    # Data quality / coverage.
+    products_count:   int = 0
+    snap_date_count:  int = 0
+    products_with_partial_data: list[str] = Field(default_factory=list)
+
+
 class VarianceWalkResult(BaseModel):
     """Output of `variance-analyst`. Numbers come straight from
     `compute_variance_walk`."""
@@ -1026,6 +1053,9 @@ class VarianceWalkResult(BaseModel):
     data_ie_delta_mm:   float | None = None
     by_product:         list[ProductVariance] = Field(default_factory=list)
     assumptions:        str | None = None
+    # Structured audit signals attribution-challenger consumes. Nullable
+    # for back-compat with older runs that predate this field.
+    audit:              VarianceWalkAudit | None = None
 
 
 class TopMover(BaseModel):
@@ -1124,6 +1154,16 @@ class GateDecisionRequest(BaseModel):
     # agent — appended to the phase's `[Context]` as
     # `[ANALYST FEEDBACK ON PRIOR ATTEMPT]\n<text>` before re-running.
     feedback: str | None = None
+    # When `decision="rerun"` AND the analyst wants to rerun an UPSTREAM
+    # phase (not the gate phase itself). The named phase + every phase
+    # that transitively depends on it (including the gate phase) is
+    # reset to idle and the DAG scheduler picks it up. The `feedback`
+    # is attached to the upstream target's `gate_notes` so it gets
+    # spliced into that phase's [Context]. Common pattern:
+    # attribution-challenger gates, finds an attribution mistake whose
+    # root cause is in variance-analyst's output → analyst sets
+    # `rerun_from_phase_id` to the variance-analyst phase id.
+    rerun_from_phase_id: str | None = None
     # Which phase the decision applies to. Required when multiple
     # phases can be awaiting a gate simultaneously (parallel siblings).
     # If omitted, the backend defaults to the first phase whose status

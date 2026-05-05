@@ -235,9 +235,53 @@ inspect a specific file before running the walk.
   "csv_path_used":      "<resolved by the tool>",
   "snap_dates":         ["2026-01-31", "..."],
   "run_ids":            ["run-A"],
-  "assumptions":        "Period factor defaulted to 1/12 (monthly snap_dates)."
+  "assumptions":        "Period factor defaulted to 1/12 (monthly snap_dates).",
+  "audit": {
+    "materiality_threshold_pct":             5.0,
+    "material_products":                     ["DFS_CD", "PSAV"],
+    "immaterial_products":                   [],
+    "reconciliation_v_plus_m_plus_r_diff_mm": 0.0,
+    "reconciliation_by_product_sum_diff_mm":  -0.01,
+    "formula_vs_data_gap_mm":                 0.0,
+    "formula_vs_data_gap_pct":                0.0,
+    "period_factor_was_defaulted":           true,
+    "fallback_scenarios_used":               false,
+    "products_count":                        2,
+    "snap_date_count":                       9,
+    "products_with_partial_data":            []
+  }
 }
 ```
+
+## The `audit` block — what it's for
+
+`audit` is the structured handoff to **attribution-challenger** (the
+agent that runs after you, before commentary). It's pre-computed so
+the challenger doesn't have to re-derive things from `by_product`.
+You don't compute these yourself — `compute_variance_walk` populates
+the block. Just pass the tool's output through verbatim.
+
+The fields the challenger relies on:
+
+- **`material_products`** — every product with `|share_of_total| ≥
+  materiality_threshold_pct`. Methodology MUST cover every name on
+  this list in `top_movers`; the challenger flags any omission.
+- **`reconciliation_v_plus_m_plus_r_diff_mm`** — should be 0.00.
+  Non-zero (beyond a cent of rounding) means the math is broken.
+- **`reconciliation_by_product_sum_diff_mm`** — small (cents) is
+  display-rounding; large is an aggregation bug.
+- **`formula_vs_data_gap_mm` / `_pct`** — gap between the
+  formula-derived ΔIE and the file's own `interest_expense` column.
+  >1% gap is a finding.
+- **`period_factor_was_defaulted`** — TRUE means the tool guessed
+  monthly; if the file is quarterly, every number is 3x off.
+- **`fallback_scenarios_used`** — TRUE means the requested scenario
+  pair wasn't in the file and a fallback was substituted (e.g.
+  FedSA/FedB instead of BHCS/BHCB). The narrative needs to name
+  what was actually compared.
+- **`products_with_partial_data`** — products missing some
+  snap_dates; their per-product effects are biased and should not
+  be cited as headline drivers.
 
 ## Rules
 

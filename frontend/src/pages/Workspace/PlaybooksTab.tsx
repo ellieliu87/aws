@@ -17,7 +17,7 @@ import {
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
-  Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer,
+  Bar, BarChart, CartesianGrid, Cell, LabelList, ResponsiveContainer,
   Tooltip as RechartsTooltip, XAxis, YAxis,
 } from 'recharts'
 import api from '@/lib/api'
@@ -1302,15 +1302,22 @@ function RunView({
 
   const submitGate = async (
     decision: 'approve' | 'modify' | 'reject' | 'rerun',
-    opts?: { notes?: string; modified_output?: string; feedback?: string; phase_id?: string },
+    opts?: {
+      notes?: string
+      modified_output?: string
+      feedback?: string
+      phase_id?: string
+      rerun_from_phase_id?: string
+    },
   ) => {
     try {
       const r = await api.post<PlaybookRun>(`/api/playbooks/runs/${runId}/gate`, {
         decision,
-        notes:           opts?.notes           || null,
-        modified_output: opts?.modified_output || null,
-        feedback:        opts?.feedback        || null,
-        phase_id:        opts?.phase_id        || null,
+        notes:               opts?.notes               || null,
+        modified_output:     opts?.modified_output     || null,
+        feedback:            opts?.feedback            || null,
+        phase_id:            opts?.phase_id            || null,
+        rerun_from_phase_id: opts?.rerun_from_phase_id || null,
       })
       setRun(r.data)
     } catch (e: any) {
@@ -1476,6 +1483,7 @@ ${markdownToHTML(md)}
             key={pe.phase_id}
             idx={i}
             phase={pe}
+            allPhases={run.phases}
             isCurrent={
               i === run.current_phase_idx &&
               (run.status === 'awaiting_gate' || run.status === 'running')
@@ -1676,21 +1684,87 @@ function TracePanel({ trace }: { trace: TraceStep[] }) {
 }
 
 function PhaseRunCard({
-  idx, phase, isCurrent, onGate,
+  idx, phase, allPhases, isCurrent, onGate,
 }: {
   idx: number
   phase: PhaseExecution
+  allPhases: PhaseExecution[]
   isCurrent: boolean
   onGate: (
     decision: 'approve' | 'modify' | 'reject' | 'rerun',
-    opts?: { notes?: string; modified_output?: string; feedback?: string; phase_id?: string },
+    opts?: {
+      notes?: string
+      modified_output?: string
+      feedback?: string
+      phase_id?: string
+      rerun_from_phase_id?: string
+    },
   ) => Promise<void>
 }) {
   const [showModify, setShowModify] = useState(false)
   const [showRerun, setShowRerun] = useState(false)
   const [notes, setNotes] = useState('')
   const [feedback, setFeedback] = useState('')
+  const [rerunTarget, setRerunTarget] = useState<string>('')   // empty = same phase
   const [modText, setModText] = useState(phase.output || '')
+
+  // Parse the agent's structured_output (JSON) so we can pull
+  // attribution-challenger findings + their `target_phase` annotations.
+  // Used to (1) populate the rerun phase picker with the agents the
+  // findings name, and (2) pre-fill the feedback textarea per target.
+  const findingsByPhase = useMemo<Record<string, string[]>>(() => {
+    if (!phase.structured_output && !phase.output) return {}
+    let parsed: any = null
+    try {
+      parsed = phase.structured_output
+        ? (typeof phase.structured_output === 'string'
+            ? JSON.parse(phase.structured_output)
+            : phase.structured_output)
+        : JSON.parse(phase.output || '{}')
+    } catch {
+      // Output isn't JSON — skip; analyst can still write feedback freely.
+      return {}
+    }
+    const findings = Array.isArray(parsed?.findings) ? parsed.findings : []
+    const grouped: Record<string, string[]> = {}
+    for (const f of findings) {
+      const t = (f?.target_phase || '').trim()
+      if (!t) continue
+      const line = `- ${f.claim || '(unnamed claim)'}\n  Fix: ${f.recommended_fix || '(no fix specified)'}`
+      ;(grouped[t] ||= []).push(line)
+    }
+    return grouped
+  }, [phase.structured_output, phase.output])
+
+  // Phases the analyst can rerun from — anything that ran before this
+  // gate, matched by phase_name (which is the skill's display name).
+  // Cross-referenced with findings's `target_phase` so the picker
+  // surfaces the recommended targets first.
+  const upstreamPhases = useMemo(() => {
+    const before = allPhases.slice(0, idx)
+    return before
+      .filter((p) => p.status !== 'idle')
+      .map((p) => ({ id: p.phase_id, name: p.phase_name }))
+  }, [allPhases, idx])
+
+  // When the analyst picks an upstream target, pre-fill the feedback
+  // textarea from the challenger's findings tagged for that agent.
+  // They can still edit before submitting.
+  const onTargetChange = (target: string) => {
+    setRerunTarget(target)
+    if (!target) return
+    // Match target either by exact phase_id OR by phase_name (because
+    // the challenger writes target_phase as the skill name, e.g.
+    // "variance-analyst", which matches PhaseExecution.phase_name).
+    const phaseObj = upstreamPhases.find(
+      (p) => p.id === target || p.name === target,
+    )
+    const lookupKey = phaseObj?.name || target
+    const lines = findingsByPhase[lookupKey] || findingsByPhase[target] || []
+    if (lines.length > 0) {
+      setFeedback(lines.join('\n\n'))
+    }
+  }
   const [open, setOpen] = useState(
     isCurrent ||
       phase.status === 'running' ||
@@ -1836,13 +1910,59 @@ function PhaseRunCard({
                 />
               )}
               {showRerun && (
-                <textarea
-                  value={feedback}
-                  onChange={(e) => setFeedback(e.target.value)}
-                  rows={3}
-                  placeholder="Feedback for the agent — what should change in the rerun?"
-                  className="phase-input resize-y mb-2"
-                />
+                <>
+                  {upstreamPhases.length > 0 && (
+                    <div className="mb-2">
+                      <div
+                        className="text-[10px] uppercase tracking-widest mb-1"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        Send feedback to
+                      </div>
+                      <select
+                        value={rerunTarget}
+                        onChange={(e) => onTargetChange(e.target.value)}
+                        className="phase-input"
+                        style={{ fontSize: 12 }}
+                      >
+                        <option value="">
+                          This phase ({phase.phase_name}) — re-run with new instructions
+                        </option>
+                        {upstreamPhases.map((p) => {
+                          const hasFindings = !!(
+                            findingsByPhase[p.name] || findingsByPhase[p.id]
+                          )
+                          return (
+                            <option key={p.id} value={p.id}>
+                              ↑ Rerun {p.name}
+                              {hasFindings ? '  (challenger flagged issues)' : ''}
+                            </option>
+                          )
+                        })}
+                      </select>
+                      {rerunTarget && (
+                        <div
+                          className="text-[10px] mt-1"
+                          style={{ color: 'var(--text-muted)' }}
+                        >
+                          The named phase + every downstream phase will reset
+                          to idle and re-run with the feedback below.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <textarea
+                    value={feedback}
+                    onChange={(e) => setFeedback(e.target.value)}
+                    rows={4}
+                    placeholder={
+                      rerunTarget
+                        ? `Feedback for ${rerunTarget} — pre-filled from the challenger's findings; edit before sending.`
+                        : 'Feedback for the agent — what should change in the rerun?'
+                    }
+                    className="phase-input resize-y mb-2"
+                  />
+                </>
               )}
               <div className="flex gap-1.5 flex-wrap">
                 <button
@@ -1880,12 +2000,20 @@ function PhaseRunCard({
                   </button>
                 ) : (
                   <button
-                    onClick={() => onGate('rerun', { notes, feedback, phase_id: phase.phase_id })}
+                    onClick={() => onGate('rerun', {
+                      notes,
+                      feedback,
+                      phase_id: phase.phase_id,
+                      rerun_from_phase_id: rerunTarget || undefined,
+                    })}
                     disabled={!feedback.trim()}
                     className="px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1 disabled:opacity-50"
                     style={{ background: 'var(--accent)', color: '#fff' }}
                   >
-                    <RotateCcw size={11} /> Send feedback & rerun
+                    <RotateCcw size={11} />
+                    {rerunTarget
+                      ? `Send to ${(upstreamPhases.find((p) => p.id === rerunTarget)?.name) || 'upstream'} & rerun chain`
+                      : 'Send feedback & rerun'}
                   </button>
                 )}
                 <button
@@ -1951,27 +2079,47 @@ function WaterfallChart({ spec }: { spec: WaterfallSpec }) {
   // Build cumulative bars: each component is plotted from `running` to
   // `running + value`. We feed Recharts two series — `base` (transparent
   // pad to lift the floating bar) and `delta` (the actual bar value
-  // styled by sign).
+  // styled by sign). We also carry `signed` so the data label shows the
+  // real value (with sign) instead of |delta|, which used to make a
+  // negative effect look identical to a positive one of the same
+  // magnitude.
   const start = spec.starting_point_mm ?? 0
   const components = spec.components || []
   const total = spec.total_mm ?? (start + components.reduce((s, c) => s + (c.value_mm || 0), 0))
 
-  const rows: { label: string; base: number; delta: number; sign: 'up' | 'down' | 'total' }[] = []
+  const rows: { label: string; base: number; delta: number; signed: number; sign: 'up' | 'down' | 'total' }[] = []
   let running = 0
-  rows.push({ label: 'Starting point', base: 0, delta: start, sign: start >= 0 ? 'up' : 'down' })
+  rows.push({ label: 'Starting point', base: 0, delta: Math.abs(start), signed: start, sign: start >= 0 ? 'up' : 'down' })
   running = start
   for (const c of components) {
     const v = c.value_mm || 0
     const base = v >= 0 ? running : running + v
-    rows.push({ label: c.label, base, delta: Math.abs(v), sign: v >= 0 ? 'up' : 'down' })
+    rows.push({ label: c.label, base, delta: Math.abs(v), signed: v, sign: v >= 0 ? 'up' : 'down' })
     running += v
   }
-  rows.push({ label: 'Total', base: 0, delta: total, sign: 'total' })
+  // Total bar anchors at 0 like the components do — for a negative
+  // total, base sits at the negative value and delta extends back up
+  // to 0, giving the standard waterfall "below baseline" rendering.
+  // Without this, recharts stacks delta upward from 0 and the bar
+  // visually points the wrong way.
+  rows.push({
+    label: 'Total',
+    base:  total >= 0 ? 0 : total,
+    delta: Math.abs(total),
+    signed: total,
+    sign: 'total',
+  })
 
+  // Adaptive precision so tiny effects (e.g. 0.4 MM) aren't rounded to
+  // 0 — that's exactly what made the waterfall look inconsistent with
+  // the per-product table. Same thresholds as `_fmtMm`.
   const fmt = (mm: number) => {
     const abs = Math.abs(mm)
-    if (abs >= 1000) return `${(mm / 1000).toFixed(2)}B`
-    return `${mm.toFixed(0)}M`
+    const sign = mm < 0 ? '-' : ''
+    if (abs >= 1000) return `${sign}${(abs / 1000).toFixed(2)}B`
+    if (abs >= 10)   return `${sign}${abs.toFixed(0)}M`
+    if (abs >= 0.1)  return `${sign}${abs.toFixed(1)}M`
+    return `${sign}${abs.toFixed(2)}M`
   }
 
   const COLORS = { up: '#059669', down: '#DC2626', total: '#1E3A8A' }
@@ -2005,21 +2153,31 @@ function WaterfallChart({ spec }: { spec: WaterfallSpec }) {
               background: 'var(--bg-card)', border: '1px solid var(--border)',
               borderRadius: 8, fontSize: 11, fontFamily: 'JetBrains Mono, monospace',
             }}
-            formatter={(v: any, _name: any, p: any) => {
-              const r = rows[p?.payload?.__index ?? 0]
-              const signed = r?.sign === 'down' ? -Math.abs(v as number) : (v as number)
-              return [fmt(signed), r?.label]
+            // Read the actual row from `payload[0].payload` (the full
+            // data row), not by index — the previous implementation
+            // looked up rows[__index ?? 0] but `__index` is never set,
+            // so every tooltip silently showed the Starting-point row.
+            formatter={(_v: any, _name: any, p: any) => {
+              const r = (p && p.payload) || {}
+              return [fmt(r.signed ?? 0), r.label || '']
             }}
           />
           <Bar dataKey="base" stackId="w" fill="transparent" />
-          <Bar
-            dataKey="delta"
-            stackId="w"
-            label={{ position: 'top', fontSize: 10, formatter: (v: any) => fmt(v) }}
-          >
+          <Bar dataKey="delta" stackId="w">
             {rows.map((r, i) => (
               <Cell key={i} fill={COLORS[r.sign]} />
             ))}
+            {/* LabelList reads its value from `dataKey="signed"` on
+                each row — guaranteeing the label above each bar shows
+                the row's actual signed effect, not the |delta| height
+                of the bar. This is the bug that made the volume effect
+                appear under the mix-effect bar in some renders. */}
+            <LabelList
+              dataKey="signed"
+              position="top"
+              formatter={(v: any) => fmt(v)}
+              style={{ fontSize: 10, fill: 'var(--text-secondary)' }}
+            />
           </Bar>
         </BarChart>
       </ResponsiveContainer>
@@ -2356,8 +2514,17 @@ function _fmtMm(mm: number | null | undefined): string {
   if (mm === null || mm === undefined || isNaN(mm as any)) return '—'
   const abs = Math.abs(mm)
   const sign = mm < 0 ? '-' : ''
+  // Adaptive precision so tiny effects (e.g. 0.4M) don't display as
+  // "$0M" — making the chart appear inconsistent with the underlying
+  // table. Threshold:
+  //   ≥ $1B            → 2 dp in B
+  //   ≥ $10M           → 0 dp in M
+  //   ≥ $0.1M and <10M → 1 dp in M
+  //   < $0.1M          → 2 dp in M (preserves sub-100K signals)
   if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(2)}B`
-  return `${sign}$${abs.toFixed(0)}M`
+  if (abs >= 10)   return `${sign}$${abs.toFixed(0)}M`
+  if (abs >= 0.1)  return `${sign}$${abs.toFixed(1)}M`
+  return `${sign}$${abs.toFixed(2)}M`
 }
 
 function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string }) {

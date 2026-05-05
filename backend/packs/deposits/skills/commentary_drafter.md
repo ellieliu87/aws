@@ -88,7 +88,7 @@ final report.
 Each claim has three fields:
 
 - **`text`** — exactly how it appears in your prose, e.g. `"~$3.0B"` or `"$100MM"`.
-- **`value_mm`** — the precise value in $MM the claim is asserting.
+- **`value_mm`** — the precise value in **$MM** the claim is asserting.
   This must match the source field's value to 0.01 precision.
 - **`source_field`** — which field in variance-analyst's JSON it
   comes from. Two shapes are accepted:
@@ -97,9 +97,32 @@ Each claim has three fields:
   - By product: `by_product[<product>].total_variance_mm` (or any
     of the per-row fields). Example: `by_product[PSAV].rate_effect_mm`.
 
-If you're approximating in the prose (e.g. you write "~$0.2B" for a
-real value of -212.5), `value_mm` is the **real** value (-212.5), not
-your rounded display.
+### ⚠ Unit warning — read carefully
+
+`value_mm` is **always in $MM** (millions), no matter what unit your
+prose displays. The verifier compares it 1:1 against variance-analyst's
+`*_mm` fields. The single most common mistake is treating `value_mm`
+as if it were in $B (billions) because the prose said `$0.1B`:
+
+| prose says | value_mm should be | NOT |
+|------------|--------------------|------|
+| `~$3B`     | `3000` (or `3000.0`) | `3` |
+| `~$0.2B`   | `212.5` (the real value) | `0.2` |
+| `-$0.1B`   | `-100`             | `-0.1` |
+| `$100MM`   | `100`              | `0.1` |
+| `-$50MM`   | `-50`              | `-0.05` |
+
+If you write `"$0.1B"` in your prose but variance-analyst's
+`total_variance_mm = -100`, the correct claim is:
+```json
+{"text": "$0.1B", "value_mm": -100, "source_field": "total_variance_mm"}
+```
+**NOT** `value_mm: -0.1` — that would fail verification by 99.9%.
+
+When the verifier finds a 1000x mismatch, it will say "looks like $B/$MM
+unit confusion" — that's pointing at this exact mistake. Re-read
+variance-analyst's JSON value (which is in $MM) and put THAT in
+`value_mm`, not the abbreviated `$B` number from your prose.
 
 ## Visualization is handled for you
 

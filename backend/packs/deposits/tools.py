@@ -1,5 +1,5 @@
 """Deposit pack — Python tools for the CCAR variance-attribution playbook
-plus the chat-panel deposit-expert / model-challenger flow.
+plus the chat-panel deposit-expert / attribution-challenger flow.
 
   - compute_variance_walk         — variance-analyst: Pandas
                                     Rate / Volume / Mix decomposition
@@ -7,11 +7,11 @@ plus the chat-panel deposit-expert / model-challenger flow.
   - verify_numbers_in_narrative   — accuracy-reviewer: extracts dollar
                                     figures from prose, confirms each
                                     ties to a row in the variance JSON.
-  - audit_logic_rules             — model-challenger: runs a registered
+  - audit_logic_rules             — attribution-challenger: runs a registered
                                     set of SR 11-7-style red-flag
                                     patterns against a claim/narrative.
   - get_model_assumptions         — methodology-researcher /
-                                    model-challenger: returns the
+                                    attribution-challenger: returns the
                                     documented per-product assumption
                                     block (PSAV beta, CD attrition
                                     floor, recapture rate, marketing
@@ -547,6 +547,68 @@ def register_python_tools(ctx: PackContext) -> None:
             '\n'
             '    run_ids = sorted(df["Run_ID"].astype(str).unique().tolist())\n'
             '\n'
+            '    # ── Audit block for attribution-challenger ─────────────────────\n'
+            '    # Pre-compute the signals the next agent will check, so it can act\n'
+            '    # on structured data instead of re-deriving from by_product.\n'
+            '    MATERIALITY_PCT = 5.0\n'
+            '    abs_total = max(abs(total_var), 1e-9)\n'
+            '    material_products = []\n'
+            '    immaterial_products = []\n'
+            '    for r in by_product_rows:\n'
+            '        share_pct = abs(r["total_variance_mm"]) / abs_total * 100.0\n'
+            '        (material_products if share_pct >= MATERIALITY_PCT else immaterial_products).append(r["product"])\n'
+            '\n'
+            '    # V+M+R reconciliation residual (should be 0 by construction;\n'
+            '    # any non-zero is pure 2dp rounding of the individual effects).\n'
+            '    vmr_diff = round(rate_total + vol_total + mix_total - total_var, 4)\n'
+            '\n'
+            '    # by_product sum vs top-level (each row rounded to 2dp; sum can\n'
+            '    # drift by a cent or two — exposed so challenger can tell\n'
+            '    # rounding noise from a real aggregation bug).\n'
+            '    by_prod_total_sum = round(sum(r["total_variance_mm"] for r in by_product_rows), 4)\n'
+            '    bp_diff = round(by_prod_total_sum - total_var, 4)\n'
+            '\n'
+            '    formula_vs_data_pct = None\n'
+            '    if data_ie_delta is not None and abs(total_var) > 1e-9:\n'
+            '        formula_vs_data_pct = round(\n'
+            '            abs(data_ie_delta - total_var) / abs(total_var) * 100.0, 2,\n'
+            '        )\n'
+            '\n'
+            '    # Per-product data-completeness check. A product missing rate or\n'
+            '    # balance for some snap_dates would skew its per-product effects.\n'
+            '    expected_periods = len(snap_dates_unique := sorted(df["snap_date"].astype(str).unique().tolist()))\n'
+            '    products_with_partial = []\n'
+            '    for prod in m["product_name"].dropna().unique():\n'
+            '        sub = m[m["product_name"] == prod]\n'
+            '        # Each row in `m` is a (snap_date × product) merge result with\n'
+            '        # both _cur and _ben columns; missing rows show as NaN above.\n'
+            '        present_periods = len(sub["snap_date"].dropna().unique())\n'
+            '        if present_periods < expected_periods:\n'
+            '            products_with_partial.append(str(prod))\n'
+            '\n'
+            '    period_factor_defaulted = any(\n'
+            '        "Period factor defaulted" in n for n in assumption_notes\n'
+            '    )\n'
+            '    fallback_used = any(\n'
+            '        "fall" in n.lower() or "fallback" in n.lower() for n in assumption_notes\n'
+            '    )\n'
+            '\n'
+            '    audit = {\n'
+            '        "materiality_threshold_pct":             MATERIALITY_PCT,\n'
+            '        "material_products":                     material_products,\n'
+            '        "immaterial_products":                   immaterial_products,\n'
+            '        "reconciliation_v_plus_m_plus_r_diff_mm": vmr_diff,\n'
+            '        "reconciliation_by_product_sum_diff_mm":  bp_diff,\n'
+            '        "formula_vs_data_gap_mm":                (None if data_ie_delta is None\n'
+            '                                                  else round(data_ie_delta - total_var, 2)),\n'
+            '        "formula_vs_data_gap_pct":               formula_vs_data_pct,\n'
+            '        "period_factor_was_defaulted":           period_factor_defaulted,\n'
+            '        "fallback_scenarios_used":               fallback_used,\n'
+            '        "products_count":                        len(by_product_rows),\n'
+            '        "snap_date_count":                       expected_periods,\n'
+            '        "products_with_partial_data":            sorted(products_with_partial),\n'
+            '    }\n'
+            '\n'
             '    return {\n'
             '        "current_scenario":           current_scenario,\n'
             '        "benchmark_scenario":         benchmark_scenario,\n'
@@ -566,6 +628,7 @@ def register_python_tools(ctx: PackContext) -> None:
             '        "data_ie_delta_mm":           data_ie_delta,\n'
             '        "by_product":                 by_product_rows,\n'
             '        "assumptions":                "; ".join(assumption_notes) or None,\n'
+            '        "audit":                      audit,\n'
             '    }\n'
         ),
     )
@@ -647,7 +710,7 @@ def register_python_tools(ctx: PackContext) -> None:
             "Run the registered SR 11-7-style red-flag checklist against a "
             "claim or narrative. Returns each rule with a `tripped` flag, "
             "a `severity`, and the `regulator_question` a reviewer would "
-            "ask. Used by the model-challenger skill to find logical gaps "
+            "ask. Used by the attribution-challenger skill to find logical gaps "
             "(marketing → 0 but flat NABs, rate ↑ but beta ≈ 0, overlay "
             "without re-cal plan, etc.)."
         ),
