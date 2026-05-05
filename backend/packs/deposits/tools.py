@@ -1251,7 +1251,8 @@ def register_python_tools(ctx: PackContext) -> None:
         return {"error": f"no fed_funds_rate variable in csv. variable_name values seen: {sorted(map(str, df[var_col].dropna().unique()))[:20]}; tried aliases: {ff_aliases}"}
 
     # Per-segment rate paths (filter to model_output rows when origin
-    # column is present; otherwise just take all rate_paid rows).
+    # column is present; otherwise just take all rate_paid rows). Drop
+    # missing values so partial / sparse data doesn't poison the endpoints.
     rate_df = df[df[var_col].isin(rate_matches)].copy()
     if org_col is not None:
         out_matches = _ci_match_values(rate_df[org_col], *OUTPUT_ALIASES)
@@ -1259,37 +1260,61 @@ def register_python_tools(ctx: PackContext) -> None:
             rate_df = rate_df[rate_df[org_col].isin(out_matches)]
     rate_df = rate_df.dropna(subset=[seg_col])
     rate_df = rate_df[rate_df[seg_col].astype(str).str.strip() != ""]
+    rate_df[val_col] = pd.to_numeric(rate_df[val_col], errors="coerce")
+    rate_df = rate_df.dropna(subset=[val_col])
     if not len(rate_df):
-        return {"error": "no per-segment rate rows found after applying origin + segment filters"}
+        return {"error": "no per-segment rate rows found after dropping NaN / applying origin filters"}
 
     # Fed Funds path — use origin=model_input rows when origin exists,
-    # otherwise just match by variable_name.
+    # otherwise just match by variable_name. Coerce values numeric and
+    # drop rows that didn't parse so a stray text value can't break the path.
     ff_df = df[df[var_col].isin(ff_matches)].copy()
     if org_col is not None:
         in_matches = _ci_match_values(ff_df[org_col], *INPUT_ALIASES)
         if in_matches:
             ff_df = ff_df[ff_df[org_col].isin(in_matches)]
-    ff_path = ff_df.groupby(date_col)[val_col].mean().sort_index()
+    ff_df[val_col] = pd.to_numeric(ff_df[val_col], errors="coerce")
+    ff_df = ff_df.dropna(subset=[val_col])
+    ff_path = ff_df.groupby(date_col)[val_col].mean().dropna().sort_index()
     if len(ff_path) < 2:
-        return {"error": "need at least two fed_funds_rate observations across snap_date"}
+        return {"error": "need at least two non-null fed_funds_rate observations across snap_date"}
     ff_change = float(ff_path.iloc[-1] - ff_path.iloc[0])
     if abs(ff_change) < 1e-6:
         return {"error": "fed_funds_rate is flat across the horizon — beta undefined"}
 
+    skipped = []
     out_rows = []
     for segment, sub in rate_df.groupby(seg_col):
-        rp = sub.groupby(date_col)[val_col].mean().sort_index()
+        rp = sub.groupby(date_col)[val_col].mean().dropna().sort_index()
         if len(rp) < 2:
+            skipped.append({"product": str(segment), "reason": "fewer than 2 non-null rate observations", "obs_count": int(len(rp))})
+            continue
+        # Compute Δrate / ΔFF over the segment's OWN observation window —
+        # if rate_paid is missing at the global PQ0/PQ8 the right comparison
+        # is to ΔFF over the same dates the segment was observed, not the
+        # global horizon (otherwise sparse data inflates / deflates beta).
+        seg_start_date, seg_end_date = rp.index[0], rp.index[-1]
+        ff_start_seg = ff_path.get(seg_start_date)
+        ff_end_seg   = ff_path.get(seg_end_date)
+        if ff_start_seg is None or ff_end_seg is None or pd.isna(ff_start_seg) or pd.isna(ff_end_seg):
+            skipped.append({"product": str(segment), "reason": "fed_funds missing at segment endpoint dates", "obs_count": int(len(rp))})
+            continue
+        seg_ff_change = float(ff_end_seg - ff_start_seg)
+        if abs(seg_ff_change) < 1e-6:
+            skipped.append({"product": str(segment), "reason": "fed_funds is flat across segment window", "obs_count": int(len(rp))})
             continue
         rate_change = float(rp.iloc[-1] - rp.iloc[0])
-        beta = rate_change / ff_change
+        beta = rate_change / seg_ff_change
         out_rows.append({
             "product":         str(segment),
             "projected_beta":  round(beta, 3),
             "rate_change_pp": round(rate_change, 3),
-            "ff_change_pp":   round(ff_change, 3),
+            "ff_change_pp":   round(seg_ff_change, 3),
             "rate_start":     round(float(rp.iloc[0]), 3),
             "rate_end":       round(float(rp.iloc[-1]), 3),
+            "window_start":   str(seg_start_date),
+            "window_end":     str(seg_end_date),
+            "obs_count":      int(len(rp)),
         })
     out_rows.sort(key=lambda r: -r["projected_beta"])
 
@@ -1300,6 +1325,7 @@ def register_python_tools(ctx: PackContext) -> None:
         "ff_change_pp":    round(ff_change, 3),
         "horizon_periods": sorted(map(str, ff_path.index.tolist())),
         "by_product":      out_rows,
+        "skipped":         skipped,
         "rate_var_matched":  rate_matches,
         "ff_var_matched":    ff_matches,
         "csv_path_used":   csv_path,
@@ -1430,7 +1456,8 @@ def register_python_tools(ctx: PackContext) -> None:
     if not len(df):
         return {"error": "no rows after applying lookback filter"}
 
-    # Per-segment rate path
+    # Per-segment rate path — coerce values numeric so any non-numeric text
+    # becomes NaN, then drop NaN before grouping.
     rate_df = df[df[var_col].isin(rate_matches)].copy()
     if org_col is not None:
         m = _ci_match_values(rate_df[org_col], *OUTPUT_ALIASES)
@@ -1438,33 +1465,44 @@ def register_python_tools(ctx: PackContext) -> None:
             rate_df = rate_df[rate_df[org_col].isin(m)]
     rate_df = rate_df.dropna(subset=[seg_col])
     rate_df = rate_df[rate_df[seg_col].astype(str).str.strip() != ""]
+    rate_df[val_col] = pd.to_numeric(rate_df[val_col], errors="coerce")
+    rate_df = rate_df.dropna(subset=[val_col])
 
-    # Fed Funds path on the same dates
+    # Fed Funds path — same NaN treatment, then groupby+dropna so a missing
+    # FF print at one snap_date doesn't drag down the regression.
     ff_df = df[df[var_col].isin(ff_matches)].copy()
     if org_col is not None:
         m = _ci_match_values(ff_df[org_col], *INPUT_ALIASES)
         if m:
             ff_df = ff_df[ff_df[org_col].isin(m)]
-    ff_series = ff_df.groupby(date_col)[val_col].mean().rename("_ff").to_frame().reset_index()
+    ff_df[val_col] = pd.to_numeric(ff_df[val_col], errors="coerce")
+    ff_df = ff_df.dropna(subset=[val_col])
+    ff_series = (ff_df.groupby(date_col)[val_col].mean().dropna()
+                       .rename("_ff").to_frame().reset_index())
     if len(ff_series) < 3:
-        return {"error": "need at least 3 fed_funds_rate observations to regress"}
+        return {"error": "need at least 3 non-null fed_funds_rate observations to regress"}
 
     if products_only:
         wanted = {_norm(s) for s in products_only}
         rate_df = rate_df[rate_df[seg_col].apply(lambda s: _norm(s) in wanted)]
 
     out_rows = []
+    skipped = []
     for segment, sub in rate_df.groupby(seg_col):
-        seg_path = (sub.groupby(date_col)[val_col].mean().rename("_y")
-                       .to_frame().reset_index())
-        merged = seg_path.merge(ff_series, on=date_col, how="inner").sort_values(date_col)
+        seg_path = (sub.groupby(date_col)[val_col].mean().dropna()
+                       .rename("_y").to_frame().reset_index())
+        merged = (seg_path.merge(ff_series, on=date_col, how="inner")
+                          .dropna(subset=["_y", "_ff"])
+                          .sort_values(date_col))
         if len(merged) < 3:
+            skipped.append({"product": str(segment), "reason": "fewer than 3 paired observations after NaN drop", "obs_count": int(len(merged))})
             continue
         x = merged["_ff"].astype(float).to_numpy()
         y = merged["_y"].astype(float).to_numpy()
         x_mean = float(x.mean()); y_mean = float(y.mean())
         x_var = float(((x - x_mean) ** 2).sum())
         if x_var < 1e-9:
+            skipped.append({"product": str(segment), "reason": "fed_funds variance is zero over this window"})
             continue
         slope = float(((x - x_mean) * (y - y_mean)).sum() / x_var)
         intercept = float(y_mean - slope * x_mean)
@@ -1485,6 +1523,7 @@ def register_python_tools(ctx: PackContext) -> None:
 
     return {
         "by_product":       out_rows,
+        "skipped":          skipped,
         "date_col_used":    date_col,
         "ff_var_matched":   ff_matches,
         "rate_var_matched": rate_matches,

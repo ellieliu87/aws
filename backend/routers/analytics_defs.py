@@ -881,6 +881,8 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
         if not ff_matches:
             return None, f"no fed_funds_rate variable. seen: {sorted(map(str, df[var_col].dropna().unique()))[:10]}"
 
+        # Drop missing values before doing anything — sparse uploads
+        # shouldn't poison the endpoints / regression.
         rate_df = df[df[var_col].isin(rate_matches)].copy()
         if org_col is not None:
             m = _ci_match(rate_df[org_col], *OUTPUT_ALIASES)
@@ -888,34 +890,49 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
                 rate_df = rate_df[rate_df[org_col].isin(m)]
         rate_df = rate_df.dropna(subset=[seg_col])
         rate_df = rate_df[rate_df[seg_col].astype(str).str.strip() != ""]
+        rate_df[val_col] = pd.to_numeric(rate_df[val_col], errors="coerce")
+        rate_df = rate_df.dropna(subset=[val_col])
 
         ff_df = df[df[var_col].isin(ff_matches)].copy()
         if org_col is not None:
             m = _ci_match(ff_df[org_col], *INPUT_ALIASES)
             if m:
                 ff_df = ff_df[ff_df[org_col].isin(m)]
-        ff_path = ff_df.groupby(date_col)[val_col].mean().sort_index()
+        ff_df[val_col] = pd.to_numeric(ff_df[val_col], errors="coerce")
+        ff_df = ff_df.dropna(subset=[val_col])
+        ff_path = ff_df.groupby(date_col)[val_col].mean().dropna().sort_index()
         if len(ff_path) < 2:
-            return None, "need at least 2 fed_funds_rate observations"
+            return None, "need at least 2 non-null fed_funds_rate observations"
 
         out = {}
         if mode == "projection":
-            ff_change = float(ff_path.iloc[-1] - ff_path.iloc[0])
-            if abs(ff_change) < 1e-6:
-                return None, "fed_funds_rate is flat — beta undefined"
             for segment, sub in rate_df.groupby(seg_col):
-                rp = sub.groupby(date_col)[val_col].mean().sort_index()
+                rp = sub.groupby(date_col)[val_col].mean().dropna().sort_index()
                 if len(rp) < 2:
                     continue
+                # Match endpoints to the segment's own observation window
+                # so missing rate_paid rows don't drag beta against a
+                # global ΔFF the segment never spanned.
+                seg_start_date, seg_end_date = rp.index[0], rp.index[-1]
+                ff_start_seg = ff_path.get(seg_start_date)
+                ff_end_seg   = ff_path.get(seg_end_date)
+                if ff_start_seg is None or ff_end_seg is None or pd.isna(ff_start_seg) or pd.isna(ff_end_seg):
+                    continue
+                seg_ff_change = float(ff_end_seg - ff_start_seg)
+                if abs(seg_ff_change) < 1e-6:
+                    continue
                 out[str(segment)] = {
-                    "beta": float((rp.iloc[-1] - rp.iloc[0]) / ff_change),
+                    "beta": float((rp.iloc[-1] - rp.iloc[0]) / seg_ff_change),
                     "r_squared": None,
                 }
         else:  # history → OLS
             ff_series = ff_path.rename("_ff").to_frame().reset_index()
             for segment, sub in rate_df.groupby(seg_col):
-                seg_path = sub.groupby(date_col)[val_col].mean().rename("_y").to_frame().reset_index()
-                merged = seg_path.merge(ff_series, on=date_col, how="inner").sort_values(date_col)
+                seg_path = (sub.groupby(date_col)[val_col].mean().dropna()
+                               .rename("_y").to_frame().reset_index())
+                merged = (seg_path.merge(ff_series, on=date_col, how="inner")
+                                  .dropna(subset=["_y", "_ff"])
+                                  .sort_values(date_col))
                 if len(merged) < 3:
                     continue
                 x = merged["_ff"].astype(float).to_numpy()
@@ -992,21 +1009,17 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
 
     overall = "PASS" if (overshoot + undershoot) == 0 else "REVIEW"
 
-    chart_title = "Commercial deposit beta — projected vs historical"
+    # Title carries the verdict so the analyst sees PASS / REVIEW + counts
+    # without needing the four KPI cards above the scatter.
+    counts = f"{aligned} aligned · {overshoot} overshoot · {undershoot} undershoot"
+    chart_title = f"Commercial deposit beta — {overall} ({counts})"
     if HISTORICAL_LOOKBACK_LABEL:
-        chart_title += f" ({HISTORICAL_LOOKBACK_LABEL})"
-
-    overall_kpi = {"label": "Overall", "value": overall, "sublabel": "vs P60 peer pricing"}
-    if HISTORICAL_LOOKBACK_LABEL:
-        overall_kpi["sublabel"] = f"vs P60 — hist window: {HISTORICAL_LOOKBACK_LABEL}"
+        chart_title += f"  ·  hist window: {HISTORICAL_LOOKBACK_LABEL}"
 
     return {
-        "kpis": [
-            overall_kpi,
-            {"label": "Aligned",    "value": str(aligned),    "sublabel": "within ±0.10"},
-            {"label": "Overshoot",  "value": str(overshoot),  "sublabel": "projected > historical"},
-            {"label": "Undershoot", "value": str(undershoot), "sublabel": "projected < historical"},
-        ],
+        # Empty kpis → no card strip above the chart. Verdict + counts are
+        # now folded into the chart title for a cleaner top-of-pane.
+        "kpis": [],
         "chart": {
             "type":     "scatter",
             "x_field":  "historical_beta",

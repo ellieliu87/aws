@@ -707,9 +707,68 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
             {y_fields.map((y, i) => <Area key={y} type="monotone" dataKey={y} stroke={palette[i % palette.length]} fill={palette[i % palette.length]} fillOpacity={0.2} />)}
           </AreaChart>
         ) : type === 'scatter' ? (
+          // Scatter needs numeric axes on BOTH dimensions — without
+          // type="number" on the XAxis, recharts treats x_field values as
+          // category labels and the dots collapse onto evenly-spaced
+          // ticks (so "historical_beta" appears unused). Each axis also
+          // needs its own dataKey for value-based positioning.
           <ScatterChart margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-            {common}
-            {y_fields.map((y, i) => <Scatter key={y} name={y} data={sortedData} dataKey={y} fill={palette[i % palette.length]} />)}
+            <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="3 3" />
+            <XAxis
+              type="number"
+              dataKey={x_field || ''}
+              stroke="var(--text-muted)"
+              tick={{ fontSize }}
+              tickFormatter={style?.number_format ? fmtNum : undefined}
+              label={xLabel ? { value: xLabel, position: 'insideBottom', offset: -4, style: { fontSize, fill: 'var(--text-secondary)' } } : undefined}
+            />
+            <YAxis
+              type="number"
+              dataKey={y_fields[0]}
+              stroke="var(--text-muted)"
+              tick={{ fontSize }}
+              tickFormatter={style?.number_format ? fmtNum : undefined}
+              label={yLabel ? { value: yLabel, angle: -90, position: 'insideLeft', style: { fontSize, fill: 'var(--text-secondary)' } } : undefined}
+            />
+            <Tooltip
+              cursor={{ strokeDasharray: '3 3' }}
+              contentStyle={{
+                background: 'var(--bg-card)', border: '1px solid var(--border)',
+                fontSize: fontSize + 1, borderRadius: 8,
+              }}
+              formatter={(v: any, n: any, p: any) => {
+                const r = p?.payload || {}
+                const label = r.product || r.name || r[x_field || ''] || ''
+                const fmtV = style?.number_format ? fmtNum(v) : v
+                return [`${fmtV}`, `${n}${label ? ` · ${label}` : ''}`]
+              }}
+            />
+            {legendVisible && (
+              // Float the legend inside the plot area (top-right corner)
+              // so the chart isn't dominated by a single-series legend strip
+              // below it. `position: absolute` is honored because Recharts
+              // wraps the Legend in a relatively-positioned container.
+              <Legend
+                wrapperStyle={{
+                  fontSize,
+                  position: 'absolute',
+                  top: 4,
+                  right: 12,
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 6,
+                  padding: '2px 8px',
+                  pointerEvents: 'none',
+                }}
+                verticalAlign="top"
+                align="right"
+                layout="vertical"
+                iconSize={10}
+              />
+            )}
+            {y_fields.map((y, i) => (
+              <Scatter key={y} name={y} data={sortedData} fill={palette[i % palette.length]} />
+            ))}
           </ScatterChart>
         ) : type === 'pie' ? (
           <PieChart>
