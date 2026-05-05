@@ -302,4 +302,8 @@ The fields the challenger relies on:
 - **Tool errors are results.** Read the envelope and either retry
   with corrected args or surface the error to the analyst.
 - **Negative = stress lower than baseline.** Always.
-- Every dollar figure is in `$MM` unless explicitly tagged `$B`.
+- **Every dollar figure is in `$MM` (millions). Never use `$B` (billions)**
+  — not in field values, not in `assumptions` prose, not anywhere.
+  Downstream agents and the UI assume MM throughout. If a number would
+  read more naturally as $3,420M than $3.42B, that's fine — keep the
+  MM unit and let the renderer format it.

@@ -2110,13 +2110,12 @@ function WaterfallChart({ spec }: { spec: WaterfallSpec }) {
     sign: 'total',
   })
 
-  // Adaptive precision so tiny effects (e.g. 0.4 MM) aren't rounded to
-  // 0 — that's exactly what made the waterfall look inconsistent with
-  // the per-product table. Same thresholds as `_fmtMm`.
+  // Always in $M (matches `_fmtMm`) — no auto-conversion to $B so the
+  // waterfall and the per-product table are read in the same unit.
   const fmt = (mm: number) => {
     const abs = Math.abs(mm)
     const sign = mm < 0 ? '-' : ''
-    if (abs >= 1000) return `${sign}${(abs / 1000).toFixed(2)}B`
+    if (abs >= 1000) return `${sign}${Math.round(abs).toLocaleString('en-US')}M`
     if (abs >= 10)   return `${sign}${abs.toFixed(0)}M`
     if (abs >= 0.1)  return `${sign}${abs.toFixed(1)}M`
     return `${sign}${abs.toFixed(2)}M`
@@ -2432,6 +2431,12 @@ function PhaseOutput({ phase }: { phase: PhaseExecution }) {
     if ('decision' in parsed && Array.isArray(parsed.checks)) {
       return <AccuracyOutput data={parsed} rawOutput={rawOutput} />
     }
+    // attribution-challenger: verdict + findings (with red_flag / severity /
+    // target_phase) + approved_claims. Distinct from accuracy-reviewer
+    // (which uses `decision` + `checks`).
+    if ('verdict' in parsed && (Array.isArray(parsed.findings) || Array.isArray(parsed.approved_claims))) {
+      return <AttributionChallengerOutput data={parsed} rawOutput={rawOutput} />
+    }
   }
   return <MarkdownBody md={phase.output ?? ''} />
 }
@@ -2514,14 +2519,16 @@ function _fmtMm(mm: number | null | undefined): string {
   if (mm === null || mm === undefined || isNaN(mm as any)) return '—'
   const abs = Math.abs(mm)
   const sign = mm < 0 ? '-' : ''
-  // Adaptive precision so tiny effects (e.g. 0.4M) don't display as
-  // "$0M" — making the chart appear inconsistent with the underlying
-  // table. Threshold:
-  //   ≥ $1B            → 2 dp in B
-  //   ≥ $10M           → 0 dp in M
-  //   ≥ $0.1M and <10M → 1 dp in M
-  //   < $0.1M          → 2 dp in M (preserves sub-100K signals)
-  if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(2)}B`
+  // ALWAYS in $M — no auto-conversion to $B. Variance-analyst's source
+  // values are in $MM and the analyst expects to read the same unit
+  // throughout the playbook (waterfall, KPI strip, by-product table,
+  // commentary's numeric_claims). Adaptive precision below preserves
+  // small effects so a $0.4M move doesn't get rounded to $0M.
+  //   ≥ $1,000M with thousand-separator formatting (e.g. "$3,420M")
+  //   ≥ $10M         → 0 dp
+  //   ≥ $0.1M, <10M  → 1 dp
+  //   < $0.1M        → 2 dp (keeps sub-100K signals visible)
+  if (abs >= 1000) return `${sign}$${Math.round(abs).toLocaleString('en-US')}M`
   if (abs >= 10)   return `${sign}$${abs.toFixed(0)}M`
   if (abs >= 0.1)  return `${sign}$${abs.toFixed(1)}M`
   return `${sign}$${abs.toFixed(2)}M`
@@ -3063,6 +3070,225 @@ function AccuracyOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
         </div>
       )}
 
+      {data.rule_citation && (
+        <div
+          className="text-[10px] mt-2 font-mono"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {data.rule_citation}
+        </div>
+      )}
+    </AgentOutputShell>
+  )
+}
+
+// ── attribution-challenger: verdict + findings + approved_claims ─────
+function AttributionChallengerOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
+  const verdict = String(data.verdict || '').toLowerCase()
+  const verdictColor =
+    verdict === 'approved' ? 'var(--success)'
+    : verdict === 'approved_with_concerns' ? 'var(--warning)'
+    : verdict === 'needs_correction' ? 'var(--error)'
+    : 'var(--text-muted)'
+  const verdictBg =
+    verdict === 'approved' ? 'var(--success-bg)'
+    : verdict === 'approved_with_concerns' ? 'var(--warning-bg)'
+    : verdict === 'needs_correction' ? 'var(--error-bg)'
+    : 'var(--bg-elevated)'
+
+  const findings: any[] = Array.isArray(data.findings) ? data.findings : []
+  const approved: any[] = Array.isArray(data.approved_claims) ? data.approved_claims : []
+
+  const sevColor = (s: string) => {
+    const sev = String(s || '').toLowerCase()
+    if (sev === 'critical') return '#7F1D1D'   // dark red
+    if (sev === 'high')     return 'var(--error)'
+    if (sev === 'medium')   return 'var(--warning)'
+    if (sev === 'low')      return 'var(--text-muted)'
+    return 'var(--text-muted)'
+  }
+  const sevBg = (s: string) => {
+    const sev = String(s || '').toLowerCase()
+    if (sev === 'critical') return 'rgba(127,29,29,0.12)'
+    if (sev === 'high')     return 'var(--error-bg)'
+    if (sev === 'medium')   return 'var(--warning-bg)'
+    if (sev === 'low')      return 'var(--bg-elevated)'
+    return 'var(--bg-elevated)'
+  }
+
+  // Group findings by severity for the header summary
+  const sevCounts: Record<string, number> = {}
+  for (const f of findings) {
+    const sev = String(f?.severity || 'unknown').toLowerCase()
+    sevCounts[sev] = (sevCounts[sev] || 0) + 1
+  }
+  const sevSummary = ['critical', 'high', 'medium', 'low']
+    .filter((s) => sevCounts[s])
+    .map((s) => `${sevCounts[s]} ${s}`)
+    .join(' · ')
+
+  const headerLeft = (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span
+        className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-widest"
+        style={{ background: verdictBg, color: verdictColor }}
+      >
+        {String(data.verdict || 'unknown').replace(/_/g, ' ')}
+      </span>
+      <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
+        {findings.length} finding{findings.length === 1 ? '' : 's'}
+        {sevSummary ? `  (${sevSummary})` : ''}
+        {approved.length > 0 ? `  · ${approved.length} approved` : ''}
+      </span>
+    </div>
+  )
+
+  return (
+    <AgentOutputShell rawOutput={rawOutput} headerLeft={headerLeft}>
+      {/* Findings */}
+      {findings.length > 0 && (
+        <div className="mb-3">
+          <div
+            className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            Findings ({findings.length})
+          </div>
+          <div className="space-y-2">
+            {findings.map((f, i) => (
+              <div
+                key={i}
+                className="rounded-md p-3"
+                style={{
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--border)',
+                  borderLeft: `3px solid ${sevColor(f.severity)}`,
+                }}
+              >
+                {/* Top row: severity + red_flag + target_phase */}
+                <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                  <span
+                    className="text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded"
+                    style={{ background: sevBg(f.severity), color: sevColor(f.severity) }}
+                  >
+                    {String(f.severity || 'unknown').toUpperCase()}
+                  </span>
+                  {f.red_flag && (
+                    <span
+                      className="text-[10px] font-mono px-1.5 py-0.5 rounded"
+                      style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+                    >
+                      {f.red_flag}
+                    </span>
+                  )}
+                  {f.target_phase && (
+                    <span
+                      className="text-[10px] font-mono ml-auto px-1.5 py-0.5 rounded"
+                      style={{ background: 'var(--accent-light)', color: 'var(--accent)' }}
+                      title="Owning agent — analyst can rerun this phase from the gate panel"
+                    >
+                      ↑ {f.target_phase}
+                    </span>
+                  )}
+                </div>
+
+                {/* Claim */}
+                {f.claim && (
+                  <div className="text-[12px] font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+                    {f.claim}
+                  </div>
+                )}
+
+                {/* Evidence */}
+                {f.evidence && (
+                  <div className="text-[11px] mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Evidence: </span>
+                    {f.evidence}
+                  </div>
+                )}
+
+                {/* Sensitivity (if any) */}
+                {f.sensitivity && (
+                  <div className="text-[11px] mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Sensitivity: </span>
+                    {f.sensitivity}
+                  </div>
+                )}
+
+                {/* Regulator question */}
+                {f.regulator_question && (
+                  <div
+                    className="text-[11px] italic mt-1.5 mb-1.5 px-3 py-1.5 rounded"
+                    style={{
+                      borderLeft: '2px solid var(--text-muted)',
+                      color: 'var(--text-secondary)',
+                      background: 'var(--bg-elevated)',
+                    }}
+                  >
+                    Regulator: "{f.regulator_question}"
+                  </div>
+                )}
+
+                {/* Recommended fix */}
+                {f.recommended_fix && (
+                  <div
+                    className="text-[11px] mt-1.5 px-2 py-1.5 rounded flex gap-1.5"
+                    style={{ background: 'var(--accent-light)', color: 'var(--text-primary)' }}
+                  >
+                    <span
+                      className="text-[9px] font-bold uppercase tracking-widest mt-0.5"
+                      style={{ color: 'var(--accent)' }}
+                    >
+                      Fix
+                    </span>
+                    <span>{f.recommended_fix}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Approved claims — compact list, less visual weight */}
+      {approved.length > 0 && (
+        <div className="mb-2">
+          <div
+            className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            Approved ({approved.length})
+          </div>
+          <div className="space-y-1">
+            {approved.map((a, i) => (
+              <div
+                key={i}
+                className="rounded-md px-2.5 py-1.5 flex items-start gap-2 text-[11px]"
+                style={{
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--border-subtle)',
+                  borderLeft: '3px solid var(--success)',
+                }}
+              >
+                <CheckCircle2
+                  size={12}
+                  style={{ color: 'var(--success)', marginTop: 2, flexShrink: 0 }}
+                />
+                <div className="flex-1 min-w-0">
+                  <div style={{ color: 'var(--text-primary)' }}>{a.claim}</div>
+                  {a.evidence && (
+                    <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                      {a.evidence}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Rule citation */}
       {data.rule_citation && (
         <div
           className="text-[10px] mt-2 font-mono"
