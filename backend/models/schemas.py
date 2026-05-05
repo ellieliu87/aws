@@ -1010,6 +1010,10 @@ class VarianceWalkAudit(BaseModel):
     metric_scale_to_mm:  float = 1.0
     balance_scale_note:  str | None = None
     metric_scale_note:   str | None = None
+    # Plain-English description of how data_ie_delta_mm + the V/M/R
+    # effects were aggregated (so the analyst / challenger can confirm
+    # we summed across all products and all snap_dates, not a slice).
+    aggregation_method:  str | None = None
     # Materiality — products contributing > threshold% of |total_variance|.
     # The challenger flags any of these missing from methodology's top_movers.
     materiality_threshold_pct: float = 5.0

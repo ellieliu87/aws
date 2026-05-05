@@ -426,15 +426,26 @@ def _build_phase_context(
     # Auto-flow: every phase listed in `depends_on` gets its
     # structured_output included automatically. The analyst doesn't have
     # to wire `phase_output` inputs explicitly — the depends_on edge IS
-    # the data dependency. Falls back to the immediately-preceding phase
-    # by index when depends_on is empty (matches the executor's default).
+    # the data dependency.
+    #
+    # When `depends_on` is empty, default to ALL prior completed phases
+    # whose structured_output is non-null. This handles the common case
+    # where commentary-drafter follows BOTH variance-analyst AND
+    # methodology-researcher: previously we only auto-included the one
+    # immediately above by index, leaving commentary blind to variance.
+    # Tradeoff: when many prior phases ran, the [Context] gets longer —
+    # acceptable because (a) only structured outputs are flowed (not
+    # raw markdown), and (b) phases without structured_output are
+    # silently skipped.
     deps = list(phase.depends_on or [])
     if not deps:
         playbook_phase_ids = [p.id for p in playbook.phases]
         if phase.id in playbook_phase_ids:
             i = playbook_phase_ids.index(phase.id)
-            if i > 0:
-                deps = [playbook_phase_ids[i - 1]]
+            for prior_id in playbook_phase_ids[:i]:
+                prior_pe = next((p for p in run.phases if p.phase_id == prior_id), None)
+                if prior_pe and prior_pe.structured_output is not None:
+                    deps.append(prior_id)
     for dep_id in deps:
         prior = next((p for p in run.phases if p.phase_id == dep_id), None)
         if prior:
