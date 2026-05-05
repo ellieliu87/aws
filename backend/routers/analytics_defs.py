@@ -824,6 +824,27 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
         lookback_iso = "2022-01-01"
         lookback_label = "2022-Q1 onwards"
 
+    # Detect projection scenario — the supervisory cycle has four named
+    # paths (BHCB/BHCS/FEDB/FEDSA). The matcher below is hierarchical:
+    # explicit codes win over plain-language synonyms, and FEDSA wins
+    # over plain "stress" because severely-adverse is more specific.
+    scenario_code = None
+    scenario_label = None
+    if "fedsa" in p or "severely adverse" in p or "severely-adverse" in p or "fed severely" in p:
+        scenario_code, scenario_label = "FEDSA", "Fed Severely Adverse (FEDSA)"
+    elif "bhcs" in p or "bhc stress" in p or "bhc-stress" in p:
+        scenario_code, scenario_label = "BHCS", "BHC Stress (BHCS)"
+    elif "fedb" in p or "fed base" in p or "fed baseline" in p:
+        scenario_code, scenario_label = "FEDB", "Fed Baseline (FEDB)"
+    elif "bhcb" in p or "bhc base" in p or "bhc baseline" in p:
+        scenario_code, scenario_label = "BHCB", "BHC Baseline (BHCB)"
+    elif "stress" in p:
+        # Generic "stress" — default to BHCS (the conservative case for
+        # CCAR commentary) but record so the analyst can tell.
+        scenario_code, scenario_label = "BHCS", "BHC Stress (BHCS) — inferred from 'stress'"
+    elif "baseline" in p or " base " in p:
+        scenario_code, scenario_label = "BHCB", "BHC Baseline (BHCB) — inferred from 'baseline'"
+
     PYTHON_SOURCE = '''def run(dfs):
     """Beta justification — compute projected vs historical effective
     deposit beta per segment and classify against the P60 fixed-pricing-
@@ -840,6 +861,11 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
     # the OLS uses every actuals row.
     HISTORICAL_LOOKBACK = __LOOKBACK_PLACEHOLDER__
     HISTORICAL_LOOKBACK_LABEL = __LOOKBACK_LABEL_PLACEHOLDER__
+    # Optional projection scenario filter — set when the analyst names one
+    # of BHCB / BHCS / FEDB / FEDSA. When None, the projection beta is
+    # computed against whatever scenario shows up first in the data.
+    PROJECTION_SCENARIO = __SCENARIO_PLACEHOLDER__
+    PROJECTION_SCENARIO_LABEL = __SCENARIO_LABEL_PLACEHOLDER__
 
     def _norm(s):
         return str(s).lower().replace("_", "").replace("-", "").replace(" ", "")
@@ -973,6 +999,32 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
             actuals_df[date_col_h] = pd.to_datetime(actuals_df[date_col_h], errors="coerce")
             actuals_df = actuals_df[actuals_df[date_col_h] >= pd.to_datetime(HISTORICAL_LOOKBACK)]
 
+    # Apply the optional projection-scenario filter. The match is
+    # case-insensitive and tolerates the long-form scenario string used
+    # in some submissions (e.g. CCAR_26_BHC_Stress matches BHCS via the
+    # substring "bhc" + "stress" both being normalised forms of "bhcs").
+    if PROJECTION_SCENARIO:
+        scen_col = _ci_pick(projection_df, "scenario", "scenario_id", "scenarioName")
+        if scen_col is not None:
+            target = _norm(PROJECTION_SCENARIO)
+            # Build an inclusive predicate: row's scenario contains the target
+            # as a substring (after norm), OR its long form decomposes to the
+            # same code (e.g. "bhc" + "stress" → "bhcs").
+            def _matches_scen(v):
+                nv = _norm(v)
+                if target in nv or nv in target:
+                    return True
+                if target == "bhcs" and "bhc" in nv and "stress" in nv: return True
+                if target == "bhcb" and "bhc" in nv and ("base" in nv or "baseline" in nv): return True
+                if target == "fedsa" and "fed" in nv and ("severely" in nv or "sevadv" in nv): return True
+                if target == "fedb" and "fed" in nv and ("base" in nv or "baseline" in nv): return True
+                return False
+            filtered = projection_df[projection_df[scen_col].apply(_matches_scen)]
+            if not len(filtered):
+                seen = sorted(map(str, projection_df[scen_col].dropna().unique()))[:8]
+                return {"kpis": [{"label": "Error", "value": f"no projection rows for scenario {PROJECTION_SCENARIO}; seen: {seen}"}]}
+            projection_df = filtered
+
     proj_betas, err = _beta_for_frame(projection_df, "projection")
     if err:
         return {"kpis": [{"label": "Error", "value": f"projection: {err}"}]}
@@ -1012,7 +1064,10 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
     # Title carries the verdict so the analyst sees PASS / REVIEW + counts
     # without needing the four KPI cards above the scatter.
     counts = f"{aligned} aligned · {overshoot} overshoot · {undershoot} undershoot"
-    chart_title = f"Commercial deposit beta — {overall} ({counts})"
+    title_lead = "Commercial deposit beta"
+    if PROJECTION_SCENARIO_LABEL:
+        title_lead += f" — {PROJECTION_SCENARIO_LABEL}"
+    chart_title = f"{title_lead} — {overall} ({counts})"
     if HISTORICAL_LOOKBACK_LABEL:
         chart_title += f"  ·  hist window: {HISTORICAL_LOOKBACK_LABEL}"
 
@@ -1037,11 +1092,16 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
         },
     }
 '''
-    # Substitute the lookback placeholders the embedded function reads.
+    # Substitute the placeholders the embedded function reads. Scenario
+    # filter + lookback window are detected from the analyst's prompt
+    # before this point and baked into the python_source so each
+    # AnalyticDefinition records exactly which scenario it ran for.
     PYTHON_SOURCE = (
         PYTHON_SOURCE
-        .replace("__LOOKBACK_PLACEHOLDER__", repr(lookback_iso) if lookback_iso else "None")
-        .replace("__LOOKBACK_LABEL_PLACEHOLDER__", repr(lookback_label) if lookback_label else "None")
+        .replace("__LOOKBACK_PLACEHOLDER__",       repr(lookback_iso)    if lookback_iso    else "None")
+        .replace("__LOOKBACK_LABEL_PLACEHOLDER__", repr(lookback_label)  if lookback_label  else "None")
+        .replace("__SCENARIO_PLACEHOLDER__",       repr(scenario_code)   if scenario_code   else "None")
+        .replace("__SCENARIO_LABEL_PLACEHOLDER__", repr(scenario_label)  if scenario_label  else "None")
     )
 
     return AnalyticDraftResponse(
