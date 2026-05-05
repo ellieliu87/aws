@@ -1002,6 +1002,14 @@ class VarianceWalkAudit(BaseModel):
     doesn't have to re-derive them from the by_product table. Each field is
     a concrete signal the challenger's `audit_logic_rules` can act on
     without re-reading the source CSV."""
+    # Unit-detection trace. The tool's outputs are always reported in $MM,
+    # but the source CSV may carry monetary values in raw $1, $K, or $B.
+    # `*_scale_to_mm` is the multiplier applied; `*_scale_note` explains
+    # how it was inferred (suffix vs magnitude vs explicit override).
+    balance_scale_to_mm: float = 1.0
+    metric_scale_to_mm:  float = 1.0
+    balance_scale_note:  str | None = None
+    metric_scale_note:   str | None = None
     # Materiality — products contributing > threshold% of |total_variance|.
     # The challenger flags any of these missing from methodology's top_movers.
     materiality_threshold_pct: float = 5.0
