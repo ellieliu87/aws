@@ -46,6 +46,7 @@ interface PreviewBundle {
 export default function ReportsTab({ functionId, functionName, onAskAgent, onContextChange }: Props) {
   const setEntity = useChatStore((s) => s.setEntity)
   const setOpen = useChatStore((s) => s.setOpen)
+  const setPageContext = useChatStore((s) => s.setPageContext)
   const [tiles, setTiles] = useState<PlotConfig[]>([])
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [runs, setRuns] = useState<AnalyticsRun[]>([])
@@ -55,9 +56,13 @@ export default function ReportsTab({ functionId, functionName, onAskAgent, onCon
   const [loading, setLoading] = useState(true)
 
   const tunePile = (t: PlotConfig) => {
+    // Bind the tile and open the chat — but do NOT auto-send a message.
+    // A canned opener like "Tune the X tile." was being read by
+    // plot-tuner as an instruction, prompting unsolicited mutations
+    // before the analyst typed anything.
     setEntity('tile', t.id)
+    setPageContext(`Tuning tile "${t.name}" — describe the change you want (sort, filter, chart type, colors, axis labels, font size, legend).`)
     setOpen(true)
-    window.dispatchEvent(new CustomEvent('cma-chat', { detail: `Tune the "${t.name}" tile.` }))
   }
 
   // The "Explain" sparkle on a tile routes to the tile-explainer specialist

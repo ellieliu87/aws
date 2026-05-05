@@ -668,29 +668,78 @@ def _t_get_transform_recipe(args: dict) -> str:
 
 
 def _t_get_tile(args: dict) -> str:
+    """Return the saved spec for whichever target is bound — tile OR
+    analytic_def. The plot-tuner skill calls this to introspect what
+    fields are available before mutating axes / chart type."""
     tid = args.get("tile_id", "") or _ctx_tile_id()
-    p = _PLOTS.get(tid)
-    return p.model_dump_json(indent=2) if p else json.dumps({"error": f"Tile `{tid}` not found"})
+    if tid:
+        p = _PLOTS.get(tid)
+        if p:
+            return p.model_dump_json(indent=2)
+    # Fall through to analytic_def when context says so
+    ctx = _REQUEST_CTX.get() or {}
+    if ctx.get("entity_kind") == "analytic_def":
+        adef_id = args.get("tile_id", "") or ctx.get("entity_id", "")
+        from routers.analytics_defs import _DEFS as _ADEFS
+        d = _ADEFS.get(adef_id)
+        if d:
+            return d.model_dump_json(indent=2)
+        return json.dumps({"error": f"AnalyticDefinition `{adef_id}` not found"})
+    return json.dumps({"error": f"Tile `{tid}` not found"})
 
 
 def _t_get_tile_preview(args: dict) -> str:
+    """Live preview of the bound chart. For tiles → run the underlying
+    dataset through the plot's filters and return rows + column dtypes.
+    For analytic_def → return the latest Run's chart data + columns so
+    the agent can introspect available fields without re-running the
+    Python function."""
     tid = args.get("tile_id", "") or _ctx_tile_id()
-    p = _PLOTS.get(tid)
-    if not p:
-        return json.dumps({"error": f"Tile `{tid}` not found"})
-    df = _tile_dataframe(p)
-    if df is None or df.empty:
-        return json.dumps({"name": p.name, "rows": [], "note": "No live data — using sample"})
-    df = _apply_filters(df, p.filters)
-    return json.dumps({
-        "name": p.name,
-        "tile_type": p.tile_type,
-        "chart_type": p.chart_type,
-        "columns": [{"name": c, "dtype": str(df[c].dtype)} for c in df.columns],
-        "row_count": int(len(df)),
-        "sample_rows": _df_records(df, 25),
-        "summary": _summarize(df),
-    }, default=_json_default)
+    if tid:
+        p = _PLOTS.get(tid)
+        if p:
+            df = _tile_dataframe(p)
+            if df is None or df.empty:
+                return json.dumps({"name": p.name, "rows": [], "note": "No live data — using sample"})
+            df = _apply_filters(df, p.filters)
+            return json.dumps({
+                "name": p.name,
+                "tile_type": p.tile_type,
+                "chart_type": p.chart_type,
+                "columns": [{"name": c, "dtype": str(df[c].dtype)} for c in df.columns],
+                "row_count": int(len(df)),
+                "sample_rows": _df_records(df, 25),
+                "summary": _summarize(df),
+            }, default=_json_default)
+    # analytic_def fallback — read the latest run's chart data
+    ctx = _REQUEST_CTX.get() or {}
+    if ctx.get("entity_kind") == "analytic_def":
+        adef_id = args.get("tile_id", "") or ctx.get("entity_id", "")
+        from routers.analytics_defs import _DEFS as _ADEFS, _RUNS as _ARUNS
+        d = _ADEFS.get(adef_id)
+        if not d:
+            return json.dumps({"error": f"AnalyticDefinition `{adef_id}` not found"})
+        runs_for_def = [r for r in _ARUNS.values() if r.definition_id == adef_id]
+        runs_for_def.sort(key=lambda r: r.created_at, reverse=True)
+        latest = runs_for_def[0] if runs_for_def else None
+        chart = latest.result.chart if (latest and latest.result and latest.result.chart) else None
+        sample = chart.data[:25] if chart else []
+        cols: list[dict] = []
+        if sample:
+            for k, v in sample[0].items():
+                cols.append({"name": k, "dtype": type(v).__name__})
+        return json.dumps({
+            "name": d.name,
+            "kind": d.kind,
+            "chart_type": d.output.chart_type if d.output else None,
+            "x_field": d.output.x_field if d.output else None,
+            "y_fields": list(d.output.y_fields) if d.output else [],
+            "columns": cols,
+            "row_count": len(sample),
+            "sample_rows": sample,
+            "note": "Latest run snapshot; data refreshes on the next Run." if latest else "No Run yet — click Run on the card before tuning.",
+        }, default=_json_default)
+    return json.dumps({"error": f"Tile `{tid}` not found"})
 
 
 def _t_apply_tile_filter(args: dict) -> str:
@@ -725,9 +774,20 @@ def _resolve_target(args: dict):
 
 
 def _ensure_style(obj):
-    """Lazy-init `obj.style` to a PlotStyle if missing — back-compat with
-    saved specs from before the field was added."""
+    """Return the writable PlotStyle for whichever schema the target uses.
+    PlotConfig (tile) puts style at the top level; AnalyticDefinition keeps
+    it under `output.style`. Without this dispatch, a plot-tuner palette
+    write on an analytic_def lands on a phantom attribute the renderer
+    never reads, which is exactly how 'palette change not supported on
+    this chart type' bugs surface."""
     from models.schemas import PlotStyle
+    # AnalyticDefinition / AnalyticDefinitionRun → output.style
+    out = getattr(obj, "output", None)
+    if out is not None and hasattr(out, "style"):
+        if out.style is None:
+            out.style = PlotStyle()
+        return out.style
+    # PlotConfig (tile) → top-level style
     if getattr(obj, "style", None) is None:
         obj.style = PlotStyle()
     return obj.style
@@ -796,12 +856,27 @@ def _t_set_axes(args: dict) -> str:
     if kind == "tile":
         obj.x_field = x or obj.x_field
         obj.y_fields = list(ys) if ys else obj.y_fields
-        return json.dumps({"ok": True, "kind": kind, "x_field": obj.x_field, "y_fields": obj.y_fields})
-    if kind == "analytic_def" and obj.output:
+        new_x, new_ys = obj.x_field, obj.y_fields
+    elif kind == "analytic_def" and obj.output:
         obj.output.x_field = x or obj.output.x_field
         obj.output.y_fields = list(ys) if ys else obj.output.y_fields
-        return json.dumps({"ok": True, "kind": kind, "x_field": obj.output.x_field, "y_fields": obj.output.y_fields})
-    return json.dumps({"error": f"Cannot set axes on {kind}"})
+        new_x, new_ys = obj.output.x_field, obj.output.y_fields
+    else:
+        return json.dumps({"error": f"Cannot set axes on {kind}"})
+
+    # When the field bindings change, clear any stale axis labels saved
+    # from a previous spec so the chart picks up the new field names.
+    # Without this, switching x_field from `historical_beta` to `product`
+    # would leave the X axis title as "Historical beta" — what the
+    # analyst just saw and complained about. The renderer falls back to
+    # a prettified field name when these are None, and `set_axis_labels`
+    # lets the analyst override later.
+    style = _ensure_style(obj)
+    if x:
+        style.x_axis_label = None
+    if ys:
+        style.y_axis_label = None
+    return json.dumps({"ok": True, "kind": kind, "x_field": new_x, "y_fields": new_ys})
 
 
 def _t_set_axis_labels(args: dict) -> str:

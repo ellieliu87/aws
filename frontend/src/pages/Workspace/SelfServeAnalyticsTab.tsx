@@ -451,15 +451,20 @@ function RunViewer({
   const [narrErr, setNarrErr] = useState<string | null>(null)
   const setEntity = useChatStore((s) => s.setEntity)
   const setOpen = useChatStore((s) => s.setOpen)
+  const setPageContext = useChatStore((s) => s.setPageContext)
 
   const tuneChart = () => {
-    // Send the agent the analytic definition (not the run snapshot) so the
-    // plot-tuner can mutate the persisted spec; the next run picks it up.
+    // Bind the panel to this analytic definition (not the run snapshot)
+    // so any subsequent plot-tuner tool call mutates the persisted spec
+    // — the next Run picks the change up. We deliberately do NOT
+    // auto-send a chat message: an opening prompt like "what would you
+    // like to change?" was reading like an instruction to plot-tuner,
+    // which then applied a default mutation before the analyst typed
+    // anything. The panel opens with the input focused and a hint about
+    // what kinds of edits are supported instead.
     setEntity('analytic_def', run.definition_id)
+    setPageContext(`Tuning chart "${run.name}" — describe the change you want (sort, filter, chart type, colors, axis labels, font size, legend).`)
     setOpen(true)
-    window.dispatchEvent(new CustomEvent('cma-chat', {
-      detail: `Tune the "${run.name}" chart — what would you like to change? (sort, filter, chart type, colors, axis labels, font size, legend)`,
-    }))
   }
 
   const askNarrate = async () => {
@@ -652,9 +657,15 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
     return v.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
   }
 
-  // Optional axis labels — wired to Recharts' `label` prop with offsets.
-  const xLabel = style?.x_axis_label
-  const yLabel = style?.y_axis_label
+  // Axis labels — fall back to a prettified field name so the chart
+  // never shows a stale label after plot-tuner rebinds an axis. The
+  // analyst can still override explicitly via `set_axis_labels`, which
+  // writes a non-empty value to style.x_axis_label / y_axis_label and
+  // wins over the default.
+  const prettify = (s: string | null | undefined) =>
+    !s ? '' : s.replace(/[_\-]/g, ' ').replace(/\b([a-z])/g, (m) => m.toUpperCase())
+  const xLabel = style?.x_axis_label || prettify(x_field)
+  const yLabel = style?.y_axis_label || prettify(y_fields.length === 1 ? y_fields[0] : '')
 
   const common = (
     <>
@@ -707,69 +718,84 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
             {y_fields.map((y, i) => <Area key={y} type="monotone" dataKey={y} stroke={palette[i % palette.length]} fill={palette[i % palette.length]} fillOpacity={0.2} />)}
           </AreaChart>
         ) : type === 'scatter' ? (
-          // Scatter needs numeric axes on BOTH dimensions — without
-          // type="number" on the XAxis, recharts treats x_field values as
-          // category labels and the dots collapse onto evenly-spaced
-          // ticks (so "historical_beta" appears unused). Each axis also
-          // needs its own dataKey for value-based positioning.
-          <ScatterChart margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-            <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="3 3" />
-            <XAxis
-              type="number"
-              dataKey={x_field || ''}
-              stroke="var(--text-muted)"
-              tick={{ fontSize }}
-              tickFormatter={style?.number_format ? fmtNum : undefined}
-              label={xLabel ? { value: xLabel, position: 'insideBottom', offset: -4, style: { fontSize, fill: 'var(--text-secondary)' } } : undefined}
-            />
-            <YAxis
-              type="number"
-              dataKey={y_fields[0]}
-              stroke="var(--text-muted)"
-              tick={{ fontSize }}
-              tickFormatter={style?.number_format ? fmtNum : undefined}
-              label={yLabel ? { value: yLabel, angle: -90, position: 'insideLeft', style: { fontSize, fill: 'var(--text-secondary)' } } : undefined}
-            />
-            <Tooltip
-              cursor={{ strokeDasharray: '3 3' }}
-              contentStyle={{
-                background: 'var(--bg-card)', border: '1px solid var(--border)',
-                fontSize: fontSize + 1, borderRadius: 8,
-              }}
-              formatter={(v: any, n: any, p: any) => {
-                const r = p?.payload || {}
-                const label = r.product || r.name || r[x_field || ''] || ''
-                const fmtV = style?.number_format ? fmtNum(v) : v
-                return [`${fmtV}`, `${n}${label ? ` · ${label}` : ''}`]
-              }}
-            />
-            {legendVisible && (
-              // Float the legend inside the plot area (top-right corner)
-              // so the chart isn't dominated by a single-series legend strip
-              // below it. `position: absolute` is honored because Recharts
-              // wraps the Legend in a relatively-positioned container.
-              <Legend
-                wrapperStyle={{
-                  fontSize,
-                  position: 'absolute',
-                  top: 4,
-                  right: 12,
-                  background: 'var(--bg-card)',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 6,
-                  padding: '2px 8px',
-                  pointerEvents: 'none',
-                }}
-                verticalAlign="top"
-                align="right"
-                layout="vertical"
-                iconSize={10}
-              />
-            )}
-            {y_fields.map((y, i) => (
-              <Scatter key={y} name={y} data={sortedData} fill={palette[i % palette.length]} />
-            ))}
-          </ScatterChart>
+          // Scatter handles two cases robustly:
+          //   - Both axes numeric (e.g. historical_beta vs projected_beta)
+          //     → recharts plots dots at value-based positions.
+          //   - X categorical (e.g. product, segment) → recharts spreads
+          //     dots evenly across the category axis.
+          // Detect each axis's type from a sample row so plot-tuner
+          // mutations like `set_axes(x_field="product")` Just Work.
+          (() => {
+            const sample = sortedData.find((d) => d != null) || {}
+            const isNum = (v: any) => typeof v === 'number' && Number.isFinite(v)
+            const xIsNum = isNum(sample[x_field || ''])
+            const yIsNum = isNum(sample[y_fields[0] || ''])
+            const xType: 'number' | 'category' = xIsNum ? 'number' : 'category'
+            const yType: 'number' | 'category' = yIsNum ? 'number' : 'category'
+            return (
+              <ScatterChart margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
+                <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="3 3" />
+                <XAxis
+                  type={xType}
+                  dataKey={x_field || ''}
+                  stroke="var(--text-muted)"
+                  tick={{ fontSize }}
+                  tickFormatter={(xIsNum && style?.number_format) ? fmtNum : undefined}
+                  label={xLabel ? { value: xLabel, position: 'insideBottom', offset: -4, style: { fontSize, fill: 'var(--text-secondary)' } } : undefined}
+                />
+                <YAxis
+                  // Only bind dataKey when the axis is numeric — recharts
+                  // requires it to auto-domain. For category Y axes the
+                  // dataKey would be wrong because values are strings.
+                  type={yType}
+                  dataKey={yIsNum ? y_fields[0] : undefined}
+                  stroke="var(--text-muted)"
+                  tick={{ fontSize }}
+                  tickFormatter={(yIsNum && style?.number_format) ? fmtNum : undefined}
+                  label={yLabel ? { value: yLabel, angle: -90, position: 'insideLeft', style: { fontSize, fill: 'var(--text-secondary)' } } : undefined}
+                />
+                <Tooltip
+                  cursor={{ strokeDasharray: '3 3' }}
+                  contentStyle={{
+                    background: 'var(--bg-card)', border: '1px solid var(--border)',
+                    fontSize: fontSize + 1, borderRadius: 8,
+                  }}
+                  formatter={(v: any, n: any, p: any) => {
+                    const r = p?.payload || {}
+                    const label = r.product || r.name || r[x_field || ''] || ''
+                    const fmtV = (typeof v === 'number' && style?.number_format) ? fmtNum(v) : v
+                    return [`${fmtV}`, `${n}${label ? ` · ${label}` : ''}`]
+                  }}
+                />
+                {legendVisible && (
+                  <Legend
+                    wrapperStyle={{
+                      fontSize,
+                      position: 'absolute',
+                      top: 4,
+                      right: 12,
+                      background: 'var(--bg-card)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 6,
+                      padding: '2px 8px',
+                      pointerEvents: 'none',
+                    }}
+                    verticalAlign="top"
+                    align="right"
+                    layout="vertical"
+                    iconSize={10}
+                  />
+                )}
+                {y_fields.map((y, i) => (
+                  // dataKey on each Scatter so multi-series scatter works
+                  // (e.g. plot historical AND projected vs product on the
+                  // same chart). For single-series this is redundant but
+                  // harmless.
+                  <Scatter key={y} name={y} data={sortedData} dataKey={y} fill={palette[i % palette.length]} />
+                ))}
+              </ScatterChart>
+            )
+          })()
         ) : type === 'pie' ? (
           <PieChart>
             <Tooltip formatter={style?.number_format ? (v: any) => fmtNum(v) : undefined} />

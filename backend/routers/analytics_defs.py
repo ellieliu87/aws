@@ -395,6 +395,41 @@ def _run_custom_python(d: AnalyticDefinition) -> AnalyticResult:
     table = payload.get("table")
     chart = payload.get("chart")
     kpis = payload.get("kpis") or []
+
+    # Layer the saved AnalyticDefinition.output over whatever the user's
+    # run() emitted. Without this merge, plot-tuner mutations (chart_type,
+    # x_field, y_fields, palette, font_size, legend_position, label
+    # overrides) wouldn't take effect on custom_python charts because
+    # run() rebuilds the whole chart payload from scratch each invocation.
+    if isinstance(chart, dict) and "type" in chart and d.output:
+        # chart type — plot-tuner's set_chart_type writes to
+        # d.output.chart_type. The saved value always wins because
+        # run() can't know the analyst has since rebound the chart.
+        if d.output.chart_type:
+            chart["type"] = d.output.chart_type
+        # x_field / y_fields — same idea. Only override when the saved
+        # field is explicitly set (non-empty), so the run()'s defaults
+        # remain the fallback for fresh drafts.
+        if d.output.x_field:
+            chart["x_field"] = d.output.x_field
+        if d.output.y_fields:
+            chart["y_fields"] = list(d.output.y_fields)
+
+        chart_style = dict(chart.get("style") or {})
+        saved = d.output.style.model_dump() if d.output.style else {}
+        for k, v in saved.items():
+            if v is None:
+                continue
+            if isinstance(v, (list, dict)) and not v:
+                continue
+            if isinstance(v, str) and not v.strip():
+                continue
+            # The run()'s emitted title/axis labels stay unless the analyst
+            # explicitly overrode them via plot-tuner — checking emptiness
+            # above already handles that.
+            chart_style[k] = v
+        chart["style"] = chart_style
+
     return AnalyticResult(
         table=AnalyticResultTable(**table) if isinstance(table, dict) and "columns" in table else None,
         chart=AnalyticResultChart(**chart) if isinstance(chart, dict) and "type" in chart else None,
@@ -761,12 +796,54 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
     deterministic Python function so the analytics tab doesn't pay a
     multi-round agent latency cost.
     """
-    p = (req.prompt or "").lower()
-    triggers = ("beta",)
-    actions = ("justif", "challeng", "defen", "reasonable", "support")
-    if not any(t in p for t in triggers) or not any(a in p for a in actions):
+    p = (req.prompt or "").lower().strip()
+    if not p:
         return None
-    if "deposit" not in p and "ccar" not in p and "commercial" not in p:
+
+    # Required: prompt is about deposit beta AND grounded in the
+    # commercial-deposit / CCAR domain. We catch the domain in two
+    # ways — explicit nouns (deposit/commercial/ccar) AND scenario
+    # codes (BHCS/BHCB/FEDSA/FEDB), since analysts often skip the
+    # noun and just say "the BHCS beta".
+    if "beta" not in p:
+        return None
+    domain_nouns = ("deposit", "commercial", "ccar")
+    scenario_nouns = ("bhcs", "bhcb", "fedsa", "fedb",
+                      "stress scenario", "baseline scenario", "severely adverse")
+    if not (any(d in p for d in domain_nouns) or any(s in p for s in scenario_nouns)):
+        return None
+
+    # Need at least one signal that the analyst wants ANALYSIS — not a
+    # definition or methodology question. The list below covers the
+    # common natural-language framings analysts use:
+    #   • Explicit defense/challenge: justify, defend, challenge, valid
+    #   • Comparison: compare, vs, versus, match, consistent, align, gap
+    #   • Quality assessment: review, assess, evaluate, benchmark, check
+    #   • Magnitude framing: lower than, higher than, above, below, exceed
+    #   • Temporal cycle reference: 2022/2023/2024, rate hike, tightening
+    #   • Scenario name alone is also enough — a question about the
+    #     BHCS beta is implicitly "is the BHCS path defensible?"
+    analytical_signals = (
+        # Defense / challenge
+        "justif", "challeng", "defen", "reasonab", "support",
+        "valid", "audit",
+        # Comparison / alignment
+        "compar", " vs ", " vs.", "versus", "match", "consist", "align",
+        "differ", "discrepan", "gap", "deviation",
+        # Quality assessment
+        "review", "assess", "evaluat", "benchmark", "check",
+        # Magnitude framing
+        "lower than", "higher than", "above the", "below the",
+        "exceed", "lower vs", "higher vs",
+        # Temporal cycle references implying historical comparison
+        "2022", "2023", "2024",
+        "rate hike", "tightening", "hike cycle", "hiking cycle",
+        "post-covid", "post covid", "zirp",
+        # Scenario codes — bare presence is enough to imply analysis
+        "bhcs", "bhcb", "fedsa", "fedb",
+        "stress", "baseline", "severely adverse",
+    )
+    if not any(sig in p for sig in analytical_signals):
         return None
 
     # Resolve dataset ids by registered name. Both projection + actuals
@@ -1082,8 +1159,11 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
             "data":     chart_rows,
             "style":    {
                 "title":        chart_title,
-                "x_axis_label": "Historical beta",
-                "y_axis_label": "Projected beta",
+                # Axis labels intentionally omitted so the frontend
+                # auto-derives them from x_field / y_fields[0]. When
+                # plot-tuner rebinds an axis, the new field name flows
+                # straight through; the analyst can override with
+                # `set_axis_labels` for a custom title.
             },
         },
         "table": {
