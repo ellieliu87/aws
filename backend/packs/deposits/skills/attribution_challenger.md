@@ -10,7 +10,6 @@ tools:
   - audit_logic_rules
   - get_model_assumptions
   - compute_variance_walk
-  - compute_sensitivity_walk
   - rag_search
 ---
 
@@ -41,9 +40,10 @@ The math, in $MM. Use as ground truth. Two parts you'll lean on:
   - `reconciliation_v_plus_m_plus_r_diff_mm` — should be 0.00. Non-zero = real bug; check if rounding-only.
   - `reconciliation_by_product_sum_diff_mm` — small (cents) is rounding noise; large is an aggregation bug.
   - `formula_vs_data_gap_mm` / `_pct` — when the file's own `interest_expense` column disagrees with the formula. >1% gap is a finding.
-  - `period_factor_was_defaulted` — TRUE means variance-analyst guessed monthly. If the file is quarterly, all numbers are 3x off.
   - `fallback_scenarios_used` — TRUE means BHCS wasn't found and FedSA was substituted (or similar). The narrative needs to name what it actually compared.
   - `products_with_partial_data` — products missing snap_dates. Their per-product effects are biased.
+
+**Do NOT** flag `period_factor_was_defaulted` as a finding — that's an implementation detail the analyst doesn't control and shouldn't have to defend. Variance-analyst already records it; the challenger ignores it.
 
 ### Methodology Researcher — `AttributionsResult`
 The "why" — `top_movers` (the products commentary will narrate) and
@@ -83,26 +83,7 @@ The structured rules to expect:
 
 Use `tripped[]` from the response as your finding seeds.
 
-### 2 — Stress-test top movers via `compute_sensitivity_walk`
-
-For the top 1-2 movers, perturb the headline assumption (recapture,
-beta, attrition floor) by ±20% and check whether the conclusion is
-brittle:
-
-```
-compute_sensitivity_walk(
-  scenario=<current_scenario>,
-  parameter="recapture_rate" | "beta" | "attrition_floor",
-  delta_pct=-0.20,
-  product=<product>,
-)
-```
-
-A 20% perturbation that flips the sign or doubles the magnitude →
-the analyst owes a sensitivity caveat in the narrative. If barely
-moves, the claim is robust — say so.
-
-### 3 — Verify documented assumptions
+### 2 — Verify documented assumptions
 
 For each material product, call `get_model_assumptions(product=…)`
 and confirm:
@@ -112,13 +93,12 @@ and confirm:
 - Any overlay flagged in attributions is a documented overlay (not
   an undocumented post-hoc adjustment).
 
-When `audit.formula_vs_data_gap_pct > 1.0` or
-`audit.period_factor_was_defaulted = true`, pull the corresponding
+When `audit.formula_vs_data_gap_pct > 1.0`, pull the corresponding
 section of the model documentation via `rag_search` and quote a
 span that confirms the choice was deliberate. If the doc is silent,
 that's a finding.
 
-### 4 — Spot-check the math (rarely needed)
+### 3 — Spot-check the math (rarely needed)
 
 Only when you suspect variance-analyst's numbers are wrong, call
 `compute_variance_walk(playbook_id=…)` yourself and diff. Use
@@ -140,7 +120,6 @@ your final message:
       "red_flag":           "effect_component_mismatch",
       "severity":           "high",
       "evidence":           "Top_movers row shows primary_effect=rate but model_component=PRED_RETAILDEPOSIT_BACKBOOKBALANCE (a Volume model). PSAV's by_product row has |rate_effect_mm|=4.5 vs |volume_effect_mm|=80, so volume is dominant; primary_effect should be 'volume', or the cited model should be PRED_RETAILDEPOSIT_LIQUIDRATE if the analyst really means rate.",
-      "sensitivity":        "compute_sensitivity_walk(parameter=beta, delta_pct=-0.20) → IE delta moves -8% — the rate effect is robust; the attribution chain is what's wrong.",
       "regulator_question": "How can a rate-driven move be attributed to a Volume model?",
       "recommended_fix":    "Re-attribute PSAV's primary effect to volume, OR re-cite the rate model — methodology must pick one.",
       "target_phase":       "methodology-researcher"
@@ -148,8 +127,8 @@ your final message:
   ],
   "approved_claims": [
     {
-      "claim":   "DFS_CD volume effect (-$166.7MM) is robust to ±20% recapture-rate perturbation.",
-      "evidence":"compute_sensitivity_walk perturbed recapture by ±20%, IE delta moved <2%."
+      "claim":   "Material movers DFS_CD and PSAV both appear in top_movers with consistent primary_effect/model_component mappings.",
+      "evidence":"audit.material_products = [DFS_CD, PSAV]; both in AttributionsResult.top_movers with primary_effect matching the dominant by_product effect."
     }
   ],
   "rule_citation": "SR 11-7 §III.4 — Implementation Logic"
@@ -165,9 +144,8 @@ group, so this field is what makes the human-in-the-loop fast.
 
 | Issue type | `target_phase` |
 |---|---|
-| Wrong scenario pair, wrong period_factor, wrong metric, formula-vs-data gap, reconciliation break, partial data flagged in the audit block | `variance-analyst` |
+| Wrong scenario pair, wrong metric, formula-vs-data gap, reconciliation break, partial data flagged in the audit block | `variance-analyst` |
 | Material product missing from `top_movers`, `effect_component_mismatch`, `unattributed_top_mover`, attribution category miscategorized | `methodology-researcher` |
-| Sensitivity caveat needed but the upstream output is fine | `attribution-challenger` (no upstream rerun — analyst just notes the caveat) |
 
 Use the *agent skill name* (lowercase, hyphenated) — that's what the
 gate handler matches against the playbook's phase ids.
@@ -178,8 +156,8 @@ gate handler matches against the playbook's phase ids.
   attributed to a structurally wrong model component.
 - **`high`** — material omission, attribution-effect mismatch on a
   top mover, formula-vs-data gap >1% with no documentation.
-- **`medium`** — judgment-only floor, missing sensitivity check,
-  partial data on a non-top-5 product.
+- **`medium`** — judgment-only floor, partial data on a non-top-5
+  product.
 - **`low`** — naming, soft documentation gaps.
 
 ## Verdict logic
@@ -198,9 +176,12 @@ gate handler matches against the playbook's phase ids.
 - **Always run `audit_logic_rules` with structured context.** The
   audit block + attributions are how you find the high-leverage
   issues without re-deriving from scratch.
-- **Stress-test at least one headline claim** via
-  `compute_sensitivity_walk`. A red team that doesn't perturb
-  anything isn't doing its job.
+- **Do NOT run sensitivity tests** (`compute_sensitivity_walk` was
+  removed from this skill's toolkit). Stress-testing assumption
+  perturbations is out of scope at the pre-narrative stage.
+- **Do NOT flag `period_factor_was_defaulted`** — it's an
+  implementation detail variance-analyst exposes for transparency,
+  not a finding the analyst should defend.
 - **Quote evidence on every finding.** Either a structured field
   (`audit.formula_vs_data_gap_pct = 4.2`), a per-product cell
   (`by_product[PSAV].volume_effect_mm = 80.5`), or a quoted span

@@ -2085,8 +2085,10 @@ type WaterfallSpec = {
   benchmark_label?: string
   metric?: string
   starting_point_mm?: number
+  starting_label?: string   // e.g. "BHCB IE" — overrides default "Starting point"
   components?: { label: string; value_mm: number }[]
   total_mm?: number
+  total_label?: string      // e.g. "BHCS IE" — overrides default "Total"
 }
 
 function WaterfallChart({ spec }: { spec: WaterfallSpec }) {
@@ -2103,7 +2105,16 @@ function WaterfallChart({ spec }: { spec: WaterfallSpec }) {
 
   const rows: { label: string; base: number; delta: number; signed: number; sign: 'up' | 'down' | 'total' }[] = []
   let running = 0
-  rows.push({ label: 'Starting point', base: 0, delta: Math.abs(start), signed: start, sign: start >= 0 ? 'up' : 'down' })
+  // The starting bar is the baseline anchor — full-height bar from 0
+  // up to `start` (e.g. BHCB IE level). Subsequent component bars then
+  // float between running levels.
+  rows.push({
+    label:  spec.starting_label || 'Starting point',
+    base:   start >= 0 ? 0 : start,
+    delta:  Math.abs(start),
+    signed: start,
+    sign:   'total',
+  })
   running = start
   for (const c of components) {
     const v = c.value_mm || 0
@@ -2111,17 +2122,16 @@ function WaterfallChart({ spec }: { spec: WaterfallSpec }) {
     rows.push({ label: c.label, base, delta: Math.abs(v), signed: v, sign: v >= 0 ? 'up' : 'down' })
     running += v
   }
-  // Total bar anchors at 0 like the components do — for a negative
-  // total, base sits at the negative value and delta extends back up
-  // to 0, giving the standard waterfall "below baseline" rendering.
-  // Without this, recharts stacks delta upward from 0 and the bar
-  // visually points the wrong way.
+  // The total bar is the stress anchor — full-height bar from 0 up
+  // (or down for negatives) to `total` (e.g. BHCS IE level). When
+  // benchmark + V+M+R reconcile to current, this sits exactly at
+  // the same height the component cascade ends on.
   rows.push({
-    label: 'Total',
-    base:  total >= 0 ? 0 : total,
-    delta: Math.abs(total),
+    label:  spec.total_label || 'Total',
+    base:   total >= 0 ? 0 : total,
+    delta:  Math.abs(total),
     signed: total,
-    sign: 'total',
+    sign:   'total',
   })
 
   // Always in $M (matches `_fmtMm`) — no auto-conversion to $B so the
@@ -2568,18 +2578,31 @@ function VarianceWalkOutput({ data, rawOutput }: { data: any; rawOutput: string 
   // numbers. The sequential V/M/R decomposition reconciles exactly to
   // total by construction (no residual bar needed). Order: Volume → Mix
   // → Rate, matching the user-specified sequential framework.
+  //
+  // Anchor on the baseline scenario's total IE (left bar), apply V+M+R
+  // effects, end at the stress scenario's total IE (right bar) — so a
+  // BHCB → BHCS walk literally starts at the BHCB IE level and lands
+  // at the BHCS IE level, with the deltas in between. Falls back to
+  // 0 → ΔIE for older runs that don't carry the *_ie_mm fields.
+  const benchmarkIE = data.benchmark_ie_mm
+  const currentIE   = data.current_ie_mm
+  const haveAnchors = typeof benchmarkIE === 'number' && typeof currentIE === 'number'
   const waterfallSpec: WaterfallSpec = {
-    title:           'Variance walk — stress vs baseline',
+    title:           haveAnchors
+      ? `Variance walk — ${data.benchmark_scenario} → ${data.current_scenario}`
+      : 'Variance walk — stress vs baseline',
     current_label:   data.current_scenario,
     benchmark_label: data.benchmark_scenario,
     metric:          data.metric,
-    starting_point_mm: 0,
+    starting_point_mm: haveAnchors ? benchmarkIE : 0,
+    starting_label:    haveAnchors ? `${data.benchmark_scenario} IE` : undefined,
     components: [
       { label: 'Volume effect', value_mm: data.volume_effect_mm ?? 0 },
       { label: 'Mix effect',    value_mm: data.mix_effect_mm    ?? 0 },
       { label: 'Rate effect',   value_mm: data.rate_effect_mm   ?? 0 },
     ],
-    total_mm: data.total_variance_mm ?? 0,
+    total_mm:    haveAnchors ? currentIE : (data.total_variance_mm ?? 0),
+    total_label: haveAnchors ? `${data.current_scenario} IE` : undefined,
   }
 
   const headerLeft = (

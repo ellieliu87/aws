@@ -1069,6 +1069,14 @@ class VarianceWalkResult(BaseModel):
     # `assumptions` so the analyst can see whether the model output
     # reconciles to the formula.
     data_ie_delta_mm:   float | None = None
+    # Total IE for each scenario across all products + snap_dates,
+    # in $MM. Used by the waterfall renderer to anchor the chart on
+    # the baseline IE level (left bar) and end at the stress IE level
+    # (right bar) — `current_ie_mm = benchmark_ie_mm + total_variance_mm`
+    # by construction. Both formula-derived (sum of bal × rate × pf
+    # per row) so the chart reconciles with the V/M/R decomposition.
+    benchmark_ie_mm:    float | None = None
+    current_ie_mm:      float | None = None
     by_product:         list[ProductVariance] = Field(default_factory=list)
     assumptions:        str | None = None
     # Structured audit signals attribution-challenger consumes. Nullable
