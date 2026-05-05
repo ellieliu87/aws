@@ -1737,30 +1737,42 @@ function PhaseRunCard({
   }, [phase.structured_output, phase.output])
 
   // Phases the analyst can rerun from — anything that ran before this
-  // gate, matched by phase_name (which is the skill's display name).
-  // Cross-referenced with findings's `target_phase` so the picker
-  // surfaces the recommended targets first.
+  // gate. Carries skill_name so we can match against the challenger's
+  // findings[].target_phase (which is the SKILL name, not the playbook's
+  // arbitrary phase display name like "Compute IE attribution").
   const upstreamPhases = useMemo(() => {
     const before = allPhases.slice(0, idx)
     return before
       .filter((p) => p.status !== 'idle')
-      .map((p) => ({ id: p.phase_id, name: p.phase_name }))
+      .map((p) => ({
+        id: p.phase_id,
+        name: p.phase_name,
+        skill: p.skill_name,
+      }))
   }, [allPhases, idx])
 
   // When the analyst picks an upstream target, pre-fill the feedback
   // textarea from the challenger's findings tagged for that agent.
-  // They can still edit before submitting.
+  // The findings are keyed by skill_name (e.g. "variance-analyst"),
+  // so we look up by skill first; fall back to phase_name / phase_id
+  // for older challengers that wrote the display name. The analyst can
+  // still edit before submitting.
   const onTargetChange = (target: string) => {
     setRerunTarget(target)
     if (!target) return
-    // Match target either by exact phase_id OR by phase_name (because
-    // the challenger writes target_phase as the skill name, e.g.
-    // "variance-analyst", which matches PhaseExecution.phase_name).
     const phaseObj = upstreamPhases.find(
-      (p) => p.id === target || p.name === target,
+      (p) => p.id === target || p.skill === target || p.name === target,
     )
-    const lookupKey = phaseObj?.name || target
-    const lines = findingsByPhase[lookupKey] || findingsByPhase[target] || []
+    const candidates = [
+      phaseObj?.skill,
+      phaseObj?.name,
+      phaseObj?.id,
+      target,
+    ].filter(Boolean) as string[]
+    let lines: string[] = []
+    for (const key of candidates) {
+      if (findingsByPhase[key]?.length) { lines = findingsByPhase[key]; break }
+    }
     if (lines.length > 0) {
       setFeedback(lines.join('\n\n'))
     }
@@ -1930,7 +1942,9 @@ function PhaseRunCard({
                         </option>
                         {upstreamPhases.map((p) => {
                           const hasFindings = !!(
-                            findingsByPhase[p.name] || findingsByPhase[p.id]
+                            findingsByPhase[p.skill] ||
+                            findingsByPhase[p.name] ||
+                            findingsByPhase[p.id]
                           )
                           return (
                             <option key={p.id} value={p.id}>
