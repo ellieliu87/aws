@@ -1,109 +1,136 @@
-scenario,run_id,variable_name,snap_date,variable_value,additional_dimensions
-BHCS,run_1,rate_paid,2025-12-31,3.45,"{""product_name"": ""MMDA"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-03-31,3.34,"{""product_name"": ""MMDA"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-06-30,3.23,"{""product_name"": ""MMDA"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-09-30,3.0,"{""product_name"": ""MMDA"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-12-31,2.78,"{""product_name"": ""MMDA"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-03-31,2.66,"{""product_name"": ""MMDA"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-06-30,2.55,"{""product_name"": ""MMDA"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-09-30,2.55,"{""product_name"": ""MMDA"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-12-31,2.55,"{""product_name"": ""MMDA"", ""variable_type"": ""rate""}"
-BHCS,run_1,balance,2025-12-31,22000,"{""product_name"": ""MMDA"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-03-31,22000,"{""product_name"": ""MMDA"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-06-30,22000,"{""product_name"": ""MMDA"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-09-30,22000,"{""product_name"": ""MMDA"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-12-31,22000,"{""product_name"": ""MMDA"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-03-31,22000,"{""product_name"": ""MMDA"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-06-30,22000,"{""product_name"": ""MMDA"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-09-30,22000,"{""product_name"": ""MMDA"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-12-31,22000,"{""product_name"": ""MMDA"", ""variable_type"": ""balance""}"
-BHCS,run_1,rate_paid,2025-12-31,4.44,"{""product_name"": ""HYMM"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-03-31,4.25,"{""product_name"": ""HYMM"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-06-30,4.05,"{""product_name"": ""HYMM"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-09-30,3.66,"{""product_name"": ""HYMM"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-12-31,3.27,"{""product_name"": ""HYMM"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-03-31,3.08,"{""product_name"": ""HYMM"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-06-30,2.88,"{""product_name"": ""HYMM"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-09-30,2.88,"{""product_name"": ""HYMM"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-12-31,2.88,"{""product_name"": ""HYMM"", ""variable_type"": ""rate""}"
-BHCS,run_1,balance,2025-12-31,8000,"{""product_name"": ""HYMM"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-03-31,8000,"{""product_name"": ""HYMM"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-06-30,8000,"{""product_name"": ""HYMM"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-09-30,8000,"{""product_name"": ""HYMM"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-12-31,8000,"{""product_name"": ""HYMM"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-03-31,8000,"{""product_name"": ""HYMM"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-06-30,8000,"{""product_name"": ""HYMM"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-09-30,8000,"{""product_name"": ""HYMM"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-12-31,8000,"{""product_name"": ""HYMM"", ""variable_type"": ""balance""}"
-BHCS,run_1,rate_paid,2025-12-31,3.29,"{""product_name"": ""GBIB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-03-31,3.15,"{""product_name"": ""GBIB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-06-30,3.01,"{""product_name"": ""GBIB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-09-30,2.74,"{""product_name"": ""GBIB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-12-31,2.46,"{""product_name"": ""GBIB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-03-31,2.33,"{""product_name"": ""GBIB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-06-30,2.19,"{""product_name"": ""GBIB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-09-30,2.19,"{""product_name"": ""GBIB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-12-31,2.19,"{""product_name"": ""GBIB"", ""variable_type"": ""rate""}"
-BHCS,run_1,balance,2025-12-31,18000,"{""product_name"": ""GBIB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-03-31,18000,"{""product_name"": ""GBIB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-06-30,18000,"{""product_name"": ""GBIB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-09-30,18000,"{""product_name"": ""GBIB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-12-31,18000,"{""product_name"": ""GBIB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-03-31,18000,"{""product_name"": ""GBIB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-06-30,18000,"{""product_name"": ""GBIB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-09-30,18000,"{""product_name"": ""GBIB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-12-31,18000,"{""product_name"": ""GBIB"", ""variable_type"": ""balance""}"
-BHCS,run_1,rate_paid,2025-12-31,2.66,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-03-31,2.51,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-06-30,2.35,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-09-30,2.04,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-12-31,1.73,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-03-31,1.58,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-06-30,1.42,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-09-30,1.42,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-12-31,1.42,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""rate""}"
-BHCS,run_1,balance,2025-12-31,35000,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-03-31,35000,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-06-30,35000,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-09-30,35000,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-12-31,35000,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-03-31,35000,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-06-30,35000,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-09-30,35000,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-12-31,35000,"{""product_name"": ""NONGB_IB"", ""variable_type"": ""balance""}"
-BHCS,run_1,rate_paid,2025-12-31,1.15,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-03-31,1.09,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-06-30,1.05,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-09-30,0.9,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-12-31,0.78,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-03-31,0.71,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-06-30,0.65,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-09-30,0.65,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-12-31,0.65,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,balance,2025-12-31,28000,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-03-31,28000,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-06-30,28000,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-09-30,28000,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-12-31,28000,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-03-31,28000,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-06-30,28000,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-09-30,28000,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-12-31,28000,"{""product_name"": ""NONGB_ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,rate_paid,2025-12-31,0.55,"{""product_name"": ""ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-03-31,0.51,"{""product_name"": ""ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-06-30,0.48,"{""product_name"": ""ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-09-30,0.4,"{""product_name"": ""ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2026-12-31,0.33,"{""product_name"": ""ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-03-31,0.29,"{""product_name"": ""ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-06-30,0.25,"{""product_name"": ""ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-09-30,0.25,"{""product_name"": ""ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,rate_paid,2027-12-31,0.25,"{""product_name"": ""ECR"", ""variable_type"": ""rate""}"
-BHCS,run_1,balance,2025-12-31,15000,"{""product_name"": ""ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-03-31,15000,"{""product_name"": ""ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-06-30,15000,"{""product_name"": ""ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-09-30,15000,"{""product_name"": ""ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2026-12-31,15000,"{""product_name"": ""ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-03-31,15000,"{""product_name"": ""ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-06-30,15000,"{""product_name"": ""ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-09-30,15000,"{""product_name"": ""ECR"", ""variable_type"": ""balance""}"
-BHCS,run_1,balance,2027-12-31,15000,"{""product_name"": ""ECR"", ""variable_type"": ""balance""}"
+scenario,snap_date,variable_name,variable_value,segment,origin
+BHCS,2025-12-31,fed_funds_rate,5.0,,model_input
+BHCS,2026-03-31,fed_funds_rate,4.75,,model_input
+BHCS,2026-06-30,fed_funds_rate,4.5,,model_input
+BHCS,2026-09-30,fed_funds_rate,4.0,,model_input
+BHCS,2026-12-31,fed_funds_rate,3.5,,model_input
+BHCS,2027-03-31,fed_funds_rate,3.25,,model_input
+BHCS,2027-06-30,fed_funds_rate,3.0,,model_input
+BHCS,2027-09-30,fed_funds_rate,3.0,,model_input
+BHCS,2027-12-31,fed_funds_rate,3.0,,model_input
+BHCS,2025-12-31,ust_10y_rate,4.55,,model_input
+BHCS,2026-03-31,ust_10y_rate,4.3,,model_input
+BHCS,2026-06-30,ust_10y_rate,4.05,,model_input
+BHCS,2026-09-30,ust_10y_rate,3.65,,model_input
+BHCS,2026-12-31,ust_10y_rate,3.3,,model_input
+BHCS,2027-03-31,ust_10y_rate,3.05,,model_input
+BHCS,2027-06-30,ust_10y_rate,2.85,,model_input
+BHCS,2027-09-30,ust_10y_rate,2.85,,model_input
+BHCS,2027-12-31,ust_10y_rate,2.85,,model_input
+BHCS,2025-12-31,bbb_spread_pct,1.8,,model_input
+BHCS,2026-03-31,bbb_spread_pct,2.1,,model_input
+BHCS,2026-06-30,bbb_spread_pct,2.45,,model_input
+BHCS,2026-09-30,bbb_spread_pct,2.8,,model_input
+BHCS,2026-12-31,bbb_spread_pct,2.65,,model_input
+BHCS,2027-03-31,bbb_spread_pct,2.4,,model_input
+BHCS,2027-06-30,bbb_spread_pct,2.2,,model_input
+BHCS,2027-09-30,bbb_spread_pct,2.1,,model_input
+BHCS,2027-12-31,bbb_spread_pct,2.0,,model_input
+BHCS,2025-12-31,rate_paid,0.55,ECR,model_output
+BHCS,2026-03-31,rate_paid,0.51,ECR,model_output
+BHCS,2026-06-30,rate_paid,0.48,ECR,model_output
+BHCS,2026-09-30,rate_paid,0.4,ECR,model_output
+BHCS,2026-12-31,rate_paid,0.33,ECR,model_output
+BHCS,2027-03-31,rate_paid,0.29,ECR,model_output
+BHCS,2027-06-30,rate_paid,0.25,ECR,model_output
+BHCS,2027-09-30,rate_paid,0.25,ECR,model_output
+BHCS,2027-12-31,rate_paid,0.25,ECR,model_output
+BHCS,2025-12-31,rate_paid,1.15,NONGB_ECR,model_output
+BHCS,2026-03-31,rate_paid,1.09,NONGB_ECR,model_output
+BHCS,2026-06-30,rate_paid,1.05,NONGB_ECR,model_output
+BHCS,2026-09-30,rate_paid,0.9,NONGB_ECR,model_output
+BHCS,2026-12-31,rate_paid,0.78,NONGB_ECR,model_output
+BHCS,2027-03-31,rate_paid,0.71,NONGB_ECR,model_output
+BHCS,2027-06-30,rate_paid,0.65,NONGB_ECR,model_output
+BHCS,2027-09-30,rate_paid,0.65,NONGB_ECR,model_output
+BHCS,2027-12-31,rate_paid,0.65,NONGB_ECR,model_output
+BHCS,2025-12-31,rate_paid,2.66,NONGB_IB,model_output
+BHCS,2026-03-31,rate_paid,2.51,NONGB_IB,model_output
+BHCS,2026-06-30,rate_paid,2.35,NONGB_IB,model_output
+BHCS,2026-09-30,rate_paid,2.04,NONGB_IB,model_output
+BHCS,2026-12-31,rate_paid,1.73,NONGB_IB,model_output
+BHCS,2027-03-31,rate_paid,1.58,NONGB_IB,model_output
+BHCS,2027-06-30,rate_paid,1.42,NONGB_IB,model_output
+BHCS,2027-09-30,rate_paid,1.42,NONGB_IB,model_output
+BHCS,2027-12-31,rate_paid,1.42,NONGB_IB,model_output
+BHCS,2025-12-31,rate_paid,3.29,GBIB,model_output
+BHCS,2026-03-31,rate_paid,3.15,GBIB,model_output
+BHCS,2026-06-30,rate_paid,3.01,GBIB,model_output
+BHCS,2026-09-30,rate_paid,2.74,GBIB,model_output
+BHCS,2026-12-31,rate_paid,2.46,GBIB,model_output
+BHCS,2027-03-31,rate_paid,2.33,GBIB,model_output
+BHCS,2027-06-30,rate_paid,2.19,GBIB,model_output
+BHCS,2027-09-30,rate_paid,2.19,GBIB,model_output
+BHCS,2027-12-31,rate_paid,2.19,GBIB,model_output
+BHCS,2025-12-31,rate_paid,4.44,HYMM,model_output
+BHCS,2026-03-31,rate_paid,4.25,HYMM,model_output
+BHCS,2026-06-30,rate_paid,4.05,HYMM,model_output
+BHCS,2026-09-30,rate_paid,3.66,HYMM,model_output
+BHCS,2026-12-31,rate_paid,3.27,HYMM,model_output
+BHCS,2027-03-31,rate_paid,3.08,HYMM,model_output
+BHCS,2027-06-30,rate_paid,2.88,HYMM,model_output
+BHCS,2027-09-30,rate_paid,2.88,HYMM,model_output
+BHCS,2027-12-31,rate_paid,2.88,HYMM,model_output
+BHCS,2025-12-31,rate_paid,3.45,MMDA,model_output
+BHCS,2026-03-31,rate_paid,3.34,MMDA,model_output
+BHCS,2026-06-30,rate_paid,3.23,MMDA,model_output
+BHCS,2026-09-30,rate_paid,3.0,MMDA,model_output
+BHCS,2026-12-31,rate_paid,2.78,MMDA,model_output
+BHCS,2027-03-31,rate_paid,2.66,MMDA,model_output
+BHCS,2027-06-30,rate_paid,2.55,MMDA,model_output
+BHCS,2027-09-30,rate_paid,2.55,MMDA,model_output
+BHCS,2027-12-31,rate_paid,2.55,MMDA,model_output
+BHCS,2025-12-31,balance_mm,15000,ECR,model_output
+BHCS,2026-03-31,balance_mm,15000,ECR,model_output
+BHCS,2026-06-30,balance_mm,15000,ECR,model_output
+BHCS,2026-09-30,balance_mm,15000,ECR,model_output
+BHCS,2026-12-31,balance_mm,15000,ECR,model_output
+BHCS,2027-03-31,balance_mm,15000,ECR,model_output
+BHCS,2027-06-30,balance_mm,15000,ECR,model_output
+BHCS,2027-09-30,balance_mm,15000,ECR,model_output
+BHCS,2027-12-31,balance_mm,15000,ECR,model_output
+BHCS,2025-12-31,balance_mm,28000,NONGB_ECR,model_output
+BHCS,2026-03-31,balance_mm,28000,NONGB_ECR,model_output
+BHCS,2026-06-30,balance_mm,28000,NONGB_ECR,model_output
+BHCS,2026-09-30,balance_mm,28000,NONGB_ECR,model_output
+BHCS,2026-12-31,balance_mm,28000,NONGB_ECR,model_output
+BHCS,2027-03-31,balance_mm,28000,NONGB_ECR,model_output
+BHCS,2027-06-30,balance_mm,28000,NONGB_ECR,model_output
+BHCS,2027-09-30,balance_mm,28000,NONGB_ECR,model_output
+BHCS,2027-12-31,balance_mm,28000,NONGB_ECR,model_output
+BHCS,2025-12-31,balance_mm,35000,NONGB_IB,model_output
+BHCS,2026-03-31,balance_mm,35000,NONGB_IB,model_output
+BHCS,2026-06-30,balance_mm,35000,NONGB_IB,model_output
+BHCS,2026-09-30,balance_mm,35000,NONGB_IB,model_output
+BHCS,2026-12-31,balance_mm,35000,NONGB_IB,model_output
+BHCS,2027-03-31,balance_mm,35000,NONGB_IB,model_output
+BHCS,2027-06-30,balance_mm,35000,NONGB_IB,model_output
+BHCS,2027-09-30,balance_mm,35000,NONGB_IB,model_output
+BHCS,2027-12-31,balance_mm,35000,NONGB_IB,model_output
+BHCS,2025-12-31,balance_mm,18000,GBIB,model_output
+BHCS,2026-03-31,balance_mm,18000,GBIB,model_output
+BHCS,2026-06-30,balance_mm,18000,GBIB,model_output
+BHCS,2026-09-30,balance_mm,18000,GBIB,model_output
+BHCS,2026-12-31,balance_mm,18000,GBIB,model_output
+BHCS,2027-03-31,balance_mm,18000,GBIB,model_output
+BHCS,2027-06-30,balance_mm,18000,GBIB,model_output
+BHCS,2027-09-30,balance_mm,18000,GBIB,model_output
+BHCS,2027-12-31,balance_mm,18000,GBIB,model_output
+BHCS,2025-12-31,balance_mm,8000,HYMM,model_output
+BHCS,2026-03-31,balance_mm,8000,HYMM,model_output
+BHCS,2026-06-30,balance_mm,8000,HYMM,model_output
+BHCS,2026-09-30,balance_mm,8000,HYMM,model_output
+BHCS,2026-12-31,balance_mm,8000,HYMM,model_output
+BHCS,2027-03-31,balance_mm,8000,HYMM,model_output
+BHCS,2027-06-30,balance_mm,8000,HYMM,model_output
+BHCS,2027-09-30,balance_mm,8000,HYMM,model_output
+BHCS,2027-12-31,balance_mm,8000,HYMM,model_output
+BHCS,2025-12-31,balance_mm,22000,MMDA,model_output
+BHCS,2026-03-31,balance_mm,22000,MMDA,model_output
+BHCS,2026-06-30,balance_mm,22000,MMDA,model_output
+BHCS,2026-09-30,balance_mm,22000,MMDA,model_output
+BHCS,2026-12-31,balance_mm,22000,MMDA,model_output
+BHCS,2027-03-31,balance_mm,22000,MMDA,model_output
+BHCS,2027-06-30,balance_mm,22000,MMDA,model_output
+BHCS,2027-09-30,balance_mm,22000,MMDA,model_output
+BHCS,2027-12-31,balance_mm,22000,MMDA,model_output

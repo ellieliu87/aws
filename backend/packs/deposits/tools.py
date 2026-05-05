@@ -1130,50 +1130,44 @@ def register_python_tools(ctx: PackContext) -> None:
     # lets the same tools work across "BHC long-format" outputs
     # (variable_name + additional_dimensions JSON), "metric-style" wide
     # outputs (Metric/Value pairs), and even when callers rename columns.
+    # Both compute_* tools share a long-format schema:
+    #   scenario, snap_date, variable_name, variable_value, segment, origin
+    # `segment` carries the product label; `origin` distinguishes model
+    # inputs (FF / macros) from model outputs (per-product rate paid).
+    # Tools tolerate column-name case/underscore variants and alias values
+    # for variable_name + origin.
     ctx.register_python_tool(
         name="compute_projected_beta",
         description=(
-            "Compute each commercial-deposit product's effective projected "
+            "Compute each commercial-deposit segment's effective projected "
             "beta (Δrate_paid / Δfed_funds) over the CCAR horizon. Reads a "
-            "long-format projection output CSV (rows keyed by "
-            "variable_name + snap_date + product, with product carried "
-            "either as a column or inside additional_dimensions JSON), "
-            "and pulls the macro Fed Funds path from a separate input "
-            "CSV (or the same output file if it carries fed_funds_rate). "
+            "single long-format projection CSV with columns scenario, "
+            "snap_date, variable_name, variable_value, segment, origin. "
+            "Tool reads model_output rows (variable_name='rate_paid') for "
+            "the per-segment rate paths and model_input rows "
+            "(variable_name='fed_funds_rate') for the macro Fed Funds path. "
             "Schema-tolerant: column names matched case-insensitively, "
-            "alias variable names accepted (rate_paid / interest_apy / "
-            "rate_paid_pct, etc.)."
+            "alias values accepted for variable_name and origin."
         ),
         parameters=[
-            {"name": "output_csv_path", "type": "string",
+            {"name": "csv_path", "type": "string",
              "description": (
-                 "Path to the long-format projection output CSV "
-                 "(scenario, run_id, variable_name, snap_date, "
-                 "variable_value, additional_dimensions). Defaults to "
+                 "Path to the long-format projection CSV. Defaults to "
                  "sample_data/ccar/commercial_deposit_output_CCAR26.csv."
-             ),
-             "required": False},
-            {"name": "input_csv_path", "type": "string",
-             "description": (
-                 "Path to the macro input CSV carrying fed_funds_rate "
-                 "(scenario, variable_name, variable_value, snap_date, ...). "
-                 "Defaults to sample_data/ccar/commercial_deposit_input_CCAR26.csv. "
-                 "If absent, the tool falls back to looking for "
-                 "fed_funds_rate inside the output file."
              ),
              "required": False},
             {"name": "scenario", "type": "string",
              "description": (
-                 "Scenario value to filter on (e.g. BHCS, "
-                 "CCAR_26_BHC_Stress). Matched case-insensitively. "
-                 "Defaults to the first scenario in the output file."
+                 "Scenario value to filter on (e.g. BHCS). Matched "
+                 "case-insensitively. Defaults to the first scenario "
+                 "found in the file."
              ),
              "required": False},
             {"name": "rate_var_aliases", "type": "array",
              "description": (
                  "Extra aliases for the rate-paid variable_name. "
                  "Defaults already cover rate_paid / rate_paid_pct / "
-                 "interest_apy / interest_apr / interest_rate."
+                 "interest_apy / interest_apr / interest_rate / rate."
              ),
              "required": False},
             {"name": "ff_var_aliases", "type": "array",
@@ -1184,12 +1178,13 @@ def register_python_tools(ctx: PackContext) -> None:
              ),
              "required": False},
         ],
-        python_source='''def compute_projected_beta(output_csv_path=None, input_csv_path=None, scenario=None,
+        python_source='''def compute_projected_beta(csv_path=None, scenario=None,
                             rate_var_aliases=None, ff_var_aliases=None):
-    """Per-product Δrate_paid / Δfed_funds over the projection horizon. Tolerates
-    case + underscore variants in column names and accepts alias variable_name
-    values for rate_paid and fed_funds_rate."""
-    import os, json, ast
+    """Per-segment Δrate_paid / Δfed_funds over the projection horizon.
+    Reads a single long-format CSV; uses `origin` to disambiguate model
+    inputs (FF) from model outputs (rate_paid). Tolerates case +
+    underscore variants in column + value names."""
+    import os
     import pandas as pd
 
     def _find_repo_root():
@@ -1218,107 +1213,78 @@ def register_python_tools(ctx: PackContext) -> None:
         norm_cands = {_norm(c) for c in candidates}
         return [v for v in series.dropna().unique() if _norm(v) in norm_cands]
 
-    def _parse_dims(x):
-        if isinstance(x, dict):
-            return x
-        try:
-            if pd.isna(x):
-                return {}
-        except Exception:
-            pass
-        s = str(x)
-        try:
-            return json.loads(s)
-        except Exception:
-            try:
-                return ast.literal_eval(s)
-            except Exception:
-                return {}
-
     repo = _find_repo_root()
-    if not output_csv_path:
-        output_csv_path = os.path.join(repo, "sample_data", "ccar", "commercial_deposit_output_CCAR26.csv")
-    if not os.path.exists(output_csv_path):
-        return {"error": f"output csv not found: {output_csv_path}"}
-    out_df = pd.read_csv(output_csv_path)
+    if not csv_path:
+        csv_path = os.path.join(repo, "sample_data", "ccar", "commercial_deposit_output_CCAR26.csv")
+    if not os.path.exists(csv_path):
+        return {"error": f"csv not found: {csv_path}"}
+    df = pd.read_csv(csv_path)
 
-    var_col = _ci_pick(out_df, "variable_name", "variableName", "metric")
-    val_col = _ci_pick(out_df, "variable_value", "value")
-    date_col = _ci_pick(out_df, "snap_date", "snapDate", "date", "quarter_id", "quarterID", "period")
-    scen_col = _ci_pick(out_df, "scenario", "scenarioName", "scenario_id")
-    dims_col = _ci_pick(out_df, "additional_dimensions", "additionalDimensions", "dims", "additional_dims")
-    prod_col = _ci_pick(out_df, "product_name", "productName", "product", "product_l1")
+    var_col  = _ci_pick(df, "variable_name", "variableName", "metric")
+    val_col  = _ci_pick(df, "variable_value", "value")
+    date_col = _ci_pick(df, "snap_date", "snapDate", "date", "quarter_id", "quarterID", "period")
+    seg_col  = _ci_pick(df, "segment", "product_name", "productName", "product", "product_l1")
+    scen_col = _ci_pick(df, "scenario", "scenarioName", "scenario_id")
+    org_col  = _ci_pick(df, "origin", "source", "source_kind", "io")
 
-    if var_col is None or val_col is None or date_col is None:
-        return {"error": f"output csv missing required columns; have: {list(out_df.columns)}; need variable_name + variable_value + snap_date (any case)"}
+    if var_col is None or val_col is None or date_col is None or seg_col is None:
+        return {"error": f"csv missing required columns; have: {list(df.columns)}; need variable_name + variable_value + snap_date + segment (any case)"}
 
     if scenario and scen_col is not None:
-        out_df = out_df[out_df[scen_col].astype(str).str.lower() == str(scenario).lower()]
-    elif scen_col is not None and len(out_df):
-        scenario = str(out_df[scen_col].dropna().iloc[0])
-        out_df = out_df[out_df[scen_col].astype(str) == scenario]
-    if not len(out_df):
+        df = df[df[scen_col].astype(str).str.lower() == str(scenario).lower()]
+    elif scen_col is not None and len(df):
+        scenario = str(df[scen_col].dropna().iloc[0])
+        df = df[df[scen_col].astype(str) == scenario]
+    if not len(df):
         return {"error": f"no rows for scenario {scenario}"}
 
-    rate_aliases = list(rate_var_aliases or []) + ["rate_paid", "rate_paid_pct", "interest_apy", "interest_apr", "interest_rate", "rate_paid_apr"]
-    rate_matches = _ci_match_values(out_df[var_col], *rate_aliases)
+    INPUT_ALIASES  = ["model_input", "input", "macro_input", "macro", "predictor", "feature"]
+    OUTPUT_ALIASES = ["model_output", "output", "predicted", "target", "modeled"]
+    rate_aliases = list(rate_var_aliases or []) + ["rate_paid", "rate_paid_pct", "interest_apy", "interest_apr", "interest_rate", "rate", "rate_paid_apr"]
+    ff_aliases   = list(ff_var_aliases or [])   + ["fed_funds_rate", "fed_funds", "fedfunds", "ff_rate", "ffr", "fed_funds_pct"]
+
+    rate_matches = _ci_match_values(df[var_col], *rate_aliases)
+    ff_matches   = _ci_match_values(df[var_col], *ff_aliases)
     if not rate_matches:
-        return {"error": f"no rate-paid variable in output. variable_name values seen: {sorted(map(str, out_df[var_col].dropna().unique()))[:20]}; tried aliases: {rate_aliases}"}
+        return {"error": f"no rate-paid variable in csv. variable_name values seen: {sorted(map(str, df[var_col].dropna().unique()))[:20]}; tried aliases: {rate_aliases}"}
+    if not ff_matches:
+        return {"error": f"no fed_funds_rate variable in csv. variable_name values seen: {sorted(map(str, df[var_col].dropna().unique()))[:20]}; tried aliases: {ff_aliases}"}
 
-    rate_df = out_df[out_df[var_col].isin(rate_matches)].copy()
-    if dims_col is not None:
-        def _prod_from_dims(x):
-            d = _parse_dims(x)
-            return d.get("product_name") or d.get("product") or d.get("product_l1")
-        rate_df["_product"] = rate_df[dims_col].apply(_prod_from_dims)
-    elif prod_col is not None:
-        rate_df["_product"] = rate_df[prod_col]
-    else:
-        return {"error": "could not find product_name (no additional_dimensions and no product/product_l1 column)"}
-    rate_df = rate_df.dropna(subset=["_product"])
+    # Per-segment rate paths (filter to model_output rows when origin
+    # column is present; otherwise just take all rate_paid rows).
+    rate_df = df[df[var_col].isin(rate_matches)].copy()
+    if org_col is not None:
+        out_matches = _ci_match_values(rate_df[org_col], *OUTPUT_ALIASES)
+        if out_matches:
+            rate_df = rate_df[rate_df[org_col].isin(out_matches)]
+    rate_df = rate_df.dropna(subset=[seg_col])
+    rate_df = rate_df[rate_df[seg_col].astype(str).str.strip() != ""]
     if not len(rate_df):
-        return {"error": "no rate rows had a parseable product_name"}
+        return {"error": "no per-segment rate rows found after applying origin + segment filters"}
 
-    ff_aliases = list(ff_var_aliases or []) + ["fed_funds_rate", "fed_funds", "fedfunds", "ff_rate", "ffr", "fed_funds_pct"]
-    ff_path = None
-    ff_source = None
-    if not input_csv_path:
-        cand = os.path.join(repo, "sample_data", "ccar", "commercial_deposit_input_CCAR26.csv")
-        if os.path.exists(cand):
-            input_csv_path = cand
-    if input_csv_path and os.path.exists(input_csv_path):
-        in_df = pd.read_csv(input_csv_path)
-        in_var = _ci_pick(in_df, "variable_name", "variableName", "metric")
-        in_val = _ci_pick(in_df, "variable_value", "value")
-        in_date = _ci_pick(in_df, "snap_date", "snapDate", "date", "quarter_id", "period")
-        if in_var and in_val and in_date:
-            ff_matches_in = _ci_match_values(in_df[in_var], *ff_aliases)
-            if ff_matches_in:
-                ff_path = (in_df[in_df[in_var].isin(ff_matches_in)]
-                              .groupby(in_date)[in_val].mean().sort_index())
-                ff_source = "input"
-    if ff_path is None or len(ff_path) < 2:
-        ff_matches_out = _ci_match_values(out_df[var_col], *ff_aliases)
-        if ff_matches_out:
-            ff_path = (out_df[out_df[var_col].isin(ff_matches_out)]
-                          .groupby(date_col)[val_col].mean().sort_index())
-            ff_source = "output"
-    if ff_path is None or len(ff_path) < 2:
-        return {"error": f"could not find fed_funds_rate (≥2 obs) in input or output file. input checked: {bool(input_csv_path)}; tried aliases: {ff_aliases}"}
-
+    # Fed Funds path — use origin=model_input rows when origin exists,
+    # otherwise just match by variable_name.
+    ff_df = df[df[var_col].isin(ff_matches)].copy()
+    if org_col is not None:
+        in_matches = _ci_match_values(ff_df[org_col], *INPUT_ALIASES)
+        if in_matches:
+            ff_df = ff_df[ff_df[org_col].isin(in_matches)]
+    ff_path = ff_df.groupby(date_col)[val_col].mean().sort_index()
+    if len(ff_path) < 2:
+        return {"error": "need at least two fed_funds_rate observations across snap_date"}
     ff_change = float(ff_path.iloc[-1] - ff_path.iloc[0])
     if abs(ff_change) < 1e-6:
         return {"error": "fed_funds_rate is flat across the horizon — beta undefined"}
 
     out_rows = []
-    for product, sub in rate_df.groupby("_product"):
+    for segment, sub in rate_df.groupby(seg_col):
         rp = sub.groupby(date_col)[val_col].mean().sort_index()
         if len(rp) < 2:
             continue
         rate_change = float(rp.iloc[-1] - rp.iloc[0])
         beta = rate_change / ff_change
         out_rows.append({
-            "product":         str(product),
+            "product":         str(segment),
             "projected_beta":  round(beta, 3),
             "rate_change_pp": round(rate_change, 3),
             "ff_change_pp":   round(ff_change, 3),
@@ -1328,16 +1294,15 @@ def register_python_tools(ctx: PackContext) -> None:
     out_rows.sort(key=lambda r: -r["projected_beta"])
 
     return {
-        "scenario":             str(scenario) if scenario is not None else None,
-        "ff_start":             round(float(ff_path.iloc[0]), 3),
-        "ff_end":                round(float(ff_path.iloc[-1]), 3),
-        "ff_change_pp":         round(ff_change, 3),
-        "ff_source":             ff_source,
-        "horizon_periods":      sorted(map(str, ff_path.index.tolist())),
-        "by_product":           out_rows,
-        "rate_var_matched":     rate_matches,
-        "output_csv_path_used": output_csv_path,
-        "input_csv_path_used":  input_csv_path if ff_source == "input" else None,
+        "scenario":        str(scenario) if scenario is not None else None,
+        "ff_start":        round(float(ff_path.iloc[0]), 3),
+        "ff_end":          round(float(ff_path.iloc[-1]), 3),
+        "ff_change_pp":    round(ff_change, 3),
+        "horizon_periods": sorted(map(str, ff_path.index.tolist())),
+        "by_product":      out_rows,
+        "rate_var_matched":  rate_matches,
+        "ff_var_matched":    ff_matches,
+        "csv_path_used":   csv_path,
     }
 ''',
     )
@@ -1345,19 +1310,20 @@ def register_python_tools(ctx: PackContext) -> None:
     ctx.register_python_tool(
         name="compute_historical_beta",
         description=(
-            "Compute each product's effective historical beta (OLS slope "
-            "of rate vs Fed Funds) from a wide-format historical CSV. "
-            "Auto-detects the date column, the Fed Funds column "
-            "(FEDFUNDS / fed_funds / fed_funds_rate / ff_rate, all "
-            "case-insensitive), and treats every other numeric column "
-            "as a product UNLESS it matches a known macro indicator "
-            "(BBBYIELD, RGT10Y, BBBSPREAD, UST_10Y, …)."
+            "Compute each segment's effective historical beta (OLS slope "
+            "of rate_paid vs Fed Funds) from a long-format actuals CSV. "
+            "Schema mirrors the projection file: scenario, snap_date, "
+            "variable_name, variable_value, segment, origin. The tool "
+            "joins each segment's per-snap_date rate_paid against the "
+            "macro fed_funds_rate path, then regresses. Schema-tolerant: "
+            "column names matched case-insensitively, alias values for "
+            "variable_name and origin."
         ),
         parameters=[
             {"name": "csv_path", "type": "string",
              "description": (
-                 "Path to the wide-format history CSV. Defaults to "
-                 "sample_data/ccar/commercial_rate_history.csv."
+                 "Path to the long-format actuals CSV. Defaults to "
+                 "sample_data/ccar/commercial_deposit_rate_actuals.csv."
              ),
              "required": False},
             {"name": "lookback_start", "type": "string",
@@ -1367,35 +1333,34 @@ def register_python_tools(ctx: PackContext) -> None:
                  "the regression to the latest tightening cycle."
              ),
              "required": False},
-            {"name": "ff_aliases", "type": "array",
+            {"name": "rate_var_aliases", "type": "array",
              "description": (
-                 "Extra column names (any case) that should be treated "
-                 "as the Fed Funds column. Defaults cover FEDFUNDS, "
-                 "fed_funds, fed_funds_rate, ff_rate, ffr."
+                 "Extra aliases for the rate-paid variable_name. "
+                 "Defaults already cover rate_paid / rate_paid_pct / "
+                 "interest_apy / interest_apr / interest_rate / rate."
              ),
              "required": False},
-            {"name": "excluded_columns", "type": "array",
+            {"name": "ff_var_aliases", "type": "array",
              "description": (
-                 "Extra column names to exclude from the product list "
-                 "(in addition to date, FF, and the macro indicators "
-                 "BBBYIELD / RGT10Y / BBBSPREAD / UST_10Y / etc.). Use "
-                 "this when your file has columns the tool would "
-                 "otherwise treat as products by mistake."
+                 "Extra aliases for the fed-funds variable_name. "
+                 "Defaults cover fed_funds_rate / fed_funds / "
+                 "fed_funds_pct / FEDFUNDS / ff_rate / ffr."
              ),
              "required": False},
             {"name": "products_only", "type": "array",
              "description": (
                  "If supplied, restricts the regression to ONLY these "
-                 "column names (case-insensitive). Useful when the "
-                 "file's column set spans multiple lines of business."
+                 "segment values (case-insensitive). Useful when the "
+                 "file mixes segments from multiple lines of business."
              ),
              "required": False},
         ],
         python_source='''def compute_historical_beta(csv_path=None, lookback_start=None,
-                              ff_aliases=None, excluded_columns=None, products_only=None):
-    """OLS slope of each product column on Fed Funds in a wide-format CSV.
-    Auto-detects date + FF columns; treats remaining numeric columns as
-    products unless they match a known macro indicator."""
+                              rate_var_aliases=None, ff_var_aliases=None,
+                              products_only=None):
+    """OLS slope of rate_paid on fed_funds per segment, from the long-format
+    actuals CSV. Joins per-segment rate paths against the macro fed_funds
+    path on snap_date, then regresses Δy on Δx."""
     import os
     import pandas as pd
 
@@ -1421,56 +1386,82 @@ def register_python_tools(ctx: PackContext) -> None:
                 return f
         return None
 
+    def _ci_match_values(series, *candidates):
+        norm_cands = {_norm(c) for c in candidates}
+        return [v for v in series.dropna().unique() if _norm(v) in norm_cands]
+
+    repo = _find_repo_root()
     if not csv_path:
-        csv_path = os.path.join(_find_repo_root(), "sample_data", "ccar", "commercial_rate_history.csv")
-    if not os.path.exists(csv_path):
-        return {"error": f"csv file not found: {csv_path}"}
+        # Try the new name first; fall back to the legacy "rate_history" name.
+        for cand in ("commercial_deposit_rate_actuals.csv", "commercial_rate_history.csv"):
+            p = os.path.join(repo, "sample_data", "ccar", cand)
+            if os.path.exists(p):
+                csv_path = p
+                break
+    if not csv_path or not os.path.exists(csv_path):
+        return {"error": f"csv not found (tried sample_data/ccar/commercial_deposit_rate_actuals.csv)"}
     df = pd.read_csv(csv_path)
 
-    date_col = _ci_pick(df, "date", "snap_date", "as_of_date", "observation_date", "report_date")
-    if date_col is None:
-        return {"error": f"no date column found; have: {list(df.columns)}"}
+    var_col  = _ci_pick(df, "variable_name", "variableName", "metric")
+    val_col  = _ci_pick(df, "variable_value", "value")
+    date_col = _ci_pick(df, "snap_date", "snapDate", "date", "as_of_date", "observation_date")
+    seg_col  = _ci_pick(df, "segment", "product_name", "productName", "product", "product_l1")
+    org_col  = _ci_pick(df, "origin", "source", "source_kind", "io")
 
-    ff_alias_list = list(ff_aliases or []) + ["fedfunds", "fed_funds", "fed_funds_rate", "ff_rate", "ffr", "fed_funds_pct", "fedfundsrate"]
-    ff_col = _ci_pick(df, *ff_alias_list)
-    if ff_col is None:
-        return {"error": f"no fed funds column found. Tried aliases: {ff_alias_list}. Available: {list(df.columns)}"}
+    if var_col is None or val_col is None or date_col is None or seg_col is None:
+        return {"error": f"csv missing required columns; have: {list(df.columns)}; need variable_name + variable_value + snap_date + segment (any case)"}
 
-    # Default macro/spread columns to exclude from the product set.
-    DEFAULT_MACRO_EXCLUDES = {
-        "bbbyield", "rgt10y", "bbbspread", "bbb_spread",
-        "ust10y", "ust2y", "ust30y", "ust_2y", "ust_5y", "ust_30y",
-        "treasury10y", "treasury2y",
-        "unemployment", "unemploymentpct", "gdp", "gdpyoypct",
-        "creprice", "crepriceyoypct", "hpi", "hpiyoypct", "oil", "m2", "m2gdp",
-        "vix", "spx", "djia",
-    }
-    user_excluded = {_norm(c) for c in (excluded_columns or [])}
-    excluded = DEFAULT_MACRO_EXCLUDES | user_excluded | {_norm(date_col), _norm(ff_col)}
+    INPUT_ALIASES  = ["model_input", "input", "macro_input", "macro", "predictor", "feature"]
+    OUTPUT_ALIASES = ["model_output", "output", "predicted", "target", "modeled"]
+    rate_aliases = list(rate_var_aliases or []) + ["rate_paid", "rate_paid_pct", "interest_apy", "interest_apr", "interest_rate", "rate", "rate_paid_apr"]
+    ff_aliases   = list(ff_var_aliases or [])   + ["fed_funds_rate", "fed_funds", "fedfunds", "ff_rate", "ffr", "fed_funds_pct"]
 
-    if products_only:
-        wanted = {_norm(c) for c in products_only}
-        product_cols = [c for c in df.columns if _norm(c) in wanted and pd.api.types.is_numeric_dtype(df[c])]
-    else:
-        product_cols = [c for c in df.columns
-                        if _norm(c) not in excluded and pd.api.types.is_numeric_dtype(df[c])]
-    if not product_cols:
-        return {"error": f"no product columns identified. Available: {list(df.columns)}; excluded macros: {sorted(excluded)}"}
+    rate_matches = _ci_match_values(df[var_col], *rate_aliases)
+    ff_matches   = _ci_match_values(df[var_col], *ff_aliases)
+    if not rate_matches:
+        return {"error": f"no rate-paid variable. variable_name values seen: {sorted(map(str, df[var_col].dropna().unique()))[:20]}"}
+    if not ff_matches:
+        return {"error": f"no fed_funds_rate variable. variable_name values seen: {sorted(map(str, df[var_col].dropna().unique()))[:20]}"}
 
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-    df = df.dropna(subset=[date_col, ff_col])
+    df = df.dropna(subset=[date_col])
     if lookback_start:
         df = df[df[date_col] >= pd.to_datetime(lookback_start)]
     if not len(df):
         return {"error": "no rows after applying lookback filter"}
 
+    # Per-segment rate path
+    rate_df = df[df[var_col].isin(rate_matches)].copy()
+    if org_col is not None:
+        m = _ci_match_values(rate_df[org_col], *OUTPUT_ALIASES)
+        if m:
+            rate_df = rate_df[rate_df[org_col].isin(m)]
+    rate_df = rate_df.dropna(subset=[seg_col])
+    rate_df = rate_df[rate_df[seg_col].astype(str).str.strip() != ""]
+
+    # Fed Funds path on the same dates
+    ff_df = df[df[var_col].isin(ff_matches)].copy()
+    if org_col is not None:
+        m = _ci_match_values(ff_df[org_col], *INPUT_ALIASES)
+        if m:
+            ff_df = ff_df[ff_df[org_col].isin(m)]
+    ff_series = ff_df.groupby(date_col)[val_col].mean().rename("_ff").to_frame().reset_index()
+    if len(ff_series) < 3:
+        return {"error": "need at least 3 fed_funds_rate observations to regress"}
+
+    if products_only:
+        wanted = {_norm(s) for s in products_only}
+        rate_df = rate_df[rate_df[seg_col].apply(lambda s: _norm(s) in wanted)]
+
     out_rows = []
-    for c in product_cols:
-        sub = df.dropna(subset=[c, ff_col]).sort_values(date_col)
-        if len(sub) < 3:
+    for segment, sub in rate_df.groupby(seg_col):
+        seg_path = (sub.groupby(date_col)[val_col].mean().rename("_y")
+                       .to_frame().reset_index())
+        merged = seg_path.merge(ff_series, on=date_col, how="inner").sort_values(date_col)
+        if len(merged) < 3:
             continue
-        x = sub[ff_col].astype(float).to_numpy()
-        y = sub[c].astype(float).to_numpy()
+        x = merged["_ff"].astype(float).to_numpy()
+        y = merged["_y"].astype(float).to_numpy()
         x_mean = float(x.mean()); y_mean = float(y.mean())
         x_var = float(((x - x_mean) ** 2).sum())
         if x_var < 1e-9:
@@ -1482,23 +1473,23 @@ def register_python_tools(ctx: PackContext) -> None:
         ss_tot = float(((y - y_mean) ** 2).sum())
         r2 = (1.0 - ss_res / ss_tot) if ss_tot > 1e-9 else 0.0
         out_rows.append({
-            "product":          str(c),
+            "product":         str(segment),
             "historical_beta": round(slope, 3),
-            "intercept":        round(intercept, 3),
-            "r_squared":        round(r2, 3),
-            "observations":    int(len(sub)),
-            "date_start":       sub[date_col].min().strftime("%Y-%m-%d"),
-            "date_end":         sub[date_col].max().strftime("%Y-%m-%d"),
+            "intercept":       round(intercept, 3),
+            "r_squared":       round(r2, 3),
+            "observations":    int(len(merged)),
+            "date_start":      merged[date_col].min().strftime("%Y-%m-%d"),
+            "date_end":        merged[date_col].max().strftime("%Y-%m-%d"),
         })
     out_rows.sort(key=lambda r: -r["historical_beta"])
 
     return {
-        "by_product":         out_rows,
-        "date_col_used":     date_col,
-        "ff_col_used":       ff_col,
-        "product_cols_used": product_cols,
-        "lookback_start":    lookback_start,
-        "csv_path_used":     csv_path,
+        "by_product":       out_rows,
+        "date_col_used":    date_col,
+        "ff_var_matched":   ff_matches,
+        "rate_var_matched": rate_matches,
+        "lookback_start":   lookback_start,
+        "csv_path_used":    csv_path,
     }
 ''',
     )

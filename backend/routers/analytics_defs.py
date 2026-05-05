@@ -769,12 +769,9 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
     if "deposit" not in p and "ccar" not in p and "commercial" not in p:
         return None
 
-    # Resolve dataset ids by registered name. Output + history are required;
-    # input (the macro Fed Funds path) is optional — when present, the
-    # generated function reads the FF path from there. When absent, it
-    # falls back to looking for fed_funds_rate inside the output file.
-    # Names matched case-insensitively so a user-renamed dataset still
-    # binds.
+    # Resolve dataset ids by registered name. Both projection + actuals
+    # are required. Names matched case-insensitively (also tolerates
+    # underscores, hyphens, spaces) so a user-renamed dataset still binds.
     def _norm(s):
         return str(s or "").lower().replace("_", "").replace("-", "").replace(" ", "")
     available = req.available_datasets or []
@@ -786,15 +783,11 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
         "commercial_CCAR_output",   # legacy demo name
         "commercial_ccar_output",
     )
-    ds_input_aliases = (
-        "commercial_deposit_input_CCAR26",
-        "commercial_deposit_input",
-        "commercial_CCAR_input",
-        "commercial_ccar_input",
-    )
-    ds_history_aliases = (
-        "commercial_rate_history",
-        "commercial_deposit_rate_history",
+    ds_actuals_aliases = (
+        "commercial_deposit_rate_actuals",
+        "commercial_deposit_actuals",
+        "commercial_rate_actuals",
+        "commercial_rate_history",   # legacy demo name
     )
 
     def _pick(*aliases):
@@ -805,26 +798,48 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
         return None
 
     ds_proj = _pick(*ds_output_aliases)
-    ds_hist = _pick(*ds_history_aliases)
-    ds_input = _pick(*ds_input_aliases)
+    ds_hist = _pick(*ds_actuals_aliases)
     if not (ds_proj and ds_hist):
         return None
 
-    dataset_ids = [ds_proj]
-    if ds_input:
-        dataset_ids.append(ds_input)
-    dataset_ids.append(ds_hist)
+    dataset_ids = [ds_proj, ds_hist]
+
+    # Detect lookback hints — when the analyst frames the comparison
+    # against a specific historical period (the 2022/2023 tightening
+    # cycle), narrow the historical regression to that window so the
+    # comparison is "BHCS projection vs the same kind of cycle we just
+    # lived through" rather than "BHCS projection vs a 6-year average
+    # that includes ZIRP".
+    lookback_iso = None
+    lookback_label = None
+    if "2023 rate hike" in p or "2023 tightening" in p or "2023 hike cycle" in p \
+            or "tightening cycle" in p or "rate hike cycle" in p \
+            or "hiking cycle" in p:
+        lookback_iso = "2022-01-01"
+        lookback_label = "2022-Q1 onwards (the 2022-23 Fed tightening cycle)"
+    elif "since 2023" in p or "from 2023" in p:
+        lookback_iso = "2023-01-01"
+        lookback_label = "2023-Q1 onwards"
+    elif "since 2022" in p or "from 2022" in p:
+        lookback_iso = "2022-01-01"
+        lookback_label = "2022-Q1 onwards"
 
     PYTHON_SOURCE = '''def run(dfs):
     """Beta justification — compute projected vs historical effective
-    deposit beta per product and classify against the P60 fixed-pricing-
-    percentile assumption. Schema-tolerant: identifies each input frame
-    by its column shape (case + underscore insensitive), parses
-    additional_dimensions JSON for product names, and falls back to
-    output-embedded fed_funds_rate when no separate input frame is bound."""
-    import json, ast
+    deposit beta per segment and classify against the P60 fixed-pricing-
+    percentile assumption. Schema: both projection and actuals frames are
+    long-format with columns scenario, snap_date, variable_name,
+    variable_value, segment, origin. Tolerates case + underscore
+    variants in column / variable / origin values. Identifies the two
+    frames by date range (most-recent-spanning = projection)."""
     import numpy as np
     import pandas as pd
+
+    # Optional lookback for the historical regression — set by the draft
+    # handler when the analyst's prompt names a specific cycle. When None,
+    # the OLS uses every actuals row.
+    HISTORICAL_LOOKBACK = __LOOKBACK_PLACEHOLDER__
+    HISTORICAL_LOOKBACK_LABEL = __LOOKBACK_LABEL_PLACEHOLDER__
 
     def _norm(s):
         return str(s).lower().replace("_", "").replace("-", "").replace(" ", "")
@@ -841,135 +856,125 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
         norm_cands = {_norm(c) for c in candidates}
         return [v for v in series.dropna().unique() if _norm(v) in norm_cands]
 
-    def _parse_dims(x):
-        if isinstance(x, dict):
-            return x
-        try:
-            if pd.isna(x):
-                return {}
-        except Exception:
-            pass
-        s = str(x)
-        try:
-            return json.loads(s)
-        except Exception:
-            try:
-                return ast.literal_eval(s)
-            except Exception:
-                return {}
+    INPUT_ALIASES  = ["model_input", "input", "macro_input", "macro", "predictor", "feature"]
+    OUTPUT_ALIASES = ["model_output", "output", "predicted", "target", "modeled"]
+    RATE_ALIASES   = ["rate_paid", "rate_paid_pct", "interest_apy", "interest_apr",
+                       "interest_rate", "rate", "rate_paid_apr"]
+    FF_ALIASES     = ["fed_funds_rate", "fed_funds", "fedfunds", "ff_rate", "ffr", "fed_funds_pct"]
 
-    # Identify the three frames from their column shapes:
-    #   output  — has variable_name AND additional_dimensions
-    #   input   — has variable_name AND no additional_dimensions
-    #   history — has a fed-funds column AND no variable_name
-    out_df = in_df = hist_df = None
+    def _beta_for_frame(df, mode):
+        """Compute per-segment beta for one frame.
+        mode == 'projection' → Δrate / ΔFF using endpoint values.
+        mode == 'history'    → OLS slope of rate on FF, plus R²."""
+        var_col  = _ci_pick(df, "variable_name", "metric")
+        val_col  = _ci_pick(df, "variable_value", "value")
+        date_col = _ci_pick(df, "snap_date", "date", "period", "quarter_id", "as_of_date")
+        seg_col  = _ci_pick(df, "segment", "product_name", "product", "product_l1")
+        org_col  = _ci_pick(df, "origin", "source", "io")
+        if not (var_col and val_col and date_col and seg_col):
+            return None, f"frame missing required columns; have: {list(df.columns)}"
+
+        rate_matches = _ci_match(df[var_col], *RATE_ALIASES)
+        ff_matches   = _ci_match(df[var_col], *FF_ALIASES)
+        if not rate_matches:
+            return None, f"no rate-paid variable. seen: {sorted(map(str, df[var_col].dropna().unique()))[:10]}"
+        if not ff_matches:
+            return None, f"no fed_funds_rate variable. seen: {sorted(map(str, df[var_col].dropna().unique()))[:10]}"
+
+        rate_df = df[df[var_col].isin(rate_matches)].copy()
+        if org_col is not None:
+            m = _ci_match(rate_df[org_col], *OUTPUT_ALIASES)
+            if m:
+                rate_df = rate_df[rate_df[org_col].isin(m)]
+        rate_df = rate_df.dropna(subset=[seg_col])
+        rate_df = rate_df[rate_df[seg_col].astype(str).str.strip() != ""]
+
+        ff_df = df[df[var_col].isin(ff_matches)].copy()
+        if org_col is not None:
+            m = _ci_match(ff_df[org_col], *INPUT_ALIASES)
+            if m:
+                ff_df = ff_df[ff_df[org_col].isin(m)]
+        ff_path = ff_df.groupby(date_col)[val_col].mean().sort_index()
+        if len(ff_path) < 2:
+            return None, "need at least 2 fed_funds_rate observations"
+
+        out = {}
+        if mode == "projection":
+            ff_change = float(ff_path.iloc[-1] - ff_path.iloc[0])
+            if abs(ff_change) < 1e-6:
+                return None, "fed_funds_rate is flat — beta undefined"
+            for segment, sub in rate_df.groupby(seg_col):
+                rp = sub.groupby(date_col)[val_col].mean().sort_index()
+                if len(rp) < 2:
+                    continue
+                out[str(segment)] = {
+                    "beta": float((rp.iloc[-1] - rp.iloc[0]) / ff_change),
+                    "r_squared": None,
+                }
+        else:  # history → OLS
+            ff_series = ff_path.rename("_ff").to_frame().reset_index()
+            for segment, sub in rate_df.groupby(seg_col):
+                seg_path = sub.groupby(date_col)[val_col].mean().rename("_y").to_frame().reset_index()
+                merged = seg_path.merge(ff_series, on=date_col, how="inner").sort_values(date_col)
+                if len(merged) < 3:
+                    continue
+                x = merged["_ff"].astype(float).to_numpy()
+                y = merged["_y"].astype(float).to_numpy()
+                if x.var() < 1e-9:
+                    continue
+                slope, intercept = np.polyfit(x, y, 1)
+                y_hat = intercept + slope * x
+                ss_res = float(((y - y_hat) ** 2).sum())
+                ss_tot = float(((y - y.mean()) ** 2).sum())
+                r2 = (1.0 - ss_res / ss_tot) if ss_tot > 1e-9 else 0.0
+                out[str(segment)] = {"beta": float(slope), "r_squared": float(r2)}
+        return out, None
+
+    # Identify projection vs actuals by latest snap_date — projection
+    # always points into the future; actuals end at the recent past.
+    frames = []
     for _k, df in dfs.items():
-        var = _ci_pick(df, "variable_name", "metric")
-        dims = _ci_pick(df, "additional_dimensions", "additionalDimensions", "dims")
-        ff_col = _ci_pick(df, "fedfunds", "fed_funds", "fed_funds_rate", "ff_rate", "ffr")
-        if var is not None and dims is not None:
-            out_df = df
-        elif var is not None and ff_col is None:
-            in_df = df
-        elif ff_col is not None and var is None:
-            hist_df = df
-    if out_df is None or hist_df is None:
-        cols = {k: list(v.columns)[:8] for k, v in dfs.items()}
-        return {"kpis": [{"label": "Error", "value": f"Could not identify output + history frames from column shapes: {cols}"}]}
-
-    # ── Projected beta ────────────────────────────────────────────────
-    var_col = _ci_pick(out_df, "variable_name", "metric")
-    val_col = _ci_pick(out_df, "variable_value", "value")
-    date_col = _ci_pick(out_df, "snap_date", "date", "quarter_id", "period")
-    dims_col = _ci_pick(out_df, "additional_dimensions", "additionalDimensions", "dims")
-    if not (var_col and val_col and date_col and dims_col):
-        return {"kpis": [{"label": "Error", "value": f"output frame missing required columns; have: {list(out_df.columns)}"}]}
-
-    rate_aliases = ["rate_paid", "rate_paid_pct", "interest_apy", "interest_apr",
-                    "interest_rate", "rate_paid_apr"]
-    rate_matches = _ci_match(out_df[var_col], *rate_aliases)
-    if not rate_matches:
-        return {"kpis": [{"label": "Error", "value": f"no rate-paid variable in output. seen: {sorted(map(str, out_df[var_col].dropna().unique()))[:10]}"}]}
-
-    rate_df = out_df[out_df[var_col].isin(rate_matches)].copy()
-    rate_df["_product"] = rate_df[dims_col].apply(
-        lambda d: (_parse_dims(d).get("product_name")
-                   or _parse_dims(d).get("product")
-                   or _parse_dims(d).get("product_l1")))
-    rate_df = rate_df.dropna(subset=["_product"])
-
-    ff_aliases = ["fed_funds_rate", "fed_funds", "fedfunds", "ff_rate", "ffr", "fed_funds_pct"]
-    ff_path = None
-    if in_df is not None:
-        in_var = _ci_pick(in_df, "variable_name", "metric")
-        in_val = _ci_pick(in_df, "variable_value", "value")
-        in_date = _ci_pick(in_df, "snap_date", "date", "period")
-        if in_var and in_val and in_date:
-            ff_match = _ci_match(in_df[in_var], *ff_aliases)
-            if ff_match:
-                ff_path = (in_df[in_df[in_var].isin(ff_match)]
-                              .groupby(in_date)[in_val].mean().sort_index())
-    if ff_path is None or len(ff_path) < 2:
-        ff_match = _ci_match(out_df[var_col], *ff_aliases)
-        if ff_match:
-            ff_path = (out_df[out_df[var_col].isin(ff_match)]
-                          .groupby(date_col)[val_col].mean().sort_index())
-    if ff_path is None or len(ff_path) < 2:
-        return {"kpis": [{"label": "Error", "value": "fed_funds_rate not found in input or output frame"}]}
-
-    ff_change = float(ff_path.iloc[-1] - ff_path.iloc[0])
-    if abs(ff_change) < 1e-6:
-        return {"kpis": [{"label": "Error", "value": "fed_funds_rate is flat across the horizon"}]}
-
-    proj_betas = {}
-    for product, sub in rate_df.groupby("_product"):
-        rp = sub.groupby(date_col)[val_col].mean().sort_index()
-        if len(rp) < 2:
+        date_col = _ci_pick(df, "snap_date", "date", "period", "quarter_id", "as_of_date")
+        if date_col is None:
             continue
-        proj_betas[str(product)] = float((rp.iloc[-1] - rp.iloc[0]) / ff_change)
-
-    # ── Historical beta ───────────────────────────────────────────────
-    date_h = _ci_pick(hist_df, "date", "snap_date", "as_of_date", "observation_date")
-    ff_h = _ci_pick(hist_df, "fedfunds", "fed_funds", "fed_funds_rate", "ff_rate", "ffr", "fed_funds_pct")
-    if not (date_h and ff_h):
-        return {"kpis": [{"label": "Error", "value": f"history frame missing date or FF column; have: {list(hist_df.columns)}"}]}
-
-    EXCLUDED_MACROS = {"bbbyield", "rgt10y", "bbbspread", "bbb_spread",
-                       "ust10y", "ust2y", "ust30y", "ust_2y", "ust_30y",
-                       "treasury10y", "treasury2y", "vix", "spx", "djia",
-                       "unemployment", "unemploymentpct", "gdp", "gdpyoypct",
-                       "creprice", "hpi", "hpiyoypct", "oil", "m2", "m2gdp"}
-    excl = EXCLUDED_MACROS | {_norm(date_h), _norm(ff_h)}
-    product_cols = [c for c in hist_df.columns
-                    if _norm(c) not in excl and pd.api.types.is_numeric_dtype(hist_df[c])]
-
-    hist_betas, hist_r2 = {}, {}
-    for c in product_cols:
-        sub = hist_df.dropna(subset=[c, ff_h])
-        if len(sub) < 3:
+        try:
+            max_d = pd.to_datetime(df[date_col], errors="coerce").max()
+            frames.append((max_d, df))
+        except Exception:
             continue
-        x = sub[ff_h].astype(float).to_numpy()
-        y = sub[c].astype(float).to_numpy()
-        if x.var() < 1e-9:
-            continue
-        slope, intercept = np.polyfit(x, y, 1)
-        y_hat = intercept + slope * x
-        ss_res = float(((y - y_hat) ** 2).sum())
-        ss_tot = float(((y - y.mean()) ** 2).sum())
-        hist_betas[str(c)] = float(slope)
-        hist_r2[str(c)]    = (1.0 - ss_res / ss_tot) if ss_tot > 1e-9 else 0.0
+    if len(frames) < 2:
+        return {"kpis": [{"label": "Error", "value": f"need 2 dated frames, got {len(frames)}"}]}
+    frames.sort(key=lambda t: t[0])
+    actuals_df, projection_df = frames[0][1], frames[-1][1]
 
-    # ── Join + classify against ±0.10 (P60 peer pricing) ─────────────
+    # Apply the optional historical lookback window (when the analyst's
+    # prompt named a specific cycle).
+    if HISTORICAL_LOOKBACK:
+        date_col_h = _ci_pick(actuals_df, "snap_date", "date", "period", "as_of_date")
+        if date_col_h:
+            actuals_df = actuals_df.copy()
+            actuals_df[date_col_h] = pd.to_datetime(actuals_df[date_col_h], errors="coerce")
+            actuals_df = actuals_df[actuals_df[date_col_h] >= pd.to_datetime(HISTORICAL_LOOKBACK)]
+
+    proj_betas, err = _beta_for_frame(projection_df, "projection")
+    if err:
+        return {"kpis": [{"label": "Error", "value": f"projection: {err}"}]}
+    hist_betas, err = _beta_for_frame(actuals_df, "history")
+    if err:
+        return {"kpis": [{"label": "Error", "value": f"actuals: {err}"}]}
+
+    # Join on segment name (case-insensitive)
     TOL = 0.10
     norm_hist = {_norm(k): k for k in hist_betas}
     chart_rows, table_rows = [], []
     aligned = overshoot = undershoot = 0
-    for p_name, pb_raw in proj_betas.items():
+    for p_name, pr in proj_betas.items():
         h = norm_hist.get(_norm(p_name))
         if h is None:
             continue
-        pb = round(float(pb_raw), 3)
-        hb = round(float(hist_betas[h]), 3)
+        pb = round(float(pr["beta"]), 3)
+        hb = round(float(hist_betas[h]["beta"]), 3)
+        r2 = round(float(hist_betas[h]["r_squared"] or 0.0), 3)
         gap = round(pb - hb, 3)
         if abs(gap) <= TOL:
             status = "ALIGNED"; aligned += 1
@@ -983,16 +988,24 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
             "projected_beta":  pb,
             "status":          status,
         })
-        table_rows.append([p_name, hb, pb, gap, status, round(hist_r2.get(h, 0.0), 3)])
+        table_rows.append([p_name, hb, pb, gap, status, r2])
 
     overall = "PASS" if (overshoot + undershoot) == 0 else "REVIEW"
 
+    chart_title = "Commercial deposit beta — projected vs historical"
+    if HISTORICAL_LOOKBACK_LABEL:
+        chart_title += f" ({HISTORICAL_LOOKBACK_LABEL})"
+
+    overall_kpi = {"label": "Overall", "value": overall, "sublabel": "vs P60 peer pricing"}
+    if HISTORICAL_LOOKBACK_LABEL:
+        overall_kpi["sublabel"] = f"vs P60 — hist window: {HISTORICAL_LOOKBACK_LABEL}"
+
     return {
         "kpis": [
-            {"label": "Overall",    "value": overall,            "sublabel": "vs P60 peer pricing"},
-            {"label": "Aligned",    "value": str(aligned),       "sublabel": "within ±0.10"},
-            {"label": "Overshoot",  "value": str(overshoot),     "sublabel": "projected > historical"},
-            {"label": "Undershoot", "value": str(undershoot),    "sublabel": "projected < historical"},
+            overall_kpi,
+            {"label": "Aligned",    "value": str(aligned),    "sublabel": "within ±0.10"},
+            {"label": "Overshoot",  "value": str(overshoot),  "sublabel": "projected > historical"},
+            {"label": "Undershoot", "value": str(undershoot), "sublabel": "projected < historical"},
         ],
         "chart": {
             "type":     "scatter",
@@ -1000,7 +1013,7 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
             "y_fields": ["projected_beta"],
             "data":     chart_rows,
             "style":    {
-                "title":        "Commercial deposit beta — projected vs historical",
+                "title":        chart_title,
                 "x_axis_label": "Historical beta",
                 "y_axis_label": "Projected beta",
             },
@@ -1011,6 +1024,12 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
         },
     }
 '''
+    # Substitute the lookback placeholders the embedded function reads.
+    PYTHON_SOURCE = (
+        PYTHON_SOURCE
+        .replace("__LOOKBACK_PLACEHOLDER__", repr(lookback_iso) if lookback_iso else "None")
+        .replace("__LOOKBACK_LABEL_PLACEHOLDER__", repr(lookback_label) if lookback_label else "None")
+    )
 
     return AnalyticDraftResponse(
         name="Commercial deposit beta — justification",
@@ -1039,11 +1058,11 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
         ),
         notes=(
             "Recognised as a beta-justification request — pre-built from the "
-            "commercial_deposit_output_CCAR26 + commercial_deposit_input_CCAR26 + "
-            "commercial_rate_history datasets without an LLM round-trip. "
-            "The function is schema-tolerant: case/underscore-insensitive "
-            "column names, alias variable-name values, and works whether "
-            "fed_funds_rate lives in the input file or the output file. "
+            "commercial_deposit_output_CCAR26 + commercial_deposit_rate_actuals "
+            "datasets without an LLM round-trip. Both files share the long-format "
+            "schema (scenario, snap_date, variable_name, variable_value, segment, "
+            "origin); the function is schema-tolerant about column-name case, "
+            "underscores, and accepts alias values for variable_name and origin. "
             "Click Run to render the scatter."
         ),
     )

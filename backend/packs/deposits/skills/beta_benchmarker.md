@@ -47,12 +47,25 @@ compute_historical_beta()
 ```
 
 That's it. The tool defaults `csv_path` to
-`sample_data/ccar/commercial_rate_history.csv` and uses every row in
-the file (2019-Q1 → 2024-Q4 in the sample).
+`sample_data/ccar/commercial_deposit_rate_actuals.csv` and uses
+every row in the file (2019-Q1 → 2024-Q4 in the sample).
 
-Pass `lookback_start` (ISO date, e.g. `"2022-01-01"`) only if the
-analyst said "use the latest tightening cycle" or otherwise narrowed
-the window in the prompt.
+The expected schema mirrors the projection file: one row per
+(snap_date × variable_name × segment) with columns `scenario`,
+`snap_date`, `variable_name`, `variable_value`, `segment`,
+`origin`. Macro fed_funds_rate rows carry `origin='model_input'`
+and empty segment; per-segment rate_paid actuals carry
+`origin='model_output'` and a populated segment. The tool joins each
+segment's per-snap_date rate_paid against the macro fed_funds path,
+then regresses Δrate on ΔFF via OLS.
+
+The tool is schema-tolerant: column names matched case-insensitively
+(underscores / hyphens / spaces ignored), and `variable_name` /
+`origin` values matched against alias lists. Pass `lookback_start`
+(ISO date, e.g. `"2022-01-01"`) only if the analyst asked to narrow
+to the latest tightening cycle. Pass `products_only` if the file
+mixes segments from multiple lines of business and the analyst wants
+just one slice.
 
 ## What the tool returns
 

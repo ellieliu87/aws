@@ -50,20 +50,26 @@ compute…"). The simplest call needs no arguments:
 compute_projected_beta()
 ```
 
-The tool defaults `output_csv_path` to
-`sample_data/ccar/commercial_deposit_output_CCAR26.csv` and
-`input_csv_path` to `sample_data/ccar/commercial_deposit_input_CCAR26.csv`,
-picks up the first scenario in the output file (typically `BHCS`),
-and pulls the Fed Funds path from the input file (with fallback to
-the output file if the input file doesn't have it).
+The tool defaults `csv_path` to
+`sample_data/ccar/commercial_deposit_output_CCAR26.csv` and picks up
+the first scenario in the file (typically `BHCS`).
+
+The expected schema is one row per (snap_date × variable_name ×
+segment) with these columns: `scenario`, `snap_date`,
+`variable_name`, `variable_value`, `segment`, `origin`. Macro inputs
+(fed_funds_rate, etc.) carry `origin='model_input'` and an empty
+segment; per-product modeled outputs (rate_paid) carry
+`origin='model_output'` and a populated segment.
 
 The tool is schema-tolerant — column names match case-insensitively
-(underscores / hyphens / spaces ignored), and the rate-paid /
-fed-funds variable_name values match against alias lists
-(`rate_paid`, `interest_apy`, `interest_apr`, `rate_paid_pct`, …
-for rate; `fed_funds_rate`, `FEDFUNDS`, `fed_funds`, `ff_rate`, …
-for FF). Pass `scenario` explicitly only if the analyst named one,
-and `rate_var_aliases` / `ff_var_aliases` only if the file uses an
+(underscores / hyphens / spaces ignored), the rate-paid / fed-funds
+`variable_name` values match against alias lists (`rate_paid`,
+`interest_apy`, `interest_apr`, `rate_paid_pct`, … for rate;
+`fed_funds_rate`, `FEDFUNDS`, `fed_funds`, `ff_rate`, … for FF),
+and the `origin` values match flexibly (`model_input`, `input`,
+`macro`, `predictor` — interchangeable; same for output). Pass
+`scenario` explicitly only if the analyst named one, and
+`rate_var_aliases` / `ff_var_aliases` only if the file uses an
 unusual variable name not covered by the defaults.
 
 ## What the tool returns
@@ -72,15 +78,14 @@ unusual variable name not covered by the defaults.
 {
   "scenario": "BHCS",
   "ff_start": 5.00, "ff_end": 3.00, "ff_change_pp": -2.00,
-  "ff_source": "input",
   "horizon_periods": ["2025-12-31", ..., "2027-12-31"],
   "by_product": [
     {"product": "HYMM", "projected_beta": 0.78, "rate_change_pp": -1.56, ...},
     ...
   ],
   "rate_var_matched": ["rate_paid"],
-  "output_csv_path_used": "...",
-  "input_csv_path_used":  "..."
+  "ff_var_matched":   ["fed_funds_rate"],
+  "csv_path_used":    "..."
 }
 ```
 
@@ -95,11 +100,10 @@ names. Don't strip fields, don't add commentary:
   "ff_start":         <number>,
   "ff_end":           <number>,
   "ff_change_pp":     <number>,
-  "ff_source":        "input" | "output",
   "horizon_periods": ["<period or date>", ...],
   "by_product": [
     {
-      "product":         "<product_name from additional_dimensions>",
+      "product":         "<segment value>",
       "projected_beta":  <number>,
       "rate_change_pp":  <number>,
       "ff_change_pp":    <number>,
@@ -108,9 +112,9 @@ names. Don't strip fields, don't add commentary:
     },
     ...
   ],
-  "rate_var_matched":     ["..."],
-  "output_csv_path_used": "<path>",
-  "input_csv_path_used":  "<path or null>"
+  "rate_var_matched": ["..."],
+  "ff_var_matched":   ["..."],
+  "csv_path_used":    "<path>"
 }
 ```
 
