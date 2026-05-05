@@ -1006,10 +1006,16 @@ class VarianceWalkAudit(BaseModel):
     # but the source CSV may carry monetary values in raw $1, $K, or $B.
     # `*_scale_to_mm` is the multiplier applied; `*_scale_note` explains
     # how it was inferred (suffix vs magnitude vs explicit override).
-    balance_scale_to_mm: float = 1.0
-    metric_scale_to_mm:  float = 1.0
+    balance_scale_to_mm:    float = 1.0
+    metric_scale_to_mm:     float = 1.0
+    # Rate-column divisor used to normalise to decimal (1/100 for %,
+    # 1/10,000 for bps, 1.0 if the rate column is already in decimal).
+    # Wrong choice shifts the formula by 100×; visible as a "computed
+    # vs data" reconciliation gap of exactly 100×.
+    rate_divisor_to_decimal: float = 100.0
     balance_scale_note:  str | None = None
     metric_scale_note:   str | None = None
+    rate_scale_note:     str | None = None
     # Plain-English description of how data_ie_delta_mm + the V/M/R
     # effects were aggregated (so the analyst / challenger can confirm
     # we summed across all products and all snap_dates, not a slice).
