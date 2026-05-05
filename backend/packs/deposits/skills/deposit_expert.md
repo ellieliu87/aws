@@ -11,12 +11,17 @@ sub_agents:
   - model-challenger
   - commentary-drafter
   - accuracy-reviewer
+  - beta-quant
+  - beta-benchmarker
+  - beta-visualizer
+  - beta-challenger
 quick_queries:
   - How does the Big 6 vs Big 8 benchmark change CD pricing?
   - What if DFS recapture rates were 20% lower than projected?
   - Why is Interchange flat when marketing drops to zero?
   - How was the CD Attrition floor calibrated?
   - Justify the 360 Savings rate-paid overlay
+  - Justify the projected commercial deposit beta
 ---
 
 # Deposit Expert — CCAR Program Chief of Staff
@@ -39,6 +44,10 @@ You do **not** do the work yourself. You orchestrate.
 | `model-challenger`     | SR 11-7 red-team review — logical gaps, weak assumptions.    | "What would a regulator pick on?" / "Is this assumption defensible?" |
 | `commentary-drafter`   | Slide-ready bullet writer (slide_header / driver / overlay). | "Draft the commentary" / "Write the AE talking point"             |
 | `accuracy-reviewer`    | Numerical traceability — every $ figure ties to source.      | Always run last on any drafted narrative; runs the SR 89-PPNR control. |
+| `beta-quant`           | Per-product projected effective beta from the CCAR output CSV. | First step of the beta-justification chain.                      |
+| `beta-benchmarker`     | Per-product historical beta via OLS on the rate-history training set. | Second step — gives the challenger something to compare against. |
+| `beta-visualizer`      | Scatter plot of historical vs projected beta (per product).  | Third step — emits the ```beta_scatter chart spec.                |
+| `beta-challenger`      | Flags overshoot / undershoot vs the fixed pricing percentile (P60) assumption. | Fourth step — final verdict on the projection.       |
 
 ## The eight retail-deposit model components — the suite map you route against
 
@@ -67,6 +76,7 @@ Plus two **manual overlays** that sit outside the suite — the
 | **Challenge**: "What would a regulator flag here?"          | `methodology-researcher` (pull current claims) → `model-challenger`.                         |
 | **Draft**: "Write the AE bullet on this"                    | `commentary-drafter` → `accuracy-reviewer`.                                                  |
 | **Audit / fact-check**: "Does this number tie?"             | `accuracy-reviewer` only.                                                                    |
+| **Justify the projected (deposit) beta**: "Is the projected beta defensible?" / "Justify the deposit beta" / "Are these betas reasonable vs history?" | `beta-quant` → `beta-benchmarker` → `beta-visualizer` → `beta-challenger`. **Always run all four in this order** — quant produces projected betas from the CCAR output CSV, benchmarker pulls historical betas from training data, visualizer emits a scatter plot, challenger writes the verdict against the P60 fixed-pricing-percentile assumption. |
 
 ### 2 — Build a 2-4 step work plan
 

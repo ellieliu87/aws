@@ -83,11 +83,12 @@ interface ServerDefaultBundle {
 }
 
 // ── Templates ─────────────────────────────────────────────────────────────
-// Each template builds a count-aware layout: card sizes adapt to how many
-// cards of each kind exist. The intuitive rule is that any reasonable
-// number of KPIs (1–6) fills a single row, and charts pair up unless there
-// are too many. Width is set by the template; the grid disables east/west
-// resize handles so users only adjust height.
+// Each template builds a count-aware layout. Guiding rule: every row should
+// fill the 12-col grid evenly, never leave an orphan card at half-width on
+// the last row, and never leave a column gap. 4 KPIs → 4-up, 3 KPIs → 3-up,
+// 5 KPIs → 3-up + 2-up (both rows full), 7 charts → 4-up + 3-up. Templates
+// pass a `maxPerRow` ceiling so KPIs can pack 6 across while charts stay
+// readable at 3 or 4.
 type TemplateId = 'executive' | 'analyst' | 'single'
 
 interface Template {
@@ -99,30 +100,6 @@ interface Template {
 }
 
 interface PlacedRow { items: LayoutItem[]; nextY: number }
-
-/** Place items in a single row that fills the 12-col grid, choosing the
- *  per-card width from the count. 4 KPIs → 4 across at w=3, 3 KPIs → 3
- *  across at w=4, etc. 7+ items wrap to a second row. */
-function spreadInRow(items: CardMeta[], y: number, h: number): PlacedRow {
-  if (items.length === 0) return { items: [], nextY: y }
-  const n = items.length
-  let perRow: number
-  let w: number
-  if (n === 1)      { perRow = 1; w = 12 }
-  else if (n === 2) { perRow = 2; w = 6  }
-  else if (n === 3) { perRow = 3; w = 4  }
-  else if (n === 4) { perRow = 4; w = 3  }
-  else if (n <= 6)  { perRow = n; w = Math.floor(12 / n) }  // 5→2 (10 used), 6→2
-  else              { perRow = 4; w = 3 }                    // 7+ wraps 4-up
-  const placed = items.map((c, i) => ({
-    i: c.id,
-    x: (i % perRow) * w,
-    y: y + Math.floor(i / perRow) * h,
-    w, h,
-    minH: c.minH,
-  }))
-  return { items: placed, nextY: y + Math.ceil(n / perRow) * h }
-}
 
 /** Place items in a fixed-width grid (e.g. always 6 cols → 2-up, always
  *  4 cols → 3-up). Used for charts/tables/pinned/text where the template
@@ -140,11 +117,75 @@ function placeInGrid(items: CardMeta[], y: number, w: number, h: number): Placed
   return { items: placed, nextY: y + Math.ceil(items.length / perRow) * h }
 }
 
+/** Place items so every row spans all 12 columns — no gaps, no orphans.
+ *
+ *  - n that divides 12 (1,2,3,4,6,12) → single row at w = 12/n.
+ *  - n=5 → 3 on top (w=4) + 2 below (w=6).
+ *  - n=7 → 4 on top (w=3) + 3 below (w=4).
+ *  - n=8 → two rows of 4 (w=3).
+ *  - n=9 → three rows of 3 (w=4).
+ *  - n=10 → 4+3+3.
+ *  - n=11 → 4+4+3.
+ *  - everything else wraps at `maxPerRow` (cards may be wider than ideal,
+ *    but rows always fill).
+ *
+ *  `maxPerRow` lets the caller cap density — KPIs use 6, executive charts
+ *  use 3, analyst charts use 4.
+ */
+function spreadBalanced(
+  items: CardMeta[],
+  y: number,
+  h: number,
+  maxPerRow = 6,
+): PlacedRow {
+  if (items.length === 0) return { items: [], nextY: y }
+  const n = items.length
+
+  // Helper: stack two row-groups, each filling 12 cols.
+  const stack = (top: CardMeta[], wTop: number, bot: CardMeta[], wBot: number): PlacedRow => {
+    const a = placeInGrid(top, y, wTop, h)
+    const b = placeInGrid(bot, a.nextY, wBot, h)
+    return { items: [...a.items, ...b.items], nextY: b.nextY }
+  }
+
+  // Single-row exact fits, capped by maxPerRow.
+  if (n === 1) return placeInGrid(items, y, 12, h)
+  if (n === 2 && maxPerRow >= 2) return placeInGrid(items, y, 6, h)
+  if (n === 3 && maxPerRow >= 3) return placeInGrid(items, y, 4, h)
+  if (n === 4 && maxPerRow >= 4) return placeInGrid(items, y, 3, h)
+  if (n === 6 && maxPerRow >= 6) return placeInGrid(items, y, 2, h)
+
+  // Two-row exact fits.
+  if (n === 5 && maxPerRow >= 3) return stack(items.slice(0, 3), 4, items.slice(3), 6)
+  if (n === 7 && maxPerRow >= 4) return stack(items.slice(0, 4), 3, items.slice(4), 4)
+  if (n === 8 && maxPerRow >= 4) return placeInGrid(items, y, 3, h)
+  if (n === 9 && maxPerRow >= 3) return placeInGrid(items, y, 4, h)
+  if (n === 10 && maxPerRow >= 4) {
+    // 4+3+3 — three balanced rows.
+    const a = placeInGrid(items.slice(0, 4), y, 3, h)
+    const b = placeInGrid(items.slice(4, 7), a.nextY, 4, h)
+    const c = placeInGrid(items.slice(7), b.nextY, 4, h)
+    return { items: [...a.items, ...b.items, ...c.items], nextY: c.nextY }
+  }
+  if (n === 11 && maxPerRow >= 4) {
+    // 4+4+3.
+    const a = placeInGrid(items.slice(0, 4), y, 3, h)
+    const b = placeInGrid(items.slice(4, 8), a.nextY, 3, h)
+    const c = placeInGrid(items.slice(8), b.nextY, 4, h)
+    return { items: [...a.items, ...b.items, ...c.items], nextY: c.nextY }
+  }
+
+  // Fallback for very large counts or low maxPerRow: wrap at maxPerRow.
+  // The last row may be partial, but at this point density beats symmetry.
+  const w = Math.max(1, Math.floor(12 / maxPerRow))
+  return placeInGrid(items, y, w, h)
+}
+
 const TEMPLATES: Template[] = [
   {
     id: 'executive',
     name: 'Executive Brief',
-    description: 'KPIs spread across the top, insights as a headline strip, then large charts and tables in pairs. Generous whitespace for stakeholder readouts.',
+    description: 'KPIs across the top, insights as a headline strip, large charts in balanced pairs, full-width tables. Generous whitespace for stakeholder readouts.',
     icon: LayoutTemplate,
     build: (cards, startY) => {
       const out: LayoutItem[] = []
@@ -152,50 +193,42 @@ const TEMPLATES: Template[] = [
       const append = (r: PlacedRow) => { out.push(...r.items); y = r.nextY }
 
       // KPIs: short strip — h=3 (~108px) is enough for label + value + delta.
-      // Insights: tall enough to fit the agent's 3–5 bullets without scroll.
-      append(spreadInRow(cards.filter((c) => c.kind === 'kpi'), y, 3))
+      // Up to 6 across, balanced layouts beyond that (5→3+2, 7→4+3).
+      append(spreadBalanced(cards.filter((c) => c.kind === 'kpi'), y, 3, 6))
       append(placeInGrid(cards.filter((c) => c.kind === 'insights'), y, 12, 7))
 
-      // Charts: a single chart deserves the full row; ≥2 pair up.
-      const charts = cards.filter((c) => c.kind === 'chart')
-      append(charts.length === 1
-        ? placeInGrid(charts, y, 12, 10)
-        : placeInGrid(charts, y, 6, 10))
+      // Charts: capped at 3-up so each chart stays readable for stakeholders.
+      // 1→full, 2→pair, 3→trio, 4→2x2, 5→3+2, 6→3+3, etc.
+      append(spreadBalanced(cards.filter((c) => c.kind === 'chart'), y, 10, 3))
 
-      // Tables full-width stacked — tables typically have several columns
-      // so they read better with the full row, even when there are two of
-      // them. Charts above are paired up to allow side-by-side comparison.
+      // Tables: full-width stacked — multi-column tables read better that way.
       append(placeInGrid(cards.filter((c) => c.kind === 'table'), y, 12, 8))
 
-      append(placeInGrid(cards.filter((c) => c.kind === 'pinned'), y, 6, 9))
-      append(placeInGrid(cards.filter((c) => c.kind === 'text'), y, 6, 4))
+      append(spreadBalanced(cards.filter((c) => c.kind === 'pinned'), y, 9, 3))
+      append(spreadBalanced(cards.filter((c) => c.kind === 'text'), y, 4, 3))
       return out
     },
   },
   {
     id: 'analyst',
     name: 'Analyst Dashboard',
-    description: 'Compact KPI row, three charts per row for breadth, full-width tables for scanning rows, insights below. Information-dense for daily monitoring.',
+    description: 'Compact KPI row, denser chart grid for breadth, full-width tables for scanning rows, insights below. Information-dense for daily monitoring.',
     icon: LayoutGrid,
     build: (cards, startY) => {
       const out: LayoutItem[] = []
       let y = startY
       const append = (r: PlacedRow) => { out.push(...r.items); y = r.nextY }
 
-      append(spreadInRow(cards.filter((c) => c.kind === 'kpi'), y, 3))
+      append(spreadBalanced(cards.filter((c) => c.kind === 'kpi'), y, 3, 6))
 
-      // Charts: 1 → full, 2 → pair, 3+ → 3-up for density.
-      const charts = cards.filter((c) => c.kind === 'chart')
-      append(charts.length <= 1
-        ? placeInGrid(charts, y, 12, 8)
-        : charts.length === 2
-          ? placeInGrid(charts, y, 6, 8)
-          : placeInGrid(charts, y, 4, 8))
+      // Charts: capped at 4-up for density. 1→full, 2→pair, 3→trio, 4→quad,
+      // 5→3+2, 6→3+3, 7→4+3, 8→4+4 — every row fills the grid.
+      append(spreadBalanced(cards.filter((c) => c.kind === 'chart'), y, 8, 4))
 
       append(placeInGrid(cards.filter((c) => c.kind === 'table'), y, 12, 7))
       append(placeInGrid(cards.filter((c) => c.kind === 'insights'), y, 12, 7))
-      append(placeInGrid(cards.filter((c) => c.kind === 'pinned'), y, 6, 8))
-      append(placeInGrid(cards.filter((c) => c.kind === 'text'), y, 6, 4))
+      append(spreadBalanced(cards.filter((c) => c.kind === 'pinned'), y, 8, 4))
+      append(spreadBalanced(cards.filter((c) => c.kind === 'text'), y, 4, 3))
       return out
     },
   },
@@ -209,7 +242,9 @@ const TEMPLATES: Template[] = [
       let y = startY
       const append = (r: PlacedRow) => { out.push(...r.items); y = r.nextY }
 
-      append(spreadInRow(cards.filter((c) => c.kind === 'kpi'), y, 3))
+      // KPIs still spread across the top — even single-column readers want
+      // their headline numbers side-by-side.
+      append(spreadBalanced(cards.filter((c) => c.kind === 'kpi'), y, 3, 6))
       append(placeInGrid(cards.filter((c) => c.kind === 'insights'), y, 12, 7))
       append(placeInGrid(cards.filter((c) => c.kind === 'chart'), y, 12, 9))
       append(placeInGrid(cards.filter((c) => c.kind === 'pinned'), y, 12, 9))
@@ -235,7 +270,7 @@ const DEFAULT_TEMPLATE: TemplateId = 'executive'
 // The text-cards key is bumped here so prior placeholder cards from the
 // "click Add Text once and explore" flow don't carry over: a fresh
 // dashboard now starts empty unless the user clicks Add Text.
-const layoutKey   = (fn: string) => `cma:overview:layout:v5:${fn}`
+const layoutKey   = (fn: string) => `cma:overview:layout:v6:${fn}`
 const textCardsKey = (fn: string) => `cma:overview:textcards:v2:${fn}`
 const hiddenKey   = (fn: string) => `cma:overview:hidden:v3:${fn}`
 const templateKey = (fn: string) => `cma:overview:template:v2:${fn}`

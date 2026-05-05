@@ -6,6 +6,10 @@ import {
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import {
+  ResponsiveContainer, ScatterChart, Scatter, XAxis, YAxis,
+  CartesianGrid, Tooltip as RechartsTooltip, ReferenceLine, Cell,
+} from 'recharts'
 import { useChatStore } from '@/store/chatStore'
 import api from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -119,6 +123,131 @@ const mdComponents: any = {
     />
   ),
   hr: () => <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '8px 0' }} />,
+}
+
+// ── ```beta_scatter fenced-block renderer ───────────────────────────────
+// The `beta-visualizer` agent emits a fenced ```beta_scatter block of the
+// form {title, tolerance, points: [{product, historical_beta,
+// projected_beta, ...}]}. We intercept that before passing the message
+// body through ReactMarkdown so it renders as a Recharts scatter inline.
+type BetaScatterSpec = {
+  title?: string
+  tolerance?: number
+  points: {
+    product: string
+    historical_beta: number
+    projected_beta: number
+    r_squared?: number
+    status?: string
+  }[]
+}
+
+function BetaScatterChart({ spec }: { spec: BetaScatterSpec }) {
+  const tol = spec.tolerance ?? 0.10
+  const points = spec.points || []
+  if (!points.length) return null
+  const all = points.flatMap((p) => [p.historical_beta, p.projected_beta])
+  const lo = Math.max(0, Math.min(...all) - 0.05)
+  const hi = Math.min(1, Math.max(...all) + 0.05)
+  const dotColor = (p: BetaScatterSpec['points'][number]) => {
+    const gap = p.projected_beta - p.historical_beta
+    if (Math.abs(gap) <= tol) return '#059669'   // ALIGNED — green
+    return gap > 0 ? '#DC2626' : '#D97706'        // OVERSHOOT red / UNDERSHOOT amber
+  }
+  return (
+    <div
+      className="rounded-lg my-3"
+      style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', padding: 12 }}
+    >
+      <div
+        className="text-[12px] font-bold uppercase tracking-widest mb-2"
+        style={{ color: 'var(--text-secondary)' }}
+      >
+        {spec.title || 'Projected vs historical beta'}
+      </div>
+      <ResponsiveContainer width="100%" height={260}>
+        <ScatterChart margin={{ top: 12, right: 18, left: 0, bottom: 24 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
+          <XAxis
+            type="number" dataKey="historical_beta"
+            domain={[lo, hi]}
+            tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
+            label={{
+              value: 'Historical β', position: 'insideBottom', offset: -8,
+              style: { fontSize: 11, fill: 'var(--text-secondary)' },
+            }}
+          />
+          <YAxis
+            type="number" dataKey="projected_beta"
+            domain={[lo, hi]}
+            tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
+            label={{
+              value: 'Projected β', angle: -90, position: 'insideLeft',
+              style: { fontSize: 11, fill: 'var(--text-secondary)' },
+            }}
+          />
+          <RechartsTooltip
+            cursor={{ strokeDasharray: '3 3' }}
+            contentStyle={{
+              background: 'var(--bg-card)', border: '1px solid var(--border)',
+              borderRadius: 8, fontSize: 11, fontFamily: 'JetBrains Mono, monospace',
+            }}
+            formatter={(_v: any, _n: any, p: any) => {
+              const r = p?.payload
+              const gap = (r?.projected_beta - r?.historical_beta).toFixed(3)
+              return [`${r?.product}: hist ${r?.historical_beta} / proj ${r?.projected_beta} (gap ${gap})`, '']
+            }}
+          />
+          {/* 45° perfect-agreement line */}
+          <ReferenceLine
+            segment={[{ x: lo, y: lo }, { x: hi, y: hi }]}
+            stroke="var(--text-muted)" strokeDasharray="4 4"
+          />
+          <Scatter data={points} fill="#0EA5E9">
+            {points.map((p, i) => <Cell key={i} fill={dotColor(p)} />)}
+          </Scatter>
+        </ScatterChart>
+      </ResponsiveContainer>
+      <div className="flex flex-wrap gap-3 mt-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+        <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#059669', marginRight: 4 }} />Aligned (±{tol})</span>
+        <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#DC2626', marginRight: 4 }} />Overshoot</span>
+        <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#D97706', marginRight: 4 }} />Undershoot</span>
+      </div>
+    </div>
+  )
+}
+
+/** Splits message content into markdown segments + ```beta_scatter spec
+ *  segments, rendering the latter as a Recharts ScatterChart inline. */
+function ChatBody({ content }: { content: string }) {
+  const segments: ({ kind: 'md'; text: string } | { kind: 'beta'; spec: BetaScatterSpec })[] = []
+  const re = /```beta_scatter\n([\s\S]*?)```/g
+  let cursor = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(content)) !== null) {
+    if (m.index > cursor) segments.push({ kind: 'md', text: content.slice(cursor, m.index) })
+    try {
+      segments.push({ kind: 'beta', spec: JSON.parse(m[1]) as BetaScatterSpec })
+    } catch {
+      // Malformed JSON inside the fence — render the raw block as code.
+      segments.push({ kind: 'md', text: m[0] })
+    }
+    cursor = m.index + m[0].length
+  }
+  if (cursor < content.length) segments.push({ kind: 'md', text: content.slice(cursor) })
+
+  return (
+    <>
+      {segments.map((s, i) => s.kind === 'beta'
+        ? <BetaScatterChart key={i} spec={s.spec} />
+        : (
+          <ReactMarkdown key={i} remarkPlugins={[remarkGfm]} components={mdComponents}>
+            {s.text}
+          </ReactMarkdown>
+        )
+      )}
+    </>
+  )
 }
 
 const QUICK_QUERIES = ['Brief me', 'Explain a metric', 'Risk alerts', 'Run a scenario', 'Draft report']
@@ -558,9 +687,7 @@ export default function ChatPanel({ open, onClose }: ChatPanelProps) {
                           color: 'var(--text-secondary)',
                         }}
                       >
-                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-                          {msg.content}
-                        </ReactMarkdown>
+                        <ChatBody content={msg.content} />
                       </div>
                       {/* "Steps taken" trace summary intentionally hidden —
                           the trace is still captured server-side and shipped

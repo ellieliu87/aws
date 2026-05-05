@@ -747,7 +747,315 @@ Reply with STRICT JSON, NO prose, NO markdown:
 Set the two unused spec keys to null."""
 
 
+def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftResponse | None:
+    """Fast-path for prompts that ask to justify the projected deposit beta.
+
+    Bypasses the LLM and returns a pre-built `custom_python` definition
+    that — on Run — loads the commercial CCAR output + rate history
+    datasets, computes projected vs historical betas, classifies each
+    product against the P60 fixed-pricing-percentile assumption, and
+    emits a scatter chart (historical on X, projected on Y) plus KPIs.
+
+    Mirrors the 4-agent chat-panel chain (beta-quant → beta-benchmarker
+    → beta-visualizer → beta-challenger), but condensed into one
+    deterministic Python function so the analytics tab doesn't pay a
+    multi-round agent latency cost.
+    """
+    p = (req.prompt or "").lower()
+    triggers = ("beta",)
+    actions = ("justif", "challeng", "defen", "reasonable", "support")
+    if not any(t in p for t in triggers) or not any(a in p for a in actions):
+        return None
+    if "deposit" not in p and "ccar" not in p and "commercial" not in p:
+        return None
+
+    # Resolve dataset ids by registered name. Output + history are required;
+    # input (the macro Fed Funds path) is optional — when present, the
+    # generated function reads the FF path from there. When absent, it
+    # falls back to looking for fed_funds_rate inside the output file.
+    # Names matched case-insensitively so a user-renamed dataset still
+    # binds.
+    def _norm(s):
+        return str(s or "").lower().replace("_", "").replace("-", "").replace(" ", "")
+    available = req.available_datasets or []
+    by_norm = {_norm(d.get("name")): d.get("id") for d in available}
+
+    ds_output_aliases = (
+        "commercial_deposit_output_CCAR26",
+        "commercial_deposit_output",
+        "commercial_CCAR_output",   # legacy demo name
+        "commercial_ccar_output",
+    )
+    ds_input_aliases = (
+        "commercial_deposit_input_CCAR26",
+        "commercial_deposit_input",
+        "commercial_CCAR_input",
+        "commercial_ccar_input",
+    )
+    ds_history_aliases = (
+        "commercial_rate_history",
+        "commercial_deposit_rate_history",
+    )
+
+    def _pick(*aliases):
+        for a in aliases:
+            v = by_norm.get(_norm(a))
+            if v:
+                return v
+        return None
+
+    ds_proj = _pick(*ds_output_aliases)
+    ds_hist = _pick(*ds_history_aliases)
+    ds_input = _pick(*ds_input_aliases)
+    if not (ds_proj and ds_hist):
+        return None
+
+    dataset_ids = [ds_proj]
+    if ds_input:
+        dataset_ids.append(ds_input)
+    dataset_ids.append(ds_hist)
+
+    PYTHON_SOURCE = '''def run(dfs):
+    """Beta justification — compute projected vs historical effective
+    deposit beta per product and classify against the P60 fixed-pricing-
+    percentile assumption. Schema-tolerant: identifies each input frame
+    by its column shape (case + underscore insensitive), parses
+    additional_dimensions JSON for product names, and falls back to
+    output-embedded fed_funds_rate when no separate input frame is bound."""
+    import json, ast
+    import numpy as np
+    import pandas as pd
+
+    def _norm(s):
+        return str(s).lower().replace("_", "").replace("-", "").replace(" ", "")
+
+    def _ci_pick(df, *candidates):
+        by_n = {_norm(c): c for c in df.columns}
+        for cand in candidates:
+            f = by_n.get(_norm(cand))
+            if f is not None:
+                return f
+        return None
+
+    def _ci_match(series, *candidates):
+        norm_cands = {_norm(c) for c in candidates}
+        return [v for v in series.dropna().unique() if _norm(v) in norm_cands]
+
+    def _parse_dims(x):
+        if isinstance(x, dict):
+            return x
+        try:
+            if pd.isna(x):
+                return {}
+        except Exception:
+            pass
+        s = str(x)
+        try:
+            return json.loads(s)
+        except Exception:
+            try:
+                return ast.literal_eval(s)
+            except Exception:
+                return {}
+
+    # Identify the three frames from their column shapes:
+    #   output  — has variable_name AND additional_dimensions
+    #   input   — has variable_name AND no additional_dimensions
+    #   history — has a fed-funds column AND no variable_name
+    out_df = in_df = hist_df = None
+    for _k, df in dfs.items():
+        var = _ci_pick(df, "variable_name", "metric")
+        dims = _ci_pick(df, "additional_dimensions", "additionalDimensions", "dims")
+        ff_col = _ci_pick(df, "fedfunds", "fed_funds", "fed_funds_rate", "ff_rate", "ffr")
+        if var is not None and dims is not None:
+            out_df = df
+        elif var is not None and ff_col is None:
+            in_df = df
+        elif ff_col is not None and var is None:
+            hist_df = df
+    if out_df is None or hist_df is None:
+        cols = {k: list(v.columns)[:8] for k, v in dfs.items()}
+        return {"kpis": [{"label": "Error", "value": f"Could not identify output + history frames from column shapes: {cols}"}]}
+
+    # ── Projected beta ────────────────────────────────────────────────
+    var_col = _ci_pick(out_df, "variable_name", "metric")
+    val_col = _ci_pick(out_df, "variable_value", "value")
+    date_col = _ci_pick(out_df, "snap_date", "date", "quarter_id", "period")
+    dims_col = _ci_pick(out_df, "additional_dimensions", "additionalDimensions", "dims")
+    if not (var_col and val_col and date_col and dims_col):
+        return {"kpis": [{"label": "Error", "value": f"output frame missing required columns; have: {list(out_df.columns)}"}]}
+
+    rate_aliases = ["rate_paid", "rate_paid_pct", "interest_apy", "interest_apr",
+                    "interest_rate", "rate_paid_apr"]
+    rate_matches = _ci_match(out_df[var_col], *rate_aliases)
+    if not rate_matches:
+        return {"kpis": [{"label": "Error", "value": f"no rate-paid variable in output. seen: {sorted(map(str, out_df[var_col].dropna().unique()))[:10]}"}]}
+
+    rate_df = out_df[out_df[var_col].isin(rate_matches)].copy()
+    rate_df["_product"] = rate_df[dims_col].apply(
+        lambda d: (_parse_dims(d).get("product_name")
+                   or _parse_dims(d).get("product")
+                   or _parse_dims(d).get("product_l1")))
+    rate_df = rate_df.dropna(subset=["_product"])
+
+    ff_aliases = ["fed_funds_rate", "fed_funds", "fedfunds", "ff_rate", "ffr", "fed_funds_pct"]
+    ff_path = None
+    if in_df is not None:
+        in_var = _ci_pick(in_df, "variable_name", "metric")
+        in_val = _ci_pick(in_df, "variable_value", "value")
+        in_date = _ci_pick(in_df, "snap_date", "date", "period")
+        if in_var and in_val and in_date:
+            ff_match = _ci_match(in_df[in_var], *ff_aliases)
+            if ff_match:
+                ff_path = (in_df[in_df[in_var].isin(ff_match)]
+                              .groupby(in_date)[in_val].mean().sort_index())
+    if ff_path is None or len(ff_path) < 2:
+        ff_match = _ci_match(out_df[var_col], *ff_aliases)
+        if ff_match:
+            ff_path = (out_df[out_df[var_col].isin(ff_match)]
+                          .groupby(date_col)[val_col].mean().sort_index())
+    if ff_path is None or len(ff_path) < 2:
+        return {"kpis": [{"label": "Error", "value": "fed_funds_rate not found in input or output frame"}]}
+
+    ff_change = float(ff_path.iloc[-1] - ff_path.iloc[0])
+    if abs(ff_change) < 1e-6:
+        return {"kpis": [{"label": "Error", "value": "fed_funds_rate is flat across the horizon"}]}
+
+    proj_betas = {}
+    for product, sub in rate_df.groupby("_product"):
+        rp = sub.groupby(date_col)[val_col].mean().sort_index()
+        if len(rp) < 2:
+            continue
+        proj_betas[str(product)] = float((rp.iloc[-1] - rp.iloc[0]) / ff_change)
+
+    # ── Historical beta ───────────────────────────────────────────────
+    date_h = _ci_pick(hist_df, "date", "snap_date", "as_of_date", "observation_date")
+    ff_h = _ci_pick(hist_df, "fedfunds", "fed_funds", "fed_funds_rate", "ff_rate", "ffr", "fed_funds_pct")
+    if not (date_h and ff_h):
+        return {"kpis": [{"label": "Error", "value": f"history frame missing date or FF column; have: {list(hist_df.columns)}"}]}
+
+    EXCLUDED_MACROS = {"bbbyield", "rgt10y", "bbbspread", "bbb_spread",
+                       "ust10y", "ust2y", "ust30y", "ust_2y", "ust_30y",
+                       "treasury10y", "treasury2y", "vix", "spx", "djia",
+                       "unemployment", "unemploymentpct", "gdp", "gdpyoypct",
+                       "creprice", "hpi", "hpiyoypct", "oil", "m2", "m2gdp"}
+    excl = EXCLUDED_MACROS | {_norm(date_h), _norm(ff_h)}
+    product_cols = [c for c in hist_df.columns
+                    if _norm(c) not in excl and pd.api.types.is_numeric_dtype(hist_df[c])]
+
+    hist_betas, hist_r2 = {}, {}
+    for c in product_cols:
+        sub = hist_df.dropna(subset=[c, ff_h])
+        if len(sub) < 3:
+            continue
+        x = sub[ff_h].astype(float).to_numpy()
+        y = sub[c].astype(float).to_numpy()
+        if x.var() < 1e-9:
+            continue
+        slope, intercept = np.polyfit(x, y, 1)
+        y_hat = intercept + slope * x
+        ss_res = float(((y - y_hat) ** 2).sum())
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        hist_betas[str(c)] = float(slope)
+        hist_r2[str(c)]    = (1.0 - ss_res / ss_tot) if ss_tot > 1e-9 else 0.0
+
+    # ── Join + classify against ±0.10 (P60 peer pricing) ─────────────
+    TOL = 0.10
+    norm_hist = {_norm(k): k for k in hist_betas}
+    chart_rows, table_rows = [], []
+    aligned = overshoot = undershoot = 0
+    for p_name, pb_raw in proj_betas.items():
+        h = norm_hist.get(_norm(p_name))
+        if h is None:
+            continue
+        pb = round(float(pb_raw), 3)
+        hb = round(float(hist_betas[h]), 3)
+        gap = round(pb - hb, 3)
+        if abs(gap) <= TOL:
+            status = "ALIGNED"; aligned += 1
+        elif gap > 0:
+            status = "OVERSHOOT"; overshoot += 1
+        else:
+            status = "UNDERSHOOT"; undershoot += 1
+        chart_rows.append({
+            "product":         p_name,
+            "historical_beta": hb,
+            "projected_beta":  pb,
+            "status":          status,
+        })
+        table_rows.append([p_name, hb, pb, gap, status, round(hist_r2.get(h, 0.0), 3)])
+
+    overall = "PASS" if (overshoot + undershoot) == 0 else "REVIEW"
+
+    return {
+        "kpis": [
+            {"label": "Overall",    "value": overall,            "sublabel": "vs P60 peer pricing"},
+            {"label": "Aligned",    "value": str(aligned),       "sublabel": "within ±0.10"},
+            {"label": "Overshoot",  "value": str(overshoot),     "sublabel": "projected > historical"},
+            {"label": "Undershoot", "value": str(undershoot),    "sublabel": "projected < historical"},
+        ],
+        "chart": {
+            "type":     "scatter",
+            "x_field":  "historical_beta",
+            "y_fields": ["projected_beta"],
+            "data":     chart_rows,
+            "style":    {
+                "title":        "Commercial deposit beta — projected vs historical",
+                "x_axis_label": "Historical beta",
+                "y_axis_label": "Projected beta",
+            },
+        },
+        "table": {
+            "columns": ["product", "historical_beta", "projected_beta", "gap", "status", "r_squared"],
+            "rows":    sorted(table_rows, key=lambda r: -abs(r[3])),
+        },
+    }
+'''
+
+    return AnalyticDraftResponse(
+        name="Commercial deposit beta — justification",
+        description=(
+            "Projected vs historical effective beta per commercial deposit "
+            "product, classified against the P60 fixed-pricing-percentile "
+            "assumption. Mirrors the 4-agent beta-justification chain "
+            "(quant → benchmarker → visualizer → challenger) as a single "
+            "deterministic analytic."
+        ),
+        kind="custom_python",
+        inputs=AnalyticInputs(dataset_ids=dataset_ids),
+        custom_python_spec=CustomPythonSpec(
+            function_name="run",
+            python_source=PYTHON_SOURCE,
+        ),
+        output=AnalyticOutput(
+            chart_type="scatter",
+            x_field="historical_beta",
+            y_fields=["projected_beta"],
+            description=(
+                "One point per product. Above the 45° line = projection "
+                "more aggressive than history; below = more conservative. "
+                "Tolerance band ±0.10 = P60 peer-pricing assumption."
+            ),
+        ),
+        notes=(
+            "Recognised as a beta-justification request — pre-built from the "
+            "commercial_deposit_output_CCAR26 + commercial_deposit_input_CCAR26 + "
+            "commercial_rate_history datasets without an LLM round-trip. "
+            "The function is schema-tolerant: case/underscore-insensitive "
+            "column names, alias variable-name values, and works whether "
+            "fed_funds_rate lives in the input file or the output file. "
+            "Click Run to render the scatter."
+        ),
+    )
+
+
 async def _draft(req: AnalyticDraftRequest) -> AnalyticDraftResponse:
+    # Fast-path: beta-justification prompts skip the LLM and use the
+    # 4-agent chain's deterministic equivalent.
+    fast = _maybe_draft_beta_justification(req)
+    if fast is not None:
+        return fast
+
     client = _llm_client()
     user = req.prompt.strip()
     if req.available_datasets:

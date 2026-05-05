@@ -91,6 +91,69 @@ def register(ctx: PackContext) -> None:
         source_path=_CCAR_DATA / "ccar_scenarios.csv",
     )
 
+    # Commercial CCAR projection output — feeds the beta-justification
+    # chain (quant → benchmarker → visualizer → challenger). Long-format
+    # rows: scenario, run_id, variable_name, snap_date, variable_value,
+    # additional_dimensions (JSON dict carrying product_name + variable_type).
+    # variable_name is `rate_paid` or `balance`; the macro fed_funds_rate
+    # path lives in the input dataset below, not here.
+    ctx.attach_dataset(
+        function_id="capital_planning",
+        dataset_id="ds-commercial-ccar-output",
+        name="commercial_deposit_output_CCAR26",
+        description=(
+            "Commercial deposit projections from CommMaaS, long-format "
+            "(scenario, run_id, variable_name, snap_date, variable_value, "
+            "additional_dimensions) across 9 quarterly snap_dates under "
+            "BHCS. Products carried inside additional_dimensions JSON "
+            "(product_name): MMDA, HYMM, GBIB, NONGB_IB, NONGB_ECR, ECR. "
+            "variable_name values: rate_paid (per-product APR), balance "
+            "(per-product end-of-quarter balance in $MM)."
+        ),
+        source_path=_CCAR_DATA / "commercial_deposit_output_CCAR26.csv",
+        dataset_role="output",
+    )
+
+    # Commercial deposit macro inputs — long-format companion to the
+    # output file, carrying the scenario macro path (fed_funds_rate,
+    # ust_10y_pct, bbb_spread_pct) per snap_date. Used by the
+    # beta-quant agent to pull the Fed Funds path it needs to compute
+    # Δrate / ΔFF.
+    ctx.attach_dataset(
+        function_id="capital_planning",
+        dataset_id="ds-commercial-ccar-input",
+        name="commercial_deposit_input_CCAR26",
+        description=(
+            "Macro inputs for the commercial deposit projection: "
+            "scenario, variable_name, variable_value, snap_date, "
+            "scenario_full_name, variable_type. Carries the fed_funds_rate "
+            "path under BHCS / CCAR_26_BHC_Stress, plus ust_10y_pct and "
+            "bbb_spread_pct for context."
+        ),
+        source_path=_CCAR_DATA / "commercial_deposit_input_CCAR26.csv",
+    )
+
+    # Commercial deposit rate history — wide-format actuals used as the
+    # model training set. 24 quarterly observations 2019-Q1 → 2024-Q4
+    # with macro indicators (FEDFUNDS, BBBYIELD, RGT10Y, BBBSPREAD) plus
+    # 6 product rate columns (MMDA, HYMM, GBIB, NONGB_IB, NONGB_ECR, ECR).
+    # The benchmarker regresses each product column on FEDFUNDS to derive
+    # its effective historical beta.
+    ctx.attach_dataset(
+        function_id="capital_planning",
+        dataset_id="ds-commercial-rate-history",
+        name="commercial_rate_history",
+        description=(
+            "Wide-format historical actuals for the commercial deposit "
+            "book. Columns: DATE + macro indicators (BBBYIELD, RGT10Y, "
+            "FEDFUNDS, BBBSPREAD) + 6 per-product rate columns (MMDA, "
+            "HYMM, GBIB, NONGB_IB, NONGB_ECR, ECR). Quarterly 2019-Q1 "
+            "through 2024-Q4. Source for the historical effective beta "
+            "computed by the beta-benchmarker agent."
+        ),
+        source_path=_CCAR_DATA / "commercial_rate_history.csv",
+    )
+
     # Peak-value summary — backs the BHC comparison table on Reporting.
     # 9 rows (one per macro variable, M2 + 1y UST excluded) ×
     # 5 columns: macro, bhcb_25, bhcb_26, bhcs_25, bhcs_26.
