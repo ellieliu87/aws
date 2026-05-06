@@ -376,15 +376,22 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "set_style",
-            "description": "Change visual style — color palette (hex codes in series order), legend position, font size in pixels.",
+            "description": (
+                "Change visual style — color palette (hex codes in series order), "
+                "legend position, font size in pixels. Each field independently "
+                "supports a 'preserve' sentinel so you can change one thing "
+                "without disturbing the others: pass palette=[] to leave "
+                "palette as-is, font_size=0 to leave font as-is, and "
+                "legend_position='' to leave legend as-is."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target_kind": {"type": "string", "enum": ["tile", "analytic_def"]},
                     "target_id": {"type": "string"},
-                    "palette": {"type": "array", "items": {"type": "string"}, "description": "Hex color list (e.g. ['#0891B2','#7C3AED']). Empty list reverts to default."},
-                    "font_size": {"type": "integer", "description": "Pixel size for axis labels + legend. 0 reverts to default."},
-                    "legend_position": {"type": "string", "enum": ["top", "bottom", "right", "left", "none"]},
+                    "palette": {"type": "array", "items": {"type": "string"}, "description": "Hex color list (e.g. ['#0891B2','#7C3AED']). Empty list = preserve current palette."},
+                    "font_size": {"type": "integer", "description": "Pixel size for axis labels + legend. 0 = preserve current font size."},
+                    "legend_position": {"type": "string", "enum": ["", "top", "bottom", "right", "left", "none"], "description": "Empty string = preserve current legend position."},
                 },
                 "required": ["target_kind", "target_id", "palette", "font_size", "legend_position"],
             },
@@ -903,8 +910,15 @@ def _t_set_style(args: dict) -> str:
     palette = args.get("palette") or []
     font_size = args.get("font_size") or 0
     legend = args.get("legend_position", "")
-    style.palette = list(palette) if palette else []
-    style.font_size = int(font_size) if font_size and font_size > 0 else None
+    # Empty / zero / "" act as "preserve" — so an analyst who only asked
+    # to move the legend doesn't also have their palette and font_size
+    # silently reset to defaults. The model must pass all three fields
+    # because the schema requires them, but it now signals "leave this
+    # one alone" by sending the corresponding empty value.
+    if palette:
+        style.palette = list(palette)
+    if font_size and int(font_size) > 0:
+        style.font_size = int(font_size)
     if legend in ("top", "bottom", "right", "left", "none"):
         style.legend_position = legend
     return json.dumps({"ok": True, "kind": kind,

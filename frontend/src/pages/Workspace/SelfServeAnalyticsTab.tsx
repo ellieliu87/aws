@@ -20,7 +20,7 @@ import {
 import { useChatStore } from '@/store/chatStore'
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, AreaChart, Area, PieChart, Pie, ScatterChart, Scatter,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell, ReferenceLine,
 } from 'recharts'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -667,6 +667,102 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
   const xLabel = style?.x_axis_label || prettify(x_field)
   const yLabel = style?.y_axis_label || prettify(y_fields.length === 1 ? y_fields[0] : '')
 
+  // Special-case: the "Commercial deposit beta — justification" tile
+  // emits scatter rows with historical_beta / projected_beta / status
+  // columns. Render with a 45° perfect-agreement reference line, dots
+  // coloured by status, and the methodology caption the analyst reads
+  // out during the demo. Detected by data shape so it Just Works for
+  // any future tile that follows the same schema.
+  const firstRow: any = sortedData[0] || {}
+  const isBetaScatter =
+    type === 'scatter'
+    && 'historical_beta' in firstRow
+    && 'projected_beta'  in firstRow
+    && 'status'          in firstRow
+  if (isBetaScatter) {
+    const allVals = sortedData
+      .flatMap((d: any) => [Number(d.historical_beta), Number(d.projected_beta)])
+      .filter(Number.isFinite)
+    const lo = Math.max(0, Math.min(...allVals) - 0.05)
+    const hi = Math.min(1, Math.max(...allVals) + 0.05)
+    const dotColor = (s: any): string => {
+      const t = String(s || '').toUpperCase()
+      if (t === 'ALIGNED')   return '#059669'
+      if (t === 'OVERSHOOT') return '#DC2626'
+      return '#D97706' // UNDERSHOOT (and any unknown status)
+    }
+    return (
+      <div>
+        {style?.title && (
+          <div className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+            {style.title}
+          </div>
+        )}
+        <div style={{ height: 280 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ScatterChart margin={{ top: 12, right: 18, left: 0, bottom: 24 }}>
+              <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="3 3" />
+              <XAxis
+                type="number" dataKey="historical_beta"
+                domain={[lo, hi]}
+                tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
+                label={{
+                  value: xLabel || 'Historical β',
+                  position: 'insideBottom', offset: -8,
+                  style: { fontSize: 11, fill: 'var(--text-secondary)' },
+                }}
+              />
+              <YAxis
+                type="number" dataKey="projected_beta"
+                domain={[lo, hi]}
+                tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
+                label={{
+                  value: yLabel || 'Projected β',
+                  angle: -90, position: 'insideLeft',
+                  style: { fontSize: 11, fill: 'var(--text-secondary)' },
+                }}
+              />
+              <Tooltip
+                cursor={{ strokeDasharray: '3 3' }}
+                contentStyle={{
+                  background: 'var(--bg-card)', border: '1px solid var(--border)',
+                  borderRadius: 8, fontSize: 11, fontFamily: 'JetBrains Mono, monospace',
+                }}
+                formatter={(_v: any, _n: any, p: any) => {
+                  const r = p?.payload || {}
+                  const gap = (Number(r.projected_beta) - Number(r.historical_beta)).toFixed(3)
+                  return [`${r.product}: hist ${r.historical_beta} / proj ${r.projected_beta} (gap ${gap})`, '']
+                }}
+              />
+              <ReferenceLine
+                segment={[{ x: lo, y: lo }, { x: hi, y: hi }]}
+                stroke="var(--text-muted)"
+                strokeDasharray="4 4"
+              />
+              <Scatter data={sortedData}>
+                {sortedData.map((p: any, i: number) => (
+                  <Cell key={i} fill={dotColor(p.status)} />
+                ))}
+              </Scatter>
+            </ScatterChart>
+          </ResponsiveContainer>
+        </div>
+        <div
+          className="mt-2 text-[11px] leading-snug"
+          style={{ color: 'var(--text-secondary)' }}
+        >
+          The 45-degree line is perfect agreement.{' '}
+          <span style={{ color: '#059669', fontWeight: 600 }}>Green</span> dots are aligned
+          within ±10 basis points — that's our P60 tolerance.{' '}
+          <span style={{ color: '#DC2626', fontWeight: 600 }}>Red</span> dots are overshoots:
+          projection more aggressive than history.{' '}
+          <span style={{ color: '#D97706', fontWeight: 600 }}>Amber</span> dots are
+          undershoots: more conservative.
+        </div>
+      </div>
+    )
+  }
+
   const common = (
     <>
       <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="3 3" />
@@ -769,20 +865,10 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
                 />
                 {legendVisible && (
                   <Legend
-                    wrapperStyle={{
-                      fontSize,
-                      position: 'absolute',
-                      top: 4,
-                      right: 12,
-                      background: 'var(--bg-card)',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: 6,
-                      padding: '2px 8px',
-                      pointerEvents: 'none',
-                    }}
-                    verticalAlign="top"
-                    align="right"
-                    layout="vertical"
+                    wrapperStyle={{ fontSize }}
+                    verticalAlign={legendVAlign}
+                    align={legendHAlign}
+                    layout={legendLayout}
                     iconSize={10}
                   />
                 )}
