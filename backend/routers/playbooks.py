@@ -686,40 +686,185 @@ async def _run_to_next_gate(run: PlaybookRun, playbook: Playbook) -> None:
                 f"depends_on never satisfied. Stuck phases: {unrun}. "
                 f"Check for cycles or upstream failures."
             )
+        # Build a final report for failed runs too — the analyst still
+        # wants to see what each phase produced before things went
+        # sideways. Without this, a partial-failure run would render
+        # without a Final Report card and the analyst couldn't review
+        # the upstream outputs at all.
+        run.final_report = _build_final_report(run, playbook)
 
 
 def _build_final_report(run: PlaybookRun, playbook: Playbook) -> str:
-    lines: list[str] = [
-        f"# {playbook.name}",
-        "",
-    ]
+    """Presentation-grade markdown report.
+
+    Layout (top → bottom):
+      1. Cover  — title, tagline, run metadata in a clean header
+      2. Executive Summary — pulled from commentary-drafter when present
+      3. Headline Numbers — pulled from variance-analyst's totals
+      4. Drivers — pulled from methodology-researcher's top_movers
+      5. Commentary Memo — the full slide-ready prose
+      6. Audit Trail — phase-by-phase log (collapsed underneath)
+
+    Each section is built only when the corresponding agent ran and
+    produced structured_output. Sections are skipped silently when
+    their data isn't available — keeps the report clean for partial /
+    failed runs instead of showing empty headers."""
+    from datetime import datetime as _dt
+
+    def _fmt_mm(v) -> str:
+        try:
+            x = float(v)
+        except Exception:
+            return str(v)
+        sign = "−" if x < 0 else ""
+        a = abs(x)
+        if a >= 1000:
+            return f"{sign}${a:,.0f}M"
+        if a >= 10:
+            return f"{sign}${a:.0f}M"
+        if a >= 0.1:
+            return f"{sign}${a:.1f}M"
+        return f"{sign}${a:.2f}M"
+
+    # Pull the typed structured outputs by skill_name (more reliable
+    # than phase ordering when the playbook author rearranges phases).
+    by_skill: dict[str, dict] = {}
+    for pe in run.phases:
+        if pe.structured_output and isinstance(pe.structured_output, dict):
+            by_skill[pe.skill_name] = pe.structured_output
+    variance     = by_skill.get("variance-analyst") or {}
+    attributions = by_skill.get("methodology-researcher") or {}
+    commentary   = by_skill.get("commentary-drafter") or {}
+
+    started_at = run.started_at or run.created_at
+    completed_at = run.completed_at
+    try:
+        date_label = _dt.fromisoformat(str(started_at).replace("Z", "")).strftime("%B %d, %Y")
+    except Exception:
+        date_label = ""
+
+    L: list[str] = []
+
+    # ── 1. Cover ────────────────────────────────────────────────────
+    L.append(f"# {playbook.name}")
     if playbook.description:
-        lines.append(f"_{playbook.description}_")
-        lines.append("")
-    lines.append(
-        f"**Run id**: `{run.id}` &middot; "
-        f"**Function**: `{run.function_id}` &middot; "
-        f"**Status**: {run.status}"
-    )
-    lines.append("")
+        L.append(f"_{playbook.description}_")
+    L.append("")
+    meta_bits: list[str] = []
+    if variance.get("current_scenario") and variance.get("benchmark_scenario"):
+        meta_bits.append(f"**{variance['current_scenario']}** vs **{variance['benchmark_scenario']}**")
+    if variance.get("metric"):
+        meta_bits.append(f"Metric: `{variance['metric']}`")
+    if date_label:
+        meta_bits.append(f"Run date: {date_label}")
+    status_label = {"completed": "Completed", "failed": "Failed", "rejected": "Rejected", "awaiting_gate": "Awaiting gate"}.get(run.status, run.status)
+    meta_bits.append(f"Status: **{status_label}**")
+    if meta_bits:
+        L.append("&middot; ".join(meta_bits))
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # ── 2. Executive Summary (commentary slide_header + primary) ────
+    if commentary.get("slide_header") or commentary.get("primary_driver"):
+        L.append("## Executive Summary")
+        L.append("")
+        if commentary.get("slide_header"):
+            L.append(f"**{commentary['slide_header']}**")
+            L.append("")
+        if commentary.get("primary_driver"):
+            L.append(commentary["primary_driver"])
+            L.append("")
+
+    # ── 3. Headline Numbers (variance totals + waterfall) ───────────
+    if variance and variance.get("total_variance_mm") is not None:
+        L.append("## Headline Numbers")
+        L.append("")
+        bench_ie = variance.get("benchmark_ie_mm")
+        cur_ie   = variance.get("current_ie_mm")
+        delta    = variance.get("total_variance_mm")
+        if bench_ie is not None and cur_ie is not None:
+            L.append(
+                f"| Scenario | Total Interest Expense |"
+            )
+            L.append("|---|---:|")
+            L.append(f"| {variance.get('benchmark_scenario','baseline')} | {_fmt_mm(bench_ie)} |")
+            L.append(f"| {variance.get('current_scenario','stress')}   | {_fmt_mm(cur_ie)}  |")
+            L.append(f"| **Δ** | **{_fmt_mm(delta)}** |")
+            L.append("")
+        else:
+            L.append(f"**ΔIE**: {_fmt_mm(delta)}")
+            L.append("")
+
+        L.append("**Decomposition**")
+        L.append("")
+        L.append("| Effect | Contribution |")
+        L.append("|---|---:|")
+        L.append(f"| Volume | {_fmt_mm(variance.get('volume_effect_mm'))} |")
+        L.append(f"| Mix    | {_fmt_mm(variance.get('mix_effect_mm'))} |")
+        L.append(f"| Rate   | {_fmt_mm(variance.get('rate_effect_mm'))} |")
+        L.append("")
+
+    # ── 4. Drivers (methodology top_movers) ─────────────────────────
+    movers = attributions.get("top_movers") or []
+    if movers:
+        L.append("## Material Drivers")
+        L.append("")
+        L.append("| Rank | Product | Δ | Contribution | Primary effect | Model |")
+        L.append("|---|---|---:|---:|---|---|")
+        for m in movers[:8]:
+            rank = m.get("rank", "")
+            prod = m.get("product", "")
+            tv   = _fmt_mm(m.get("total_variance_mm"))
+            cp   = m.get("contribution_pct")
+            cp_s = f"{cp:.1f}%" if isinstance(cp, (int, float)) else ""
+            pe   = m.get("primary_effect", "")
+            mc   = m.get("model_component", "")
+            L.append(f"| {rank} | {prod} | {tv} | {cp_s} | {pe} | `{mc}` |")
+        L.append("")
+
+    # ── 5. Commentary Memo ─────────────────────────────────────────
+    if commentary.get("secondary_drivers") or commentary.get("overlay_impacts"):
+        L.append("## Commentary")
+        L.append("")
+        if commentary.get("secondary_drivers"):
+            L.append("**Secondary drivers**")
+            L.append("")
+            for d in commentary["secondary_drivers"]:
+                L.append(f"- {d}")
+            L.append("")
+        if commentary.get("overlay_impacts"):
+            L.append("**Overlay impacts** _(manual, separated)_")
+            L.append("")
+            for d in commentary["overlay_impacts"]:
+                L.append(f"- {d}")
+            L.append("")
+
+    # ── 6. Audit Trail ─────────────────────────────────────────────
+    L.append("---")
+    L.append("")
+    L.append("## Audit Trail")
+    L.append("")
+    L.append(f"_Run id: `{run.id}` &middot; Function: `{run.function_id}`_")
+    L.append("")
     for i, pe in enumerate(run.phases, start=1):
-        phase_def = playbook.phases[i - 1] if i - 1 < len(playbook.phases) else None
-        lines.append(f"## Phase {i}: {pe.phase_name}")
-        lines.append(f"_Skill_: `{pe.skill_name}` &middot; _Duration_: {pe.duration_ms:.0f} ms")
-        if pe.error:
-            lines.append("")
-            lines.append(f"> **Error**: {pe.error}")
-        if pe.output:
-            lines.append("")
-            lines.append(pe.output)
+        L.append(f"### Phase {i}: {pe.phase_name}")
+        meta = [f"Skill: `{pe.skill_name}`",
+                f"Duration: {pe.duration_ms:.0f} ms",
+                f"Status: {pe.status}"]
         if pe.gate_decision:
-            lines.append("")
-            badge = {"approve": "✓ APPROVED", "modify": "✎ MODIFIED", "reject": "✗ REJECTED"}[pe.gate_decision]
-            lines.append(f"> **Analyst gate**: {badge}")
-            if pe.gate_notes:
-                lines.append(f"> _{pe.gate_notes}_")
-        lines.append("")
-    return "\n".join(lines)
+            badge = {"approve": "✓ APPROVED", "modify": "✎ MODIFIED",
+                     "reject": "✗ REJECTED", "rerun": "↻ RERUN"}.get(pe.gate_decision, pe.gate_decision)
+            meta.append(f"Analyst gate: {badge}")
+        L.append("_" + " &middot; ".join(meta) + "_")
+        if pe.error:
+            L.append("")
+            L.append(f"> **Error**: {pe.error}")
+        if pe.gate_notes:
+            L.append("")
+            L.append(f"> _Analyst note_: {pe.gate_notes}")
+        L.append("")
+    return "\n".join(L)
 
 
 # ── route ordering: literal paths must come before /{playbook_id} ───────

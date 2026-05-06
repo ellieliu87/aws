@@ -1432,7 +1432,7 @@ ${markdownToHTML(md)}
     )
   }
 
-  const done = run.status === 'completed' || run.status === 'rejected'
+  const done = run.status === 'completed' || run.status === 'rejected' || run.status === 'failed'
 
   return (
     <div className="panel" style={{ padding: 18 }}>
@@ -1712,6 +1712,17 @@ function PhaseRunCard({
   // attribution-challenger findings + their `target_phase` annotations.
   // Used to (1) populate the rerun phase picker with the agents the
   // findings name, and (2) pre-fill the feedback textarea per target.
+  //
+  // Findings are normalized into:
+  //   findingsByPhase[normalized_skill_name] = [bullet, bullet, ...]
+  //   findingsByPhase['_all'] = [every bullet] — fallback when the
+  //     LLM forgot to set target_phase or named something we can't map.
+  // Normalization: lowercase, strip whitespace and underscores/hyphens,
+  // so "Variance Analyst" / "variance-analyst" / "variance_analyst" /
+  // "VarianceAnalyst" all collide on the same key.
+  const _normPhaseName = (s: any) =>
+    String(s || '').toLowerCase().replace(/[\s_\-]+/g, '')
+
   const findingsByPhase = useMemo<Record<string, string[]>>(() => {
     if (!phase.structured_output && !phase.output) return {}
     let parsed: any = null
@@ -1722,16 +1733,15 @@ function PhaseRunCard({
             : phase.structured_output)
         : JSON.parse(phase.output || '{}')
     } catch {
-      // Output isn't JSON — skip; analyst can still write feedback freely.
       return {}
     }
     const findings = Array.isArray(parsed?.findings) ? parsed.findings : []
-    const grouped: Record<string, string[]> = {}
+    const grouped: Record<string, string[]> = { _all: [] }
     for (const f of findings) {
-      const t = (f?.target_phase || '').trim()
-      if (!t) continue
-      const line = `- ${f.claim || '(unnamed claim)'}\n  Fix: ${f.recommended_fix || '(no fix specified)'}`
-      ;(grouped[t] ||= []).push(line)
+      const line = `- ${f?.claim || '(unnamed claim)'}\n  Fix: ${f?.recommended_fix || '(no fix specified)'}`
+      grouped._all.push(line)
+      const t = _normPhaseName(f?.target_phase)
+      if (t) (grouped[t] ||= []).push(line)
     }
     return grouped
   }, [phase.structured_output, phase.output])
@@ -1752,11 +1762,16 @@ function PhaseRunCard({
   }, [allPhases, idx])
 
   // When the analyst picks an upstream target, pre-fill the feedback
-  // textarea from the challenger's findings tagged for that agent.
-  // The findings are keyed by skill_name (e.g. "variance-analyst"),
-  // so we look up by skill first; fall back to phase_name / phase_id
-  // for older challengers that wrote the display name. The analyst can
-  // still edit before submitting.
+  // textarea from the challenger's findings. Lookup order:
+  //   1. Normalized skill_name match (handles "Variance Analyst" /
+  //      "variance-analyst" / "variance_analyst" — all collide on the
+  //      same normalized key)
+  //   2. Normalized phase_name / phase_id
+  //   3. Raw target string (in case the challenger wrote the phase id)
+  //   4. _all — every finding regardless of target_phase. This kicks
+  //      in when the LLM forgot to set target_phase, or named
+  //      something we can't map. The analyst at least gets material
+  //      to edit; better than an empty textarea.
   const onTargetChange = (target: string) => {
     setRerunTarget(target)
     if (!target) return
@@ -1764,14 +1779,18 @@ function PhaseRunCard({
       (p) => p.id === target || p.skill === target || p.name === target,
     )
     const candidates = [
-      phaseObj?.skill,
-      phaseObj?.name,
-      phaseObj?.id,
-      target,
+      _normPhaseName(phaseObj?.skill),
+      _normPhaseName(phaseObj?.name),
+      _normPhaseName(phaseObj?.id),
+      _normPhaseName(target),
     ].filter(Boolean) as string[]
     let lines: string[] = []
     for (const key of candidates) {
       if (findingsByPhase[key]?.length) { lines = findingsByPhase[key]; break }
+    }
+    // Fallback — every finding regardless of target_phase
+    if (lines.length === 0 && findingsByPhase._all?.length) {
+      lines = findingsByPhase._all
     }
     if (lines.length > 0) {
       setFeedback(lines.join('\n\n'))
@@ -1942,9 +1961,9 @@ function PhaseRunCard({
                         </option>
                         {upstreamPhases.map((p) => {
                           const hasFindings = !!(
-                            findingsByPhase[p.skill] ||
-                            findingsByPhase[p.name] ||
-                            findingsByPhase[p.id]
+                            findingsByPhase[_normPhaseName(p.skill)] ||
+                            findingsByPhase[_normPhaseName(p.name)] ||
+                            findingsByPhase[_normPhaseName(p.id)]
                           )
                           return (
                             <option key={p.id} value={p.id}>

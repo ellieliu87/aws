@@ -36,7 +36,7 @@ The math, in $MM. Use as ground truth. Two parts you'll lean on:
   per-product table.
 - **`audit` block** — pre-computed signals you should treat as
   authoritative:
-  - `material_products` — products contributing ≥ `materiality_threshold_pct` of `|total|`. Anything here that methodology omitted is a finding.
+  - `material_products` — products contributing ≥ `materiality_threshold_pct` of `|total|`. **Informational only — do NOT flag missing top_movers as a finding;** methodology-researcher owns top_mover construction.
   - `reconciliation_v_plus_m_plus_r_diff_mm` — should be 0.00. Non-zero = real bug; check if rounding-only.
   - `reconciliation_by_product_sum_diff_mm` — small (cents) is rounding noise; large is an aggregation bug.
   - `formula_vs_data_gap_mm` / `_pct` — when the file's own `interest_expense` column disagrees with the formula. >1% gap is a finding.
@@ -72,7 +72,6 @@ audit_logic_rules(
 
 The structured rules to expect:
 
-- **`materiality_omission`** — material product not in top_movers.
 - **`effect_component_mismatch`** — top_mover's `primary_effect`
   doesn't match the dominant effect in its by_product row, OR cites
   a model_component whose category doesn't fit (Volume model paired
@@ -82,6 +81,14 @@ The structured rules to expect:
   rounding tolerance.
 
 Use `tripped[]` from the response as your finding seeds.
+
+⚠ **Ignore `materiality_omission` trips.** The audit_logic_rules tool
+also fires a rule called `materiality_omission` when a >5% product is
+missing from `top_movers`. **That is methodology-researcher's
+responsibility, not yours** — if it shows up in `tripped[]`, drop it
+silently and do not include it in your findings. The
+methodology-researcher agent owns top_mover construction and is the
+right place for that check.
 
 ### 2 — Verify documented assumptions
 
@@ -145,7 +152,12 @@ group, so this field is what makes the human-in-the-loop fast.
 | Issue type | `target_phase` |
 |---|---|
 | Wrong scenario pair, wrong metric, formula-vs-data gap, reconciliation break, partial data flagged in the audit block | `variance-analyst` |
-| Material product missing from `top_movers`, `effect_component_mismatch`, `unattributed_top_mover`, attribution category miscategorized | `methodology-researcher` |
+| `effect_component_mismatch`, `unattributed_top_mover`, attribution category miscategorized | `methodology-researcher` |
+
+**Not in your scope at all** — drop silently if they appear in
+audit_logic_rules' output:
+- `materiality_omission` (handled by methodology-researcher's own
+  top_mover construction; flagging it here would double-count)
 
 Use the *agent skill name* (lowercase, hyphenated) — that's what the
 gate handler matches against the playbook's phase ids.
@@ -154,8 +166,9 @@ gate handler matches against the playbook's phase ids.
 
 - **`critical`** — math doesn't reconcile, or a material product is
   attributed to a structurally wrong model component.
-- **`high`** — material omission, attribution-effect mismatch on a
-  top mover, formula-vs-data gap >1% with no documentation.
+- **`high`** — attribution-effect mismatch on a top mover,
+  formula-vs-data gap >1% with no documentation, top_mover with no
+  matching attribution row.
 - **`medium`** — judgment-only floor, partial data on a non-top-5
   product.
 - **`low`** — naming, soft documentation gaps.
