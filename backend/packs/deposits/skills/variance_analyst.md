@@ -184,6 +184,47 @@ resolves registered dataset ids. For uploaded files, use
 `preview_tabular_file(path="playbook/<id>/file.csv")` if you need to
 inspect a specific file before running the walk.
 
+## Acting on `[ANALYST FEEDBACK ON PRIOR ATTEMPT]`
+
+When the gate-rerun cascade fires from attribution-challenger and you
+receive a `[ANALYST FEEDBACK ON PRIOR ATTEMPT]` block, parse each
+finding and decide whether it's variance-analyst-actionable. The
+challenger's findings come in plain-text bullet form:
+
+> - PSAV's by_product row has volume_effect dominant but the file's
+>   period_factor was defaulted; quarterly snap_dates need pf=0.25
+>   Fix: re-run with period_factor=0.25.
+
+For each finding, identify the actionable parameter and pass it to
+`compute_variance_walk`:
+
+| Feedback signal | Action |
+|---|---|
+| "period_factor was defaulted; should be 0.25" / "file is quarterly" | `compute_variance_walk(period_factor=0.25, …)` |
+| "wrong scenario pair — should be FedSA vs FedB" | `current_scenario="FedSA", benchmark_scenario="FedB"` |
+| "metric should be nii_mm" / "use net interest income, not interest expense" | `metric="nii_mm"` |
+| "rate column is in decimal, not %" | `rate_scale_to_decimal=1.0` |
+| "rate column is in basis points" | `rate_scale_to_decimal=10000` |
+| "balance is in raw $ (or $B)" | `balance_scale_to_mm=0.000001` (or `1000`) |
+| "metric is in raw $" | `metric_scale_to_mm=0.000001` |
+| "rate variable should be `interest_apr` not `interest_apy`" | `rate_var_name="interest_apr"` |
+
+**If a finding is NOT variance-analyst-actionable** (e.g. "PSAV is
+attributed to wrong model_component" — that's methodology-researcher's
+job, the analyst routed wrong), acknowledge it in your `assumptions`
+field but emit the same JSON output you would have without the
+feedback. Don't loop on it. Don't fail. Don't ask for clarification —
+the analyst can re-route to the right phase if needed.
+
+**If multiple findings conflict** (rare), prefer the most specific
+(explicit override of a parameter) over the most general. Apply all
+non-conflicting actionable findings together in a single
+`compute_variance_walk` call.
+
+**Always cite the applied changes in `assumptions`**, e.g.
+*"Applied analyst feedback: period_factor=0.25 (was defaulted to 1/12)
+and rate_scale_to_decimal=1.0 (rate column is in decimal)."*
+
 ## Procedure
 
 1. **Identify the metric.** Default `interest_expense_mm` unless the
@@ -228,6 +269,8 @@ inspect a specific file before running the walk.
   "mix_effect_mm":      -16.67,
   "rate_effect_mm":     -200.00,
   "data_ie_delta_mm":   -100.0,
+  "benchmark_ie_mm":    1500.0,
+  "current_ie_mm":      1400.0,
   "by_product":         [
     {"product": "DFS_CD", "total_variance_mm": -175.0, "volume_effect_mm":  41.67, "mix_effect_mm": -166.67, "rate_effect_mm": -50.0},
     {"product": "PSAV",   "total_variance_mm":   75.0, "volume_effect_mm":  75.0,  "mix_effect_mm":  150.0,  "rate_effect_mm": -150.0}
@@ -252,6 +295,18 @@ inspect a specific file before running the walk.
   }
 }
 ```
+
+## The `benchmark_ie_mm` + `current_ie_mm` fields — load-bearing
+
+These two are the total interest expense for each scenario across all
+products + snap_dates, computed by the tool as
+`sum(bal × rate × period_factor)` per scenario. They MUST appear in
+your output because the playbook UI's waterfall renderer uses them to
+anchor the chart on the baseline IE level (left bar) and end at the
+stress IE level (right bar). By construction
+`benchmark_ie_mm + total_variance_mm = current_ie_mm`. The tool
+returns them; pass them through verbatim — do NOT omit them just
+because they didn't appear in older example schemas.
 
 ## The `audit` block — what it's for
 

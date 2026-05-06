@@ -2890,6 +2890,24 @@ function AttributionsOutput({ data, rawOutput }: { data: any; rawOutput: string 
   )
 }
 
+// Single shared section-label component so every label inside the
+// commentary memo card has identical typography (10px Inter bold
+// uppercase, tracked, muted color — overlay variant uses the warning
+// color to distinguish manual overlays from modeled drivers).
+function SectionLabel({ children, tone }: { children: React.ReactNode; tone?: 'default' | 'overlay' }) {
+  return (
+    <div
+      className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+      style={{
+        color: tone === 'overlay' ? '#D97706' : 'var(--text-secondary)',
+        fontFamily: "Inter, system-ui, sans-serif",
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
 // ── commentary-drafter: memo-style layout ──────────────────────────────
 function CommentaryOutput({ data, rawOutput }: { data: any; rawOutput: string }) {
   const claims: any[] = data.numeric_claims || []
@@ -2941,59 +2959,59 @@ function CommentaryOutput({ data, rawOutput }: { data: any; rawOutput: string })
         </div>
       )}
 
+      {/* Memo-style commentary card. Typography normalized so headers,
+          body, list items, and section labels all share consistent
+          sizes / fonts / colors. Previous version mixed 13px and 12px
+          body, inconsistent li colors, and accidental serif labels. */}
       <div
         className="rounded-lg p-4"
         style={{
           background: '#FFFFFF',
           border: '1px solid var(--border)',
           fontFamily: "'Source Serif Pro', Georgia, serif",
+          color: 'var(--text-primary)',
+          lineHeight: 1.6,
         }}
       >
         {data.slide_header && (
           <h2
-            className="text-[16px] font-bold leading-snug mb-3 pb-2"
+            className="text-[16px] font-bold mb-3 pb-2"
             style={{
               color: 'var(--text-primary)',
               borderBottom: '2px solid var(--accent)',
+              lineHeight: 1.4,
             }}
           >
             {data.slide_header}
           </h2>
         )}
+
         {data.primary_driver && (
-          <p className="text-[13px] leading-relaxed mb-3" style={{ color: 'var(--text-primary)' }}>
-            <strong>Primary driver: </strong>{data.primary_driver}
-          </p>
+          <div className="mb-4">
+            <SectionLabel>Primary driver</SectionLabel>
+            <p className="text-[13px]" style={{ color: 'var(--text-primary)', lineHeight: 1.6 }}>
+              {data.primary_driver}
+            </p>
+          </div>
         )}
+
         {Array.isArray(data.secondary_drivers) && data.secondary_drivers.length > 0 && (
-          <div className="mb-3">
-            <div
-              className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
-              style={{ color: 'var(--text-secondary)', fontFamily: 'Inter, sans-serif' }}
-            >
-              Secondary drivers
-            </div>
-            <ul className="text-[13px] leading-relaxed list-disc pl-5 space-y-1">
+          <div className="mb-4">
+            <SectionLabel>Secondary drivers</SectionLabel>
+            <ul className="text-[13px] list-disc pl-5 space-y-1.5" style={{ color: 'var(--text-primary)', lineHeight: 1.6 }}>
               {data.secondary_drivers.map((d: string, i: number) => (
-                <li key={i} style={{ color: 'var(--text-primary)' }}>{d}</li>
+                <li key={i}>{d}</li>
               ))}
             </ul>
           </div>
         )}
+
         {Array.isArray(data.overlay_impacts) && data.overlay_impacts.length > 0 && (
-          <div
-            className="mt-3 pt-3"
-            style={{ borderTop: '1px solid var(--border)' }}
-          >
-            <div
-              className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
-              style={{ color: '#D97706', fontFamily: 'Inter, sans-serif' }}
-            >
-              Overlay impacts (manual, separated)
-            </div>
-            <ul className="text-[12px] leading-relaxed list-disc pl-5 space-y-1">
+          <div className="mt-4 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+            <SectionLabel tone="overlay">Overlay impacts (manual, separated)</SectionLabel>
+            <ul className="text-[13px] list-disc pl-5 space-y-1.5" style={{ color: 'var(--text-primary)', lineHeight: 1.6 }}>
               {data.overlay_impacts.map((d: string, i: number) => (
-                <li key={i} style={{ color: 'var(--text-secondary)' }}>{d}</li>
+                <li key={i}>{d}</li>
               ))}
             </ul>
           </div>
