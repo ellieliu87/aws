@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow, ReactFlowProvider, Background, Controls, MiniMap,
-  Handle, Position, MarkerType, useReactFlow,
+  Handle, Position, MarkerType, ConnectionMode, useReactFlow,
   addEdge, applyEdgeChanges, applyNodeChanges,
   type Connection, type Edge, type EdgeChange,
   type Node as RFNode, type NodeChange, type NodeProps,
@@ -854,6 +854,7 @@ function AnalyticsCanvas({ functionId, functionName, onAskAgent, onContextChange
               }
             }}
             nodeTypes={NODE_TYPES}
+            connectionMode={ConnectionMode.Loose}
             fitView
             fitViewOptions={{ padding: 0.2 }}
             proOptions={{ hideAttribution: true }}
@@ -1115,9 +1116,8 @@ function AnalyticsCanvas({ functionId, functionName, onAskAgent, onContextChange
         .react-flow__handle {
           width: 10px; height: 10px;
           border: 2px solid var(--bg-card);
+          background: var(--accent);
         }
-        .react-flow__handle-left { background: var(--accent); }
-        .react-flow__handle-right { background: var(--accent); }
         .react-flow__edge-path { stroke-width: 1.5; }
       `}</style>
     </div>
@@ -1127,28 +1127,24 @@ function AnalyticsCanvas({ functionId, functionName, onAskAgent, onContextChange
 // ── Custom node renderers ───────────────────────────────────────────
 function DatasetNode({ data, selected }: NodeProps) {
   const d = data as NodeData
-  return <NodeCard data={d} selected={!!selected} icon={Database} hasInput={false} hasOutput={true} />
+  return <NodeCard data={d} selected={!!selected} icon={Database} />
 }
 function ScenarioNode({ data, selected }: NodeProps) {
   const d = data as NodeData
-  return <NodeCard data={d} selected={!!selected} icon={FlaskConical} hasInput={false} hasOutput={true} />
+  return <NodeCard data={d} selected={!!selected} icon={FlaskConical} />
 }
 function ModelNode({ data, selected }: NodeProps) {
   const d = data as NodeData
-  return <NodeCard data={d} selected={!!selected} icon={Boxes} hasInput={true} hasOutput={true} />
+  return <NodeCard data={d} selected={!!selected} icon={Boxes} />
 }
 function DestinationNode({ data, selected }: NodeProps) {
   const d = data as NodeData
   const meta = DESTINATION_META[d.ref_id as DestinationKind]
-  return <NodeCard data={d} selected={!!selected} icon={meta?.icon || Download} hasInput={true} hasOutput={false} />
+  return <NodeCard data={d} selected={!!selected} icon={meta?.icon || Download} />
 }
 function TransformNode({ data, selected }: NodeProps) {
   const d = data as NodeData
-  // Transforms accept BOTH a left input (so Data Harness can flow into
-  // a downstream DQC) AND a right output (feeding models or another
-  // transform). When no upstream is wired, the transform falls back to
-  // its declared `output_dataset_id` — that's the source-transform path.
-  return <NodeCard data={d} selected={!!selected} icon={WorkflowIcon} hasInput={true} hasOutput={true} />
+  return <NodeCard data={d} selected={!!selected} icon={WorkflowIcon} />
 }
 
 const NODE_TYPES = {
@@ -1160,17 +1156,18 @@ const NODE_TYPES = {
 }
 
 function NodeCard({
-  data, selected, icon: Icon, hasInput, hasOutput,
+  data, selected, icon: Icon,
 }: {
   data: NodeData
   selected: boolean
   icon: any
-  hasInput: boolean
-  hasOutput: boolean
 }) {
   const status = data.status || 'idle'
   const statusColor = STATUS_COLOR[status]
   const isUnconfiguredDest = data.kind === 'destination' && !nodeHasConfig(data)
+  // Hide subtitle for the two transform boxes whose name already speaks
+  // for itself — the "from <dataset>" / "ETL recipe" hint is noise here.
+  const hideSubtitle = data.title === 'Data Harness' || data.title === 'Data Quality Check'
   return (
     <div
       style={{
@@ -1183,7 +1180,14 @@ function NodeCard({
         boxShadow: selected ? `0 6px 20px ${data.color}33` : '0 2px 8px rgba(0,0,0,0.06)',
       }}
     >
-      {hasInput && <Handle type="target" position={Position.Left} />}
+      {/* Four connection handles — one per edge — so wires can run
+          horizontally OR vertically. With connectionMode="loose" any
+          handle can be source or target; isValidConnection still
+          enforces which node *kinds* may receive incoming edges. */}
+      <Handle type="source" position={Position.Top}    id="t" />
+      <Handle type="source" position={Position.Right}  id="r" />
+      <Handle type="source" position={Position.Bottom} id="b" />
+      <Handle type="source" position={Position.Left}   id="l" />
 
       {/* Status indicator dot */}
       {status !== 'idle' && (
@@ -1218,11 +1222,12 @@ function NodeCard({
               fontWeight: isUnconfiguredDest ? 600 : 400,
             }}
           >
-            {isUnconfiguredDest ? '⚠ click to configure' : data.subtitle}
+            {isUnconfiguredDest
+              ? '⚠ click to configure'
+              : hideSubtitle ? '' : data.subtitle}
           </div>
         </div>
       </div>
-      {hasOutput && <Handle type="source" position={Position.Right} />}
     </div>
   )
 }

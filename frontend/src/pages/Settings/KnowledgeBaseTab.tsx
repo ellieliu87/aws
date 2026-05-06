@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Upload, Trash2, FileText, FileSpreadsheet, FileCode2, FileImage,
-  FileBox, BookOpen, Search, Filter,
+  FileBox, BookOpen, Search, Filter, Sparkles, Eye, X, Wand2, Loader2,
 } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import api from '@/lib/api'
+import { useChatStore } from '@/store/chatStore'
 
 type DocumentInfo = {
   id: string
@@ -55,6 +58,11 @@ export default function KnowledgeBaseTab() {
   const [uploadScope, setUploadScope] = useState('')
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+  const [previewDoc, setPreviewDoc] = useState<DocumentInfo | null>(null)
+  const [extractOpen, setExtractOpen] = useState(false)
+  const setOpen = useChatStore((s) => s.setOpen)
+  const setEntity = useChatStore((s) => s.setEntity)
+  const setPageContext = useChatStore((s) => s.setPageContext)
 
   const load = async () => {
     setLoading(true)
@@ -72,14 +80,23 @@ export default function KnowledgeBaseTab() {
 
   useEffect(() => { load() }, [])
 
+  // Hide playbook-uploaded files from the KB view. They live under
+  // `playbook/<id>/` because the playbook editor uploads attachments
+  // into the same docs root, but they're scoped artefacts the analyst
+  // shouldn't have to delete from here. The agent's `rag_search` still
+  // sees them when scoped to the right playbook.
+  const isPlaybookScoped = (d: DocumentInfo) =>
+    !!d.scope && d.scope.toLowerCase().startsWith('playbook')
+  const visibleDocs = useMemo(() => docs.filter((d) => !isPlaybookScoped(d)), [docs])
+
   const scopes = useMemo(() => {
     const s = new Set<string>()
-    for (const d of docs) if (d.scope) s.add(d.scope)
+    for (const d of visibleDocs) if (d.scope) s.add(d.scope)
     return Array.from(s).sort()
-  }, [docs])
+  }, [visibleDocs])
 
   const filtered = useMemo(() => {
-    return docs.filter((d) => {
+    return visibleDocs.filter((d) => {
       if (scopeFilter === '__all__') {
         // pass
       } else if (scopeFilter === '__root__') {
@@ -95,9 +112,35 @@ export default function KnowledgeBaseTab() {
       }
       return true
     })
-  }, [docs, scopeFilter, searchQuery])
+  }, [visibleDocs, scopeFilter, searchQuery])
 
-  const totalSize = useMemo(() => docs.reduce((sum, d) => sum + d.size_bytes, 0), [docs])
+  const totalSize = useMemo(() => visibleDocs.reduce((sum, d) => sum + d.size_bytes, 0), [visibleDocs])
+
+  // Click "Explain" on a card → bind the chat panel to the doc with
+  // entity_kind='document' and dispatch a doc-explainer prompt.
+  // Important: we do NOT bind entity_kind='dataset' here — the
+  // orchestrator routes 'dataset' to the data-quality / dataset
+  // explainer skill, which can't actually read whitepaper markdown.
+  // The 'document' kind tells the orchestrator to route to
+  // methodology-researcher (which carries `rag_search` in its
+  // toolkit and can read .md / .pdf / .docx whitepapers).
+  const onExplain = (d: DocumentInfo) => {
+    setEntity('document', d.id)
+    setPageContext(`Explain knowledge-base document "${d.name}".`)
+    setOpen(true)
+    window.dispatchEvent(new CustomEvent('cma-chat', {
+      detail:
+        `I'm looking at the knowledge-base document **${d.name}** ` +
+        `(file id: \`${d.id}\`${d.scope ? `, scope: \`${d.scope}\`` : ''}). ` +
+        `Use \`rag_search\` to find and read this file from the docs root, ` +
+        `then explain in 4-6 bullets what the document covers — what the ` +
+        `model / methodology projects, key formulas, calibrated parameters, ` +
+        `stress overlay (if any), and caveats. ` +
+        `Quote the file's actual content; don't paraphrase from training data. ` +
+        `Do NOT route this as a dataset / data-quality question — this is a ` +
+        `document explanation request.`,
+    }))
+  }
 
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || [])
@@ -210,6 +253,18 @@ export default function KnowledgeBaseTab() {
         >
           <Upload size={13} /> {uploading ? 'Uploading…' : 'Upload Files'}
         </button>
+        <button
+          onClick={() => setExtractOpen(true)}
+          className="px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5"
+          style={{
+            background: 'linear-gradient(135deg, rgba(124,58,237,0.12), rgba(14,165,233,0.10))',
+            border: '1px solid rgba(124,58,237,0.35)',
+            color: '#7C3AED',
+          }}
+          title="Upload a PDF or Word file — agent extracts a structured methodology .md"
+        >
+          <Wand2 size={13} /> Extract whitepaper
+        </button>
       </div>
 
       {/* ─ Storage path hint ──────────────────────────────────────────── */}
@@ -283,20 +338,286 @@ export default function KnowledgeBaseTab() {
                   <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
                     {formatBytes(d.size_bytes)} · {formatDate(d.uploaded_at)}
                   </div>
-                  <button
-                    onClick={() => onDelete(d.id, d.name)}
-                    className="p-1.5 rounded-md transition-colors"
-                    style={{ color: 'var(--text-muted)' }}
-                    title="Delete"
-                  >
-                    <Trash2 size={13} />
-                  </button>
+                  {/* Action icons match the model-registry card style:
+                      Sparkles → ask the agent to explain this doc;
+                      Eye      → open a side panel showing the rendered
+                                 markdown / extracted text. Both are
+                                 hover-affordances rather than dominant
+                                 buttons so the card stays scannable. */}
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      onClick={() => onExplain(d)}
+                      className="p-1.5 rounded-md transition-colors"
+                      style={{ color: 'var(--text-muted)' }}
+                      title="Explain with agent"
+                    >
+                      <Sparkles size={13} />
+                    </button>
+                    <button
+                      onClick={() => setPreviewDoc(d)}
+                      className="p-1.5 rounded-md transition-colors"
+                      style={{ color: 'var(--text-muted)' }}
+                      title="Preview"
+                    >
+                      <Eye size={13} />
+                    </button>
+                    <button
+                      onClick={() => onDelete(d.id, d.name)}
+                      className="p-1.5 rounded-md transition-colors"
+                      style={{ color: 'var(--text-muted)' }}
+                      title="Delete"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
                 </div>
               </div>
             )
           })}
         </div>
       )}
+
+      {/* ─ Preview side panel ─────────────────────────────────────────── */}
+      {previewDoc && (
+        <PreviewPanel doc={previewDoc} onClose={() => setPreviewDoc(null)} />
+      )}
+
+      {/* ─ Extract-from-PDF/Word modal ────────────────────────────────── */}
+      {extractOpen && (
+        <ExtractModal
+          onClose={() => setExtractOpen(false)}
+          onExtracted={() => { setExtractOpen(false); load() }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Preview side panel ─────────────────────────────────────────────────
+function PreviewPanel({ doc, onClose }: { doc: DocumentInfo; onClose: () => void }) {
+  const [text, setText] = useState<string>('')
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    api.get<{ text: string }>(`/api/documents/content/${encodeURIComponent(doc.id)}`)
+      .then((r) => { if (!cancelled) setText(r.data.text || '') })
+      .catch(() => { if (!cancelled) setText('(failed to load preview)') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [doc.id])
+
+  const isMarkdown = doc.extension === '.md'
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-stretch justify-end"
+      style={{ background: 'rgba(11,15,25,0.45)' }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="z-50 flex flex-col"
+        style={{
+          width: 'min(720px, 92vw)',
+          background: 'var(--bg-card)',
+          borderLeft: '1px solid var(--border)',
+          boxShadow: '-24px 0 72px rgba(0,0,0,0.32)',
+        }}
+      >
+        <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold truncate" title={doc.name}>{doc.name}</div>
+            <div className="text-[10px] font-mono mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              {doc.scope ? `${doc.scope}/` : ''}{doc.name} · {formatBytes(doc.size_bytes)}
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg" style={{ color: 'var(--text-muted)' }}>
+            <X size={16} />
+          </button>
+        </div>
+        <div
+          className="flex-1 overflow-y-auto px-6 py-5"
+          style={{ background: '#FFFFFF', fontFamily: "'Source Serif Pro', Georgia, serif", fontSize: 14, lineHeight: 1.7 }}
+        >
+          {loading ? (
+            <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+              <Loader2 size={12} className="animate-spin" /> Loading…
+            </div>
+          ) : isMarkdown ? (
+            <div className="cma-md cma-md-report">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+            </div>
+          ) : (
+            <pre className="text-[12px] whitespace-pre-wrap font-mono">{text}</pre>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Extract whitepaper modal ───────────────────────────────────────────
+const DEFAULT_FOCUS_AREAS = `- Methodology: the model's exact formulas, calibrated parameters, and key assumptions
+- Stress overlay: any behavioral changes under regulatory stress (BHC Stress / Fed SA)
+- Suite linkages: upstream inputs the model consumes and downstream models / decisions it feeds
+- Caveats: known limitations, data constraints, and out-of-scope behaviors
+
+Preserve concrete numbers and formulas verbatim — don't paraphrase them away.`
+
+function ExtractModal({ onClose, onExtracted }: { onClose: () => void; onExtracted: () => void }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [file, setFile] = useState<File | null>(null)
+  const [scope, setScope] = useState('whitepapers')
+  const [title, setTitle] = useState('')
+  const [focusAreas, setFocusAreas] = useState(DEFAULT_FOCUS_AREAS)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async () => {
+    if (!file) { setError('Pick a .pdf or .docx file first.'); return }
+    setBusy(true); setError(null)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      if (scope.trim()) fd.append('scope', scope.trim())
+      if (title.trim()) fd.append('title', title.trim())
+      if (focusAreas.trim()) fd.append('focus_areas', focusAreas.trim())
+      await api.post('/api/documents/extract-whitepaper', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120000,
+      })
+      onExtracted()
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || e.message || 'Extraction failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center p-6"
+      style={{ background: 'rgba(11,15,25,0.45)' }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="z-50 rounded-xl flex flex-col"
+        style={{
+          width: 'min(560px, 100%)',
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border)',
+          boxShadow: '0 24px 72px rgba(0,0,0,0.32)',
+        }}
+      >
+        <div
+          className="flex items-center justify-between px-5 py-3"
+          style={{
+            borderBottom: '1px solid var(--border)',
+            background: 'linear-gradient(135deg, rgba(124,58,237,0.10), rgba(14,165,233,0.06))',
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <Wand2 size={14} style={{ color: '#7C3AED' }} />
+            <div className="font-display text-[14px] font-semibold">Extract whitepaper</div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg" style={{ color: 'var(--text-muted)' }}>
+            <X size={16} />
+          </button>
+        </div>
+        <div className="px-5 py-4 space-y-3">
+          <div className="text-[12px]" style={{ color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+            Upload a PDF or Word doc. The agent reads it, extracts model methodology, and saves a structured markdown whitepaper following the same template as the bundled retail-deposit whitepapers — frontmatter, methodology, stress overlay, suite linkages, caveats.
+          </div>
+
+          <div>
+            <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>Source file (.pdf or .docx)</div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".pdf,.docx"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              className="w-full px-3 py-2 rounded-lg text-[12px]"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+            />
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>Scope (folder)</div>
+            <input
+              value={scope}
+              onChange={(e) => setScope(e.target.value)}
+              placeholder="e.g. retail_deposit"
+              className="w-full px-3 py-2 rounded-lg text-[12px]"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+            />
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>Suggested model title (optional)</div>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Hint for the extractor — leave blank to let it infer"
+              className="w-full px-3 py-2 rounded-lg text-[12px]"
+              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+            />
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+                What to extract
+              </div>
+              <button
+                type="button"
+                onClick={() => setFocusAreas(DEFAULT_FOCUS_AREAS)}
+                className="text-[10px]"
+                style={{ color: 'var(--text-muted)' }}
+                title="Reset to default focus areas"
+              >
+                ↺ reset to default
+              </button>
+            </div>
+            <textarea
+              value={focusAreas}
+              onChange={(e) => setFocusAreas(e.target.value)}
+              rows={6}
+              className="w-full px-3 py-2 rounded-lg text-[12px] resize-y"
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border)',
+                fontFamily: 'inherit',
+                lineHeight: 1.5,
+              }}
+              placeholder="What sections / topics should the agent extract?"
+            />
+            <div className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              The agent ALWAYS produces frontmatter + the standard whitepaper structure; this box adds extra focus areas (or trims the defaults). Edit freely.
+            </div>
+          </div>
+          {error && (
+            <div
+              className="text-[11px] px-2 py-1.5 rounded-md"
+              style={{ background: 'var(--error-bg)', color: 'var(--error)' }}
+            >
+              {error}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2 px-5 py-3" style={{ borderTop: '1px solid var(--border)' }}>
+          <button onClick={onClose} className="px-3 py-2 text-xs rounded-lg" style={{ color: 'var(--text-muted)' }}>
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={busy || !file}
+            className="px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50"
+            style={{ background: '#7C3AED', color: '#fff' }}
+          >
+            {busy
+              ? <><Loader2 size={11} className="animate-spin" /> Extracting…</>
+              : <><Wand2 size={11} /> Extract & save</>}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

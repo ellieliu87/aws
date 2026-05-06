@@ -3,7 +3,7 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import type { ChatMessageItem } from '@/types'
 
 export type EntityKind =
-  | 'kpi' | 'dataset' | 'scenario' | 'model' | 'run' | 'tile' | 'workflow' | 'analytic_def' | 'transform' | null
+  | 'kpi' | 'dataset' | 'scenario' | 'model' | 'run' | 'tile' | 'workflow' | 'analytic_def' | 'transform' | 'document' | null
 export type TabId =
   | 'overview' | 'data' | 'models' | 'workflow' | 'analytics' | 'reporting' | 'playbooks' | 'settings' | null
 
