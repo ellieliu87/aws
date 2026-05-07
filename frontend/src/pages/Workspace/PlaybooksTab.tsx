@@ -124,7 +124,38 @@ export default function PlaybooksTab({ functionId, functionName, onAskAgent, onC
   const [skills, setSkills] = useState<PlaybookSkill[]>([])
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [scenarios, setScenarios] = useState<Scenario[]>([])
-  const [right, setRight] = useState<RightView>({ kind: 'idle' })
+  // The right pane remembers which view is open across tab switches —
+  // critical for long-running playbook runs, where the user often hops
+  // to another tab to check data while the agents work. Without this,
+  // unmounting PlaybooksTab loses the runId and the analyst can't get
+  // back to the in-flight run.
+  const RIGHT_STORAGE_KEY = `cma:playbooks:right:${functionId}`
+  const [right, _setRight] = useState<RightView>(() => {
+    try {
+      const raw = localStorage.getItem(RIGHT_STORAGE_KEY)
+      if (raw) {
+        const v = JSON.parse(raw)
+        if (v?.kind === 'run' && typeof v.runId === 'string') {
+          return { kind: 'run', runId: v.runId }
+        }
+      }
+    } catch { /* corrupt storage — fall through to idle */ }
+    return { kind: 'idle' }
+  })
+  const setRight = (v: RightView) => {
+    _setRight(v)
+    try {
+      // Only persist the run view — editor / report views carry full
+      // objects that may go stale across reloads, and the analyst can
+      // re-open them from the left rail in one click anyway. Idle is
+      // the absence of persistence.
+      if (v.kind === 'run') {
+        localStorage.setItem(RIGHT_STORAGE_KEY, JSON.stringify({ kind: 'run', runId: v.runId }))
+      } else {
+        localStorage.removeItem(RIGHT_STORAGE_KEY)
+      }
+    } catch { /* quota / private mode — silently ignore */ }
+  }
 
   const load = () => {
     Promise.all([

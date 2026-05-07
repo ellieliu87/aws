@@ -110,11 +110,13 @@ _SKILL_RESULT_SCHEMAS: dict[str, type] = {
 def _try_parse_json(text: str) -> Any | None:
     """Pull a JSON object out of an agent's text output.
 
-    Strategy (most-specific first):
-      1. Fenced ```json / ```JSON block.
+    Strategy (most-specific first, but every candidate is tried — we
+    don't stop at the first balanced object found):
+      1. Fenced ```json / ```JSON block (with or without trailing newline).
       2. Any fenced ``` block (no language tag or other language).
-      3. Greedy top-level `{...}` extraction via brace-counting — the
-         first balanced object in the text.
+      3. ALL balanced top-level `{...}` segments via brace-counting.
+         Some agents emit a small example object before the real one;
+         picking only the first would lose the actual result.
       4. The whole text, stripped.
 
     Returns the parsed dict, or None if every strategy fails.
@@ -124,50 +126,77 @@ def _try_parse_json(text: str) -> Any | None:
     if not text:
         return None
     candidates: list[str] = []
-    # 1) Explicitly tagged json fence.
-    m = re.search(r"```\s*json\s*\n([\s\S]*?)\n```", text, flags=re.IGNORECASE)
-    if m:
-        candidates.append(m.group(1))
-    # 2) Any fenced block.
-    for m in re.finditer(r"```(?:\w+)?\s*\n([\s\S]*?)\n```", text):
-        candidates.append(m.group(1))
-    # 3) Greedy brace extraction — find the first { and its matching }.
-    start = text.find("{")
-    if start != -1:
+    # 1) Explicitly tagged json fence. Don't require a newline before
+    # the closing ``` — some models emit `}\n```` flush against the
+    # brace, and the strict regex rejects that valid block.
+    for m in re.finditer(r"```\s*json\s*\n?([\s\S]*?)```", text, flags=re.IGNORECASE):
+        candidates.append(m.group(1).strip())
+    # 2) Any fenced block (also tolerant of missing trailing newline).
+    for m in re.finditer(r"```(?:\w+)?\s*\n?([\s\S]*?)```", text):
+        candidates.append(m.group(1).strip())
+    # 3) ALL balanced top-level `{...}` segments. Walk the text and
+    # capture every balanced object so a preamble example doesn't
+    # shadow the real result later in the message.
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
         depth = 0
         in_str = False
         esc = False
-        for i in range(start, len(text)):
-            c = text[i]
+        j = i
+        while j < n:
+            c = text[j]
             if esc:
                 esc = False
+                j += 1
                 continue
             if c == "\\":
                 esc = True
+                j += 1
                 continue
             if c == '"':
                 in_str = not in_str
+                j += 1
                 continue
-            if in_str:
-                continue
-            if c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    candidates.append(text[start:i + 1])
-                    break
-    # 4) Whole text as-is.
+            if not in_str:
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidates.append(text[i:j + 1])
+                        i = j + 1
+                        break
+            j += 1
+        else:
+            # Reached EOF without closing — bail out of the outer loop.
+            break
+        if depth != 0:
+            i += 1
+    # 4) Whole text as-is — last-resort.
     candidates.append(text.strip())
 
+    # Prefer the LARGEST candidate that parses, so we don't pick up a
+    # tiny example object embedded in the prose.
+    parsed_dicts: list[tuple[int, dict]] = []
+    seen: set[str] = set()
     for c in candidates:
+        if not c or c in seen:
+            continue
+        seen.add(c)
         try:
             v = json.loads(c)
-            if isinstance(v, dict):
-                return v
         except Exception:
             continue
-    return None
+        if isinstance(v, dict):
+            parsed_dicts.append((len(c), v))
+    if not parsed_dicts:
+        return None
+    parsed_dicts.sort(key=lambda t: t[0], reverse=True)
+    return parsed_dicts[0][1]
 
 
 def _extract_structured_result(skill_name: str, raw_output: str) -> tuple[dict | None, str | None]:
@@ -637,61 +666,80 @@ async def _run_to_next_gate(run: PlaybookRun, playbook: Playbook) -> None:
                 out.append(pid)
         return out
 
-    while run.status == "running":
-        ready = _ready()
-        if not ready:
-            break  # nothing to run — either everything's done or blocked
+    def _terminate(status_lit: str) -> None:
+        """Move the run to a terminal state. Build the final report FIRST
+        and assign it BEFORE flipping run.status — the polling client uses
+        run.status to decide when to stop polling, so if status flipped
+        first there's a window where the client sees 'completed' with no
+        report and gives up."""
+        run.completed_at = _now()
+        run.final_report = _build_final_report(run, playbook)
+        run.status = status_lit  # type: ignore[assignment]
 
-        # Launch all ready phases in parallel.
-        coros = []
-        for pid in ready:
-            phase = phase_def_by_id[pid]
-            pe = pe_by_id[pid]
-            coros.append(_execute_phase(phase, run, playbook, pe))
-        await asyncio.gather(*coros)
+    try:
+        while run.status == "running":
+            ready = _ready()
+            if not ready:
+                break  # nothing to run — either everything's done or blocked
 
-        # Did any phase fail? Stop the run.
-        for pid in ready:
-            if pe_by_id[pid].status == "failed":
-                run.status = "failed"
-                run.completed_at = _now()
+            # Launch all ready phases in parallel.
+            coros = []
+            for pid in ready:
+                phase = phase_def_by_id[pid]
+                pe = pe_by_id[pid]
+                coros.append(_execute_phase(phase, run, playbook, pe))
+            await asyncio.gather(*coros)
+
+            # Did any phase fail? Stop the run — but still build a final
+            # report so the analyst sees what every prior phase produced
+            # before the failure, instead of an empty Final Report card.
+            if any(pe_by_id[pid].status == "failed" for pid in ready):
+                _terminate("failed")
                 return
 
-        # Did any phase hit a gate? Pause the run — other parallel phases
-        # in this same wave have already completed.
-        for pid in ready:
-            if pe_by_id[pid].status == "awaiting_gate":
+            # Did any phase hit a gate? Pause the run — other parallel phases
+            # in this same wave have already completed.
+            if any(pe_by_id[pid].status == "awaiting_gate" for pid in ready):
                 run.status = "awaiting_gate"
                 return
 
-    # Nothing more is ready — either everything completed cleanly, or
-    # there's a deps cycle / unsatisfiable dependency. Tally the result.
-    if all(pe_by_id[p.id].status == "completed" for p in playbook.phases):
-        run.status = "completed"
-        run.completed_at = _now()
-        run.final_report = _build_final_report(run, playbook)
-    elif any(pe_by_id[p.id].status == "awaiting_gate" for p in playbook.phases):
-        run.status = "awaiting_gate"
-    else:
-        # Some phases are stuck idle — likely an unsatisfiable depends_on
-        # set (cycle, or a dep on a phase that already failed/rejected).
-        unrun = [p.id for p in playbook.phases if pe_by_id[p.id].status == "idle"]
-        if unrun:
-            run.status = "failed"
-            run.completed_at = _now()
-            # Leave a trail on the first stuck phase
-            stuck = pe_by_id[unrun[0]]
-            stuck.status = "failed"
-            stuck.error = (
-                f"depends_on never satisfied. Stuck phases: {unrun}. "
-                f"Check for cycles or upstream failures."
-            )
-        # Build a final report for failed runs too — the analyst still
-        # wants to see what each phase produced before things went
-        # sideways. Without this, a partial-failure run would render
-        # without a Final Report card and the analyst couldn't review
-        # the upstream outputs at all.
-        run.final_report = _build_final_report(run, playbook)
+        # Nothing more is ready — either everything completed cleanly, or
+        # there's a deps cycle / unsatisfiable dependency. Tally the result.
+        if all(pe_by_id[p.id].status == "completed" for p in playbook.phases):
+            _terminate("completed")
+        elif any(pe_by_id[p.id].status == "awaiting_gate" for p in playbook.phases):
+            run.status = "awaiting_gate"
+        else:
+            # Mix of {idle, failed, rejected} — none ready, none at gate, not
+            # all completed. Always land in a terminal state so the client's
+            # `done` check trips and the Final Report card renders. The
+            # earlier version of this branch only set `run.status = "failed"`
+            # when there were stuck idle phases — leaving a stuck-at-running
+            # bug for any other shape of partial failure.
+            unrun = [p.id for p in playbook.phases if pe_by_id[p.id].status == "idle"]
+            if unrun:
+                stuck = pe_by_id[unrun[0]]
+                stuck.status = "failed"
+                stuck.error = (
+                    f"depends_on never satisfied. Stuck phases: {unrun}. "
+                    f"Check for cycles or upstream failures."
+                )
+            _terminate("failed")
+    except Exception as e:
+        # Defensive: any uncaught exception in the wave runner (a phase
+        # builder throwing before _execute_phase's own try block, an
+        # unexpected schema mismatch, etc.) would otherwise leave run.status
+        # pinned at "running" forever, with no way for the analyst to
+        # recover except deleting the run. Surface it as a failure with the
+        # error captured on whichever phase was last "running".
+        last_running = next(
+            (p for p in run.phases if p.status == "running"),
+            None,
+        )
+        if last_running is not None:
+            last_running.status = "failed"
+            last_running.error = f"Wave runner crashed: {e}"
+        _terminate("failed")
 
 
 def _build_final_report(run: PlaybookRun, playbook: Playbook) -> str:
@@ -1001,10 +1049,13 @@ async def submit_gate(
 
     elif req.decision == "reject":
         pe.status = "rejected"
-        # Reject is terminal — abandons the whole run.
-        run.status = "rejected"
+        # Reject is terminal — abandons the whole run. Build the report
+        # before flipping run.status so a poll that catches the new
+        # status also sees the populated final_report (the client stops
+        # polling as soon as status leaves "running"/"awaiting_gate").
         run.completed_at = _now()
         run.final_report = _build_final_report(run, pb)
+        run.status = "rejected"
         return run
 
     elif req.decision == "rerun":
