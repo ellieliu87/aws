@@ -397,6 +397,28 @@ def _build_phase_context(
             + "\n\nApply the feedback above and re-emit the phase output."
         )
 
+    # If this phase was the gate-issuer that triggered a cascade rerun,
+    # surface its prior output so it can mark previously-flagged items
+    # as remediated when the upstream rerun has addressed them — instead
+    # of re-flagging the same issues against the now-corrected input.
+    # Generic across skills: any agent at a gate can use this to compare
+    # its current findings to the prior attempt's.
+    if pe_prev and pe_prev.prior_findings:
+        ctx_parts.append(
+            "[YOUR PRIOR ATTEMPT'S OUTPUT — re-evaluate against the now-rerun upstream input]\n"
+            + pe_prev.prior_findings.strip()[:6000]
+            + "\n\nFor every issue you previously raised, decide one of:\n"
+            "  • The upstream rerun ADDRESSES it — move it to "
+            "`remediated_findings` with a one-line note explaining what "
+            "changed (e.g. \"variance-analyst now documents the formula-"
+            "vs-data gap as a known overlay\").\n"
+            "  • The upstream rerun does NOT address it — keep it in "
+            "`findings` and note that it persists.\n"
+            "Do NOT silently drop a prior finding; either it remediates or "
+            "it persists. New issues found in this attempt go in `findings` "
+            "as usual."
+        )
+
     # Uploaded files — surface paths in a tool-friendly shape.
     #
     # Tools (preview_tabular_file, compute_variance_walk, rag_search)
@@ -531,6 +553,16 @@ async def _execute_phase(
     pe.error = None
     pe.output = None
     pe.trace = []
+    # Sync current_phase_idx with the phase actually about to run, so
+    # the frontend's "Running phase X" indicator reflects reality
+    # instead of whatever the gate handler last computed (which goes
+    # stale the moment the wave runner advances to the next phase).
+    try:
+        run.current_phase_idx = next(
+            i for i, p in enumerate(run.phases) if p.phase_id == phase.id
+        )
+    except StopIteration:
+        pass
     extra_context, user_message = _build_phase_context(phase, run, playbook.function_id, playbook)
 
     # Late import to dodge any circular dependency
@@ -671,9 +703,28 @@ async def _run_to_next_gate(run: PlaybookRun, playbook: Playbook) -> None:
         and assign it BEFORE flipping run.status — the polling client uses
         run.status to decide when to stop polling, so if status flipped
         first there's a window where the client sees 'completed' with no
-        report and gives up."""
+        report and gives up.
+
+        If the report builder itself raises (a malformed structured_output,
+        an unexpected None, etc.), we MUST NOT strand the run at "running".
+        Catch the failure inline, surface it as the report body so the
+        analyst can see what broke, and still flip the status."""
         run.completed_at = _now()
-        run.final_report = _build_final_report(run, playbook)
+        try:
+            report = _build_final_report(run, playbook)
+        except Exception as e:  # noqa: BLE001 — last line of defence
+            import traceback as _tb
+            report = (
+                "# Report build failed\n\n"
+                "The wave runner finished, but the final-report builder "
+                "raised an exception. Phase outputs above are still valid; "
+                "this just means the synthesis step couldn't render.\n\n"
+                f"```\n{type(e).__name__}: {e}\n\n"
+                f"{_tb.format_exc()[-800:]}\n```\n"
+            )
+        # Guarantee a truthy string so the frontend's `done && run.final_report`
+        # check trips. An empty string would silently hide the card.
+        run.final_report = report or "# (empty report)"
         run.status = status_lit  # type: ignore[assignment]
 
     try:
@@ -968,11 +1019,75 @@ async def list_runs(
     return items
 
 
+def _reconcile_stuck_run(run: PlaybookRun) -> None:
+    """Watchdog: detect runs that claim to be running but have no actual
+    work in flight, and force them to a terminal state.
+
+    The wave-runner already has its own try/except + _terminate helper,
+    but that only fires on the paths that actually reach the post-loop
+    tally. If the asyncio task crashes between waves in a way that
+    skips the except clause (e.g. the task is GC'd, the event loop
+    shuts down mid-flight, or a hot-reload nukes the closure), the run
+    is left at status='running' with every phase already completed.
+    The frontend's `done` check stays false, the final-report card
+    never renders, and polling continues forever. This reconciliation
+    runs on every poll — it costs nothing when the run is healthy, and
+    rescues genuinely stuck runs without the analyst having to delete
+    and restart."""
+    if run.status != "running":
+        return
+    # If any phase is still actually doing work, the run is healthy.
+    has_active = any(
+        p.status in ("running", "awaiting_gate") for p in run.phases
+    )
+    if has_active:
+        return
+    # No phase is active but the run claims it's running — reconcile.
+    pb = _PLAYBOOKS.get(run.playbook_id)
+    if not pb:
+        # Playbook was deleted out from under the run. Best-effort: mark
+        # failed with a stub report so the analyst sees something.
+        run.status = "failed"
+        run.completed_at = _now()
+        run.final_report = run.final_report or "# Run abandoned\n\nThe playbook was deleted while this run was active."
+        return
+    # Build the report first so polling clients always observe the
+    # terminal status with the report already populated.
+    run.completed_at = run.completed_at or _now()
+    if all(p.status == "completed" for p in run.phases):
+        new_status = "completed"
+    elif any(p.status in ("failed", "rejected") for p in run.phases):
+        new_status = "failed"
+    else:
+        # Phases stuck idle with no scheduler running them — treat as failed.
+        new_status = "failed"
+        for p in run.phases:
+            if p.status == "idle":
+                p.status = "failed"
+                p.error = p.error or (
+                    "Wave runner exited without running this phase. The "
+                    "playbook tab's run state may have been interrupted "
+                    "(server reload, network failure, or browser refresh "
+                    "during a long-running phase)."
+                )
+                break
+    try:
+        report = _build_final_report(run, pb)
+    except Exception as e:  # noqa: BLE001
+        report = (
+            "# Report build failed during reconciliation\n\n"
+            f"```\n{type(e).__name__}: {e}\n```\n"
+        )
+    run.final_report = run.final_report or report or "# (empty report)"
+    run.status = new_status  # type: ignore[assignment]
+
+
 @router.get("/runs/{run_id}", response_model=PlaybookRun)
 async def get_run(run_id: str, _: str = Depends(get_current_user)):
     r = _RUNS.get(run_id)
     if not r:
         raise HTTPException(status_code=404, detail="Run not found")
+    _reconcile_stuck_run(r)
     return r
 
 
@@ -1089,6 +1204,21 @@ async def submit_gate(
             for p in run.phases:
                 if p.phase_id not in cascade:
                     continue
+                # Snapshot the gate-issuing phase's prior output BEFORE we
+                # wipe it. On rerun, the agent gets this as `[YOUR PRIOR
+                # ATTEMPT'S OUTPUT]` so it can see what it previously
+                # flagged and decide whether the upstream rerun has
+                # remediated each item — rather than blindly re-emitting
+                # the same findings against a fixed input.
+                if p.phase_id == pe.phase_id:
+                    if p.structured_output:
+                        try:
+                            import json as _json
+                            p.prior_findings = _json.dumps(p.structured_output, indent=2, default=str)
+                        except Exception:
+                            p.prior_findings = p.output
+                    elif p.output:
+                        p.prior_findings = p.output
                 # Reset everything the rerun is about to recompute.
                 p.status = "idle"
                 p.output = None

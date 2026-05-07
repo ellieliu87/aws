@@ -3203,6 +3203,7 @@ function AttributionChallengerOutput({ data, rawOutput }: { data: any; rawOutput
 
   const findings: any[] = Array.isArray(data.findings) ? data.findings : []
   const approved: any[] = Array.isArray(data.approved_claims) ? data.approved_claims : []
+  const remediated: any[] = Array.isArray(data.remediated_findings) ? data.remediated_findings : []
 
   const sevColor = (s: string) => {
     const sev = String(s || '').toLowerCase()
@@ -3243,6 +3244,7 @@ function AttributionChallengerOutput({ data, rawOutput }: { data: any; rawOutput
       <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
         {findings.length} finding{findings.length === 1 ? '' : 's'}
         {sevSummary ? `  (${sevSummary})` : ''}
+        {remediated.length > 0 ? `  · ${remediated.length} remediated` : ''}
         {approved.length > 0 ? `  · ${approved.length} approved` : ''}
       </span>
     </div>
@@ -3349,6 +3351,58 @@ function AttributionChallengerOutput({ data, rawOutput }: { data: any; rawOutput
                     <span>{f.recommended_fix}</span>
                   </div>
                 )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Remediated findings — items previously flagged that are now
+          addressed by the analyst's rerun. Rendered in green so the
+          analyst sees credit for the work they did, between the
+          still-active findings and the never-flagged approved claims. */}
+      {remediated.length > 0 && (
+        <div className="mb-2">
+          <div
+            className="text-[10px] font-bold uppercase tracking-widest mb-1.5"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            Remediated ({remediated.length})
+          </div>
+          <div className="space-y-1.5">
+            {remediated.map((r, i) => (
+              <div
+                key={i}
+                className="rounded-md px-2.5 py-1.5 flex items-start gap-2 text-[11px]"
+                style={{
+                  background: 'var(--success-bg)',
+                  border: '1px solid var(--success)',
+                  borderLeft: '3px solid var(--success)',
+                }}
+              >
+                <CheckCircle2
+                  size={12}
+                  style={{ color: 'var(--success)', marginTop: 2, flexShrink: 0 }}
+                />
+                <div className="flex-1 min-w-0">
+                  <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
+                    {r.claim}
+                  </div>
+                  {r.what_changed && (
+                    <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>What changed: </span>
+                      {r.what_changed}
+                    </div>
+                  )}
+                  {r.prior_red_flag && (
+                    <div
+                      className="inline-block text-[9px] font-mono mt-1 px-1.5 py-0.5 rounded"
+                      style={{ background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}
+                    >
+                      was: {r.prior_red_flag}
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
           </div>

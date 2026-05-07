@@ -132,6 +132,13 @@ your final message:
       "target_phase":       "methodology-researcher"
     }
   ],
+  "remediated_findings": [
+    {
+      "claim":            "Formula-vs-data gap of 4.2% on Interest Expense — was flagged in the prior attempt.",
+      "what_changed":     "Variance-analyst now exposes `audit.formula_vs_data_gap_doc_ref` pointing at the documented Q3 BHCS overlay, and includes a `notes` block citing the policy memo. The gap itself is unchanged but is now defensible.",
+      "prior_red_flag":   "undocumented_formula_gap"
+    }
+  ],
   "approved_claims": [
     {
       "claim":   "Material movers DFS_CD and PSAV both appear in top_movers with consistent primary_effect/model_component mappings.",
@@ -141,6 +148,27 @@ your final message:
   "rule_citation": "SR 11-7 §III.4 — Implementation Logic"
 }
 ```
+
+### `remediated_findings` — handling rerun cycles
+
+When the analyst reruns variance-analyst (or methodology-researcher)
+with feedback to address one of your prior findings, you'll receive a
+`[YOUR PRIOR ATTEMPT'S OUTPUT]` block in `[Context]`. For every entry
+in that prior `findings` list, you owe the analyst a verdict:
+
+- **Item is now addressed** → move it to `remediated_findings` with a
+  short `what_changed` line. Do NOT re-emit it under `findings`. The
+  verdict can soften (e.g. needs_correction → approved_with_concerns)
+  if the remediation is the only outstanding issue.
+- **Item still applies** → keep it under `findings` as before. The
+  rerun didn't fix it, so the analyst needs another pass.
+- **New issue surfaced this attempt** → add to `findings` with a fresh
+  evidence quote. Don't pre-populate `prior_red_flag` (those are
+  reserved for items carried over from the prior run).
+
+The frontend renders `remediated_findings` in green so the analyst
+sees credit for the work they did, instead of feeling like the
+challenger keeps moving the goalposts.
 
 ### `target_phase` — which upstream agent owns the fix
 

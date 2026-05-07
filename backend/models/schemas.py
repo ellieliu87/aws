@@ -971,13 +971,20 @@ class PhaseExecution(BaseModel):
     # this when present.
     structured_output: dict[str, Any] | None = None
     agent_id: str | None = None
-    gate_decision: Literal["approve", "modify", "reject"] | None = None
+    gate_decision: Literal["approve", "modify", "reject", "rerun"] | None = None
     gate_notes: str | None = None
     duration_ms: float = 0.0
     error: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
     trace: list[TraceStep] = Field(default_factory=list)
+    # Snapshot of this phase's previous attempt, captured by the gate
+    # handler when a cascade-rerun resets the phase. Spliced into the
+    # rerun's [Context] so the agent can see what it previously emitted
+    # and mark items as remediated rather than re-flagging the same
+    # issues. Only populated for the GATE-ISSUING phase (the one whose
+    # findings triggered the analyst's rerun decision).
+    prior_findings: str | None = None
 
 
 # ── Typed phase results — used by the deposit pack pipeline ──────────────
