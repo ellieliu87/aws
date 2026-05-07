@@ -600,6 +600,33 @@ async def _execute_phase(
         # skill. On success, downstream phases see the validated +
         # re-serialized JSON instead of the agent's raw prose.
         structured, parse_err = _extract_structured_result(phase.skill_name, text)
+
+        # One-shot JSON retry: if the agent emitted prose instead of JSON,
+        # replay the conversation with the prose as the assistant turn and
+        # ask it to re-emit only the JSON block.
+        if parse_err and _SKILL_RESULT_SCHEMAS.get(phase.skill_name):
+            retry_history = [
+                {"role": "user",      "content": user_message},
+                {"role": "assistant", "content": text},
+            ]
+            retry_msg = (
+                "Your previous response was not parseable JSON. "
+                "Re-emit your answer as a JSON object only — "
+                "no preamble, no explanation, no trailing prose. "
+                "You may use a ```json fence, but nothing else."
+            )
+            try:
+                text2, _ = await _ORCH.chat_specialist_with_trace(
+                    phase.skill_name, retry_msg,
+                    extra_context=extra_context,
+                    on_step=_on_step,
+                    history=retry_history,
+                )
+                pe.output = text2
+                structured, parse_err = _extract_structured_result(phase.skill_name, text2)
+            except Exception as retry_exc:
+                parse_err = f"{parse_err} | retry also failed: {retry_exc}"
+
         if structured is not None:
             # commentary-drafter gets a backend post-hoc verification of
             # every NumericClaim against variance-analyst's structured_output.

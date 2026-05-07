@@ -76,19 +76,19 @@ The structured rules to expect:
   doesn't match the dominant effect in its by_product row, OR cites
   a model_component whose category doesn't fit (Volume model paired
   with `primary_effect=rate`).
-- **`unattributed_top_mover`** — top_mover absent from `attributions`.
 - **`reconciliation_break`** — V+M+R doesn't equal total beyond
   rounding tolerance.
 
 Use `tripped[]` from the response as your finding seeds.
 
-⚠ **Ignore `materiality_omission` trips.** The audit_logic_rules tool
-also fires a rule called `materiality_omission` when a >5% product is
-missing from `top_movers`. **That is methodology-researcher's
-responsibility, not yours** — if it shows up in `tripped[]`, drop it
-silently and do not include it in your findings. The
-methodology-researcher agent owns top_mover construction and is the
-right place for that check.
+⚠ **Ignore `materiality_omission` and `unattributed_top_mover` trips.**
+The audit_logic_rules tool fires `materiality_omission` when a >5%
+product is missing from `top_movers`, and `unattributed_top_mover`
+when a top_mover lacks a matching `attributions` row. **Both are
+methodology-researcher's responsibility, not yours** — if either
+appears in `tripped[]`, drop it silently and do not include it in your
+findings. Methodology-researcher owns top_mover construction and
+attribution completeness; flagging those here would double-count.
 
 ### 2 — Verify documented assumptions
 
@@ -186,6 +186,8 @@ group, so this field is what makes the human-in-the-loop fast.
 audit_logic_rules' output:
 - `materiality_omission` (handled by methodology-researcher's own
   top_mover construction; flagging it here would double-count)
+- `unattributed_top_mover` (methodology-researcher owns attribution
+  completeness for top_movers; flagging it here would double-count)
 
 Use the *agent skill name* (lowercase, hyphenated) — that's what the
 gate handler matches against the playbook's phase ids.
