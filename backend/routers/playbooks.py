@@ -862,7 +862,7 @@ def _build_final_report(run: PlaybookRun, playbook: Playbook) -> str:
     attributions = by_skill.get("methodology-researcher") or {}
     commentary   = by_skill.get("commentary-drafter") or {}
 
-    started_at = run.started_at or run.created_at
+    started_at = run.created_at
     completed_at = run.completed_at
     try:
         date_label = _dt.fromisoformat(str(started_at).replace("Z", "")).strftime("%B %d, %Y")
