@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Boxes, Upload, Plus, Trash2, X, Sparkles, Link2, Activity,
-  TrendingUp, FileBox, Loader2,
+  TrendingUp, FileBox, Loader2, ChevronDown, Check,
 } from 'lucide-react'
 import api from '@/lib/api'
 import { useChatStore } from '@/store/chatStore'
@@ -451,6 +451,8 @@ function UploadModelModal({
   onCreated: () => void
 }) {
   const [preinstalled, setPreinstalled] = useState<Set<string>>(new Set())
+  const [dropdownOpen, setDropdownOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
   const [files, setFiles] = useState<File[]>([])
   const [names, setNames] = useState<Record<number, string>>({})
   const [description, setDescription] = useState('')
@@ -458,6 +460,17 @@ function UploadModelModal({
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [errors, setErrors] = useState<{ file: string; message: string }[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!dropdownOpen) return
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [dropdownOpen])
 
   // ── Workflow-execution config (applied to ALL files in this upload).
   // Output kind is the only required choice — feature mapping is auto
@@ -521,14 +534,16 @@ function UploadModelModal({
       for (let i = 0; i < pkgs.length; i++) {
         const pkg = pkgs[i]
         try {
-          await api.post('/api/models/from-artifactory', {
+          await api.post('/api/models/from-uri', {
             function_id: functionId,
             name: pkg.label,
             description: description || pkg.description,
-            package_name: pkg.id,
+            artifactory_uri: `pip://${pkg.id}`,
+            model_type: 'external',
           })
         } catch (e: any) {
-          failures.push({ file: pkg.label, message: e?.response?.data?.detail || 'Registration failed' })
+          const d = e?.response?.data?.detail
+          failures.push({ file: pkg.label, message: typeof d === 'string' ? d : (d?.message ?? JSON.stringify(d) ?? 'Registration failed') })
         }
         setProgress({ done: i + 1, total: pkgs.length })
       }
@@ -569,9 +584,10 @@ function UploadModelModal({
       try {
         await api.post('/api/models/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
       } catch (e: any) {
+        const d = e?.response?.data?.detail
         failures.push({
           file: file.name,
-          message: e?.response?.data?.detail || 'Upload failed',
+          message: typeof d === 'string' ? d : (d?.message ?? JSON.stringify(d) ?? 'Upload failed'),
         })
       }
       setProgress({ done: i + 1, total: files.length })
@@ -585,30 +601,81 @@ function UploadModelModal({
 
   return (
     <Modal title="Upload Model Artifacts" onClose={onClose}>
-      <Field label="Preinstalled packages (select one or more)">
-        <div className="grid grid-cols-2 gap-2">
-          {PREINSTALLED_PACKAGES.map((p) => {
-            const active = preinstalled.has(p.id)
-            return (
-              <button
-                key={p.id}
-                onClick={() => togglePkg(p.id)}
-                disabled={saving}
-                className="text-left rounded-lg px-3 py-2.5 transition-colors"
-                style={{
-                  background: active ? 'var(--accent-light)' : 'var(--bg-elevated)',
-                  border: `1.5px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
-                }}
-              >
-                <div className="text-sm font-semibold" style={{ color: active ? 'var(--accent)' : 'var(--text-primary)' }}>
-                  {p.label}
-                </div>
-                <div className="text-[11px] mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
-                  {p.description}
-                </div>
-              </button>
-            )
-          })}
+      <Field label="Preinstalled packages">
+        <div ref={dropdownRef} style={{ position: 'relative' }}>
+          <button
+            type="button"
+            onClick={() => setDropdownOpen((v) => !v)}
+            disabled={saving}
+            className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-[13px]"
+            style={{
+              background: 'var(--bg-elevated)',
+              border: `1px solid ${preinstalled.size > 0 ? 'var(--accent)' : 'var(--border)'}`,
+              color: preinstalled.size > 0 ? 'var(--text-primary)' : 'var(--text-muted)',
+              textAlign: 'left',
+            }}
+          >
+            <span className="truncate">
+              {preinstalled.size === 0
+                ? 'Select packages…'
+                : PREINSTALLED_PACKAGES.filter((p) => preinstalled.has(p.id)).map((p) => p.label).join(', ')}
+            </span>
+            <ChevronDown
+              size={13}
+              style={{
+                color: 'var(--text-muted)',
+                flexShrink: 0,
+                marginLeft: 8,
+                transform: dropdownOpen ? 'rotate(180deg)' : 'none',
+                transition: 'transform 0.15s',
+              }}
+            />
+          </button>
+          {dropdownOpen && (
+            <div
+              className="absolute z-10 w-full mt-1 rounded-lg overflow-hidden"
+              style={{
+                background: 'var(--bg-card)',
+                border: '1px solid var(--border)',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+              }}
+            >
+              {PREINSTALLED_PACKAGES.map((p, idx) => {
+                const selected = preinstalled.has(p.id)
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => togglePkg(p.id)}
+                    disabled={saving}
+                    className="w-full text-left flex items-start gap-2.5 px-3 py-2.5 transition-colors"
+                    style={{
+                      background: selected ? 'var(--accent-light)' : 'transparent',
+                      borderBottom: idx < PREINSTALLED_PACKAGES.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+                    }}
+                  >
+                    <div
+                      className="w-4 h-4 rounded shrink-0 mt-0.5 flex items-center justify-center"
+                      style={{
+                        background: selected ? 'var(--accent)' : 'var(--bg-elevated)',
+                        border: `1.5px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
+                      }}
+                    >
+                      {selected && <Check size={10} style={{ color: '#fff' }} />}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold" style={{ color: selected ? 'var(--accent)' : 'var(--text-primary)' }}>
+                        {p.label}
+                      </div>
+                      <div className="text-[11px] mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
+                        {p.description}
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
       </Field>
 
