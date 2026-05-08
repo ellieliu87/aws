@@ -210,7 +210,7 @@ class PackContext:
     def attach_transform(
         self,
         *,
-        function_id: str,
+        function_id: str | None,
         transform_id: str,
         name: str,
         description: str = "",
@@ -220,7 +220,8 @@ class PackContext:
         parameters: list[dict] | None = None,
     ) -> None:
         """Stage a Transform (ETL recipe) as a workflow node a function
-        can drop on its canvas.
+        can drop on its canvas. Pass function_id=None to make the
+        transform visible on every workspace's canvas palette.
 
         For the demo, `output_dataset_id` should point at a Dataset the
         pack also attaches — running the transform on the canvas

@@ -129,7 +129,7 @@ async def _ingest_pack_assets():
     # read and any pack-attached datasets the loaders peek at exist.
     try:
         from services.data_services import materialize_into_scenarios_registry
-        n = materialize_into_scenarios_registry("capital_planning")
+        n = materialize_into_scenarios_registry(None)
         print(f"[startup] data_services: materialized {n} scenario(s) into _SCENARIOS")
     except Exception as e:
         print(f"[startup] data_services scenario materialization failed: {e}")

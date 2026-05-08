@@ -25,6 +25,11 @@ class UserInfo(BaseModel):
 
 
 # ── Business Functions ──────────────────────────────────────────────────────
+class PackImport(BaseModel):
+    pack_id: str
+    components: list[str] = Field(default_factory=list)
+
+
 class BusinessFunction(BaseModel):
     id: str
     name: str
@@ -35,6 +40,7 @@ class BusinessFunction(BaseModel):
     category: str
     default_views: list[str]
     sample_metrics: list[str]
+    imported_packs: list[PackImport] = Field(default_factory=list)
 
 
 # ── Workspace / Views ───────────────────────────────────────────────────────
@@ -604,7 +610,7 @@ class Transform(BaseModel):
     transform's `output_dataset_id` points at a pre-staged dataset and
     "execution" reduces to passing that dataset through to consumers."""
     id: str
-    function_id: str
+    function_id: str | None = None  # None = available on every workspace's canvas
     name: str
     description: str | None = None
     # Upstream — which configured Data Sources this transform reads from.

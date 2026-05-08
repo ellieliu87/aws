@@ -404,7 +404,14 @@ export default function OverviewTab({ functionId, onAskAgent, onContextChange }:
     setData(null); setError(null); setPinnedTiles([]); setPreviews({})
     api.get<WorkspaceData>(`/api/workspace/${functionId}`)
       .then((r) => setData(r.data))
-      .catch((e) => setError(e?.response?.data?.detail || 'Failed to load workspace'))
+      .catch((e) => {
+        if (e?.response?.status === 404) {
+          // New workspace with no workspace record yet — show insights card with empty state
+          setData({ function_id: functionId, function_name: functionId, kpis: [], charts: [], tables: [], insights: [] })
+          return
+        }
+        setError(e?.response?.data?.detail || 'Failed to load workspace')
+      })
     api.get<PlotConfig[]>(`/api/plots`, { params: { function_id: functionId, pinned: true } })
       .then((r) => setPinnedTiles(r.data))
       .catch(() => {})

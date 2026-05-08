@@ -466,31 +466,51 @@ Preserve concrete numbers and formulas verbatim — don't paraphrase them away.`
 
 function ExtractModal({ onClose, onExtracted }: { onClose: () => void; onExtracted: () => void }) {
   const fileRef = useRef<HTMLInputElement>(null)
-  const [file, setFile] = useState<File | null>(null)
+  const [files, setFiles] = useState<File[]>([])
   const [scope, setScope] = useState('whitepapers')
-  const [title, setTitle] = useState('')
   const [focusAreas, setFocusAreas] = useState(DEFAULT_FOCUS_AREAS)
   const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const addFiles = (incoming: FileList | null) => {
+    if (!incoming) return
+    const added = Array.from(incoming)
+    setFiles((prev) => {
+      const names = new Set(prev.map((f) => f.name))
+      return [...prev, ...added.filter((f) => !names.has(f.name))]
+    })
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  const removeFile = (idx: number) => setFiles((prev) => prev.filter((_, i) => i !== idx))
+
   const submit = async () => {
-    if (!file) { setError('Pick a .pdf or .docx file first.'); return }
+    if (files.length === 0) { setError('Pick at least one .pdf or .docx file.'); return }
     setBusy(true); setError(null)
-    try {
-      const fd = new FormData()
-      fd.append('file', file)
-      if (scope.trim()) fd.append('scope', scope.trim())
-      if (title.trim()) fd.append('title', title.trim())
-      if (focusAreas.trim()) fd.append('focus_areas', focusAreas.trim())
-      await api.post('/api/documents/extract-whitepaper', fd, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 120000,
-      })
+    const total = files.length
+    let lastError: string | null = null
+    for (let i = 0; i < total; i++) {
+      setProgress({ current: i + 1, total })
+      try {
+        const fd = new FormData()
+        fd.append('file', files[i])
+        if (scope.trim()) fd.append('scope', scope.trim())
+        if (focusAreas.trim()) fd.append('focus_areas', focusAreas.trim())
+        await api.post('/api/documents/extract-whitepaper', fd, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: 120000,
+        })
+      } catch (e: any) {
+        lastError = `"${files[i].name}": ${e?.response?.data?.detail || e.message || 'Extraction failed'}`
+      }
+    }
+    setBusy(false)
+    setProgress(null)
+    if (lastError) {
+      setError(lastError)
+    } else {
       onExtracted()
-    } catch (e: any) {
-      setError(e?.response?.data?.detail || e.message || 'Extraction failed')
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -527,19 +547,42 @@ function ExtractModal({ onClose, onExtracted }: { onClose: () => void; onExtract
         </div>
         <div className="px-5 py-4 space-y-3">
           <div className="text-[12px]" style={{ color: 'var(--text-secondary)', lineHeight: 1.55 }}>
-            Upload a PDF or Word doc. The agent reads it, extracts model methodology, and saves a structured markdown whitepaper following the same template as the bundled retail-deposit whitepapers — frontmatter, methodology, stress overlay, suite linkages, caveats.
+            Upload one or more PDFs or Word docs. The agent reads each file, extracts model methodology, and saves a structured markdown whitepaper — frontmatter, methodology, stress overlay, suite linkages, caveats.
           </div>
 
           <div>
-            <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>Source file (.pdf or .docx)</div>
+            <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>Source files (.pdf or .docx)</div>
             <input
               ref={fileRef}
               type="file"
               accept=".pdf,.docx"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              multiple
+              onChange={(e) => addFiles(e.target.files)}
               className="w-full px-3 py-2 rounded-lg text-[12px]"
               style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
             />
+            {files.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {files.map((f, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-between px-2 py-1 rounded-md text-[11px]"
+                    style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+                  >
+                    <span className="truncate" style={{ color: 'var(--text-secondary)' }}>{f.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeFile(i)}
+                      className="ml-2 shrink-0"
+                      style={{ color: 'var(--text-muted)' }}
+                      disabled={busy}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <div>
             <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>Scope (folder)</div>
@@ -547,16 +590,6 @@ function ExtractModal({ onClose, onExtracted }: { onClose: () => void; onExtract
               value={scope}
               onChange={(e) => setScope(e.target.value)}
               placeholder="e.g. retail_deposit"
-              className="w-full px-3 py-2 rounded-lg text-[12px]"
-              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
-            />
-          </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-widest mb-1" style={{ color: 'var(--text-muted)' }}>Suggested model title (optional)</div>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Hint for the extractor — leave blank to let it infer"
               className="w-full px-3 py-2 rounded-lg text-[12px]"
               style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
             />
@@ -608,13 +641,13 @@ function ExtractModal({ onClose, onExtracted }: { onClose: () => void; onExtract
           </button>
           <button
             onClick={submit}
-            disabled={busy || !file}
+            disabled={busy || files.length === 0}
             className="px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50"
             style={{ background: '#7C3AED', color: '#fff' }}
           >
-            {busy
-              ? <><Loader2 size={11} className="animate-spin" /> Extracting…</>
-              : <><Wand2 size={11} /> Extract & save</>}
+            {busy && progress
+              ? <><Loader2 size={11} className="animate-spin" /> Extracting {progress.current} of {progress.total}…</>
+              : <><Wand2 size={11} /> Extract & save{files.length > 1 ? ` (${files.length})` : ''}</>}
           </button>
         </div>
       </div>

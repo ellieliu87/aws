@@ -268,6 +268,8 @@ export default function ChatPanel({ open, onClose }: ChatPanelProps) {
   const [input, setInput] = useState('')
   const [panelWidth, setPanelWidth] = useState(400)
   const [maximized, setMaximized] = useState(false)
+  const [pinnedAgent, setPinnedAgent] = useState<string | null>(null)
+  const [availableAgents, setAvailableAgents] = useState<{ name: string; description: string; color: string | null; icon: string | null; source: string }[]>([])
   // Sidebar takes 240px on the left (see Sidebar.tsx); maximizing claims
   // every pixel to the right of it without covering the navigation.
   const SIDEBAR_WIDTH = 240
@@ -300,6 +302,23 @@ export default function ChatPanel({ open, onClose }: ChatPanelProps) {
     }, 30)
     return () => clearTimeout(t)
   }, [open])
+
+  // Load workspace-specific agents whenever the active function changes.
+  // Only pack agents from imported packs are returned when function_id is set;
+  // builtin skills are always included. We exclude 'orchestrator' — it's the
+  // routing layer, not a directly-addressable agent.
+  useEffect(() => {
+    if (!functionId) { setAvailableAgents([]); setPinnedAgent(null); return }
+    api.get('/api/skills', { params: { function_id: functionId } })
+      .then((r) => {
+        const agents = (r.data as any[]).filter((s) => s.name !== 'orchestrator')
+        setAvailableAgents(agents)
+      })
+      .catch(() => setAvailableAgents([]))
+  }, [functionId])
+
+  // Reset pinned agent when switching workspaces so stale selection doesn't carry over.
+  useEffect(() => { setPinnedAgent(null) }, [functionId])
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -351,7 +370,7 @@ export default function ChatPanel({ open, onClose }: ChatPanelProps) {
       const res = await api.post('/api/chat/message', {
         message: ctxBundle,
         function_id: snap.functionId,
-        agent_id: 'orchestrator',
+        agent_id: pinnedAgent || 'orchestrator',
         tab: snap.tab,
         entity_kind: snap.entityKind,
         entity_id: snap.entityId,
@@ -594,7 +613,7 @@ export default function ChatPanel({ open, onClose }: ChatPanelProps) {
 
         <div
           className="flex gap-1.5 px-4 py-2.5 flex-wrap"
-          style={{ borderBottom: '1px solid var(--border-subtle)' }}
+          style={{ borderBottom: availableAgents.length > 0 ? 'none' : '1px solid var(--border-subtle)' }}
         >
           {QUICK_QUERIES.map((q) => (
             <button
@@ -621,6 +640,48 @@ export default function ChatPanel({ open, onClose }: ChatPanelProps) {
             </button>
           ))}
         </div>
+
+        {availableAgents.length > 0 && (
+          <div
+            className="flex items-center gap-1.5 px-4 py-2 overflow-x-auto"
+            style={{ borderBottom: '1px solid var(--border-subtle)' }}
+          >
+            <span className="text-[10px] font-mono shrink-0" style={{ color: 'var(--text-muted)' }}>
+              Agent:
+            </span>
+            {/* Auto pill — uses context-based routing */}
+            <button
+              onClick={() => setPinnedAgent(null)}
+              className="text-[11px] px-2.5 py-0.5 rounded-full shrink-0 font-semibold transition-colors"
+              style={{
+                background: pinnedAgent === null ? 'var(--accent)' : 'var(--bg-elevated)',
+                border: `1px solid ${pinnedAgent === null ? 'var(--accent)' : 'var(--border)'}`,
+                color: pinnedAgent === null ? '#fff' : 'var(--text-secondary)',
+              }}
+            >
+              Auto
+            </button>
+            {availableAgents.map((a) => {
+              const active = pinnedAgent === a.name
+              const color = a.color || 'var(--accent)'
+              return (
+                <button
+                  key={a.name}
+                  onClick={() => setPinnedAgent(active ? null : a.name)}
+                  title={a.description}
+                  className="text-[11px] px-2.5 py-0.5 rounded-full shrink-0 font-semibold transition-colors"
+                  style={{
+                    background: active ? color : 'var(--bg-elevated)',
+                    border: `1px solid ${active ? color : 'var(--border)'}`,
+                    color: active ? '#fff' : 'var(--text-secondary)',
+                  }}
+                >
+                  {a.name.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                </button>
+              )
+            })}
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto px-4 py-3">
           <div className="space-y-3">

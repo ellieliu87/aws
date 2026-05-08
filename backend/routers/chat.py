@@ -189,7 +189,13 @@ async def send_message(req: ChatMessage, _: str = Depends(get_current_user)):
             agent_icon="alert-triangle",
         )
 
-    target = _route(req)
+    # If the frontend pinned a specific agent (not the default orchestrator),
+    # honour it directly rather than re-routing by context. This lets pack
+    # agents selected via the chat panel's agent picker be invoked directly.
+    if req.agent_id and req.agent_id != "orchestrator" and _ORCH.get_skill(req.agent_id):
+        target = req.agent_id
+    else:
+        target = _route(req)
     ctx = _build_context(req)
 
     # Cap history to the last 10 turns (5 user-assistant pairs) so token use

@@ -1011,6 +1011,13 @@ async def list_available_skills(
     returned (callers without workspace context).
     """
     from packs import get_pack
+    from routers.functions import BUSINESS_FUNCTIONS
+
+    imported_pack_ids: set[str] | None = None
+    if function_id:
+        fn = next((f for f in BUSINESS_FUNCTIONS if f.id == function_id), None)
+        if fn and fn.imported_packs:
+            imported_pack_ids = {p.pack_id for p in fn.imported_packs}
 
     out = []
     for s in list_skills():
@@ -1019,10 +1026,17 @@ async def list_available_skills(
         if s.name == "orchestrator":
             continue
         if function_id and s.source == "pack" and s.pack_id:
-            pack = get_pack(s.pack_id)
-            attach = list(pack.attach_to_functions) if pack else []
-            if attach and function_id not in attach:
-                continue
+            if imported_pack_ids is not None:
+                # Workspace has explicit imports — only show imported packs.
+                # Explicit import overrides attach_to_functions.
+                if s.pack_id not in imported_pack_ids:
+                    continue
+            else:
+                # No explicit imports — fall back to pack's attach_to_functions.
+                pack = get_pack(s.pack_id)
+                attach = list(pack.attach_to_functions) if pack else []
+                if attach and function_id not in attach:
+                    continue
         out.append({
             "name": s.name,
             "description": s.description,

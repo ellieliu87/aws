@@ -66,7 +66,7 @@ async def list_transforms(
 ):
     items = list(_TRANSFORMS.values())
     if function_id:
-        items = [t for t in items if t.function_id == function_id]
+        items = [t for t in items if t.function_id is None or t.function_id == function_id]
     items = [t for t in items if is_pack_visible(t.pack_id, groups)]
     items.sort(key=lambda t: (t.source != "builtin", t.name))
     return items

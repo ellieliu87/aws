@@ -511,7 +511,7 @@ def _synthetic_paths(severity: str, n_months: int) -> dict[str, list[float]]:
     }
 
 
-def materialize_into_scenarios_registry(function_id: str = "capital_planning") -> int:
+def materialize_into_scenarios_registry(function_id: str | None = None) -> int:
     """Push CCAR (every year) + Outlook cards into `_SCENARIOS` + `BUILTIN_DATA`.
 
     Idempotent — calling twice for the same function is a no-op for ids

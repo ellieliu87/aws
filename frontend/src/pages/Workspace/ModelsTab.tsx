@@ -12,6 +12,13 @@ import {
   ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend,
 } from 'recharts'
 
+const PREINSTALLED_PACKAGES = [
+  { id: 'rdmaas',         label: 'RDMaaS',          description: 'Regulatory Data Management as a Service — credit risk & capital models' },
+  { id: 'commaas',        label: 'CommMaaS',         description: 'Commercial Mortgage-backed Securities analytics suite' },
+  { id: 'sbbmaas',        label: 'SBBMaaS',          description: 'Savings Bonds & Bills Model as a Service — rate sensitivity & prepayment' },
+  { id: 'nii-calculator', label: 'NII Calculator',   description: 'Net Interest Income projection model with rate shock scenarios' },
+] as const
+
 const SOURCE_BADGE: Record<TrainedModel['source_kind'], { label: string; color: string }> = {
   regression: { label: 'BUILT IN-APP', color: '#0891B2' },
   upload:     { label: 'UPLOADED',     color: '#7C3AED' },
@@ -443,6 +450,7 @@ function UploadModelModal({
   onClose: () => void
   onCreated: () => void
 }) {
+  const [preinstalled, setPreinstalled] = useState<Set<string>>(new Set())
   const [files, setFiles] = useState<File[]>([])
   const [names, setNames] = useState<Record<number, string>>({})
   const [description, setDescription] = useState('')
@@ -492,8 +500,44 @@ function UploadModelModal({
 
   const totalBytes = files.reduce((s, f) => s + f.size, 0)
 
+  const togglePkg = (id: string) => {
+    setPreinstalled((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
   const submit = async () => {
-    if (files.length === 0) return
+    if (files.length === 0 && preinstalled.size === 0) return
+
+    // Register preinstalled packages (no file required)
+    if (preinstalled.size > 0 && files.length === 0) {
+      const pkgs = PREINSTALLED_PACKAGES.filter((p) => preinstalled.has(p.id))
+      setSaving(true)
+      setErrors([])
+      const failures: { file: string; message: string }[] = []
+      setProgress({ done: 0, total: pkgs.length })
+      for (let i = 0; i < pkgs.length; i++) {
+        const pkg = pkgs[i]
+        try {
+          await api.post('/api/models/from-artifactory', {
+            function_id: functionId,
+            name: pkg.label,
+            description: description || pkg.description,
+            package_name: pkg.id,
+          })
+        } catch (e: any) {
+          failures.push({ file: pkg.label, message: e?.response?.data?.detail || 'Registration failed' })
+        }
+        setProgress({ done: i + 1, total: pkgs.length })
+      }
+      setErrors(failures)
+      setSaving(false)
+      if (failures.length === 0) onCreated()
+      return
+    }
+
     setSaving(true)
     setErrors([])
     setProgress({ done: 0, total: files.length })
@@ -537,101 +581,131 @@ function UploadModelModal({
     if (failures.length === 0) onCreated()
   }
 
+  const anyPkgSelected = preinstalled.size > 0
+
   return (
     <Modal title="Upload Model Artifacts" onClose={onClose}>
-      <Field label="Files (PKL / Joblib / ONNX / JSON, max 50 MB each — multi-select supported)">
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          accept=".pkl,.pickle,.joblib,.onnx,.json"
-          onChange={(e) => {
-            addFiles(e.target.files)
-            // reset so re-picking the same file works
-            if (inputRef.current) inputRef.current.value = ''
-          }}
-          className="hidden"
-        />
-        <button
-          onClick={() => inputRef.current?.click()}
-          className="w-full rounded-lg py-5 text-sm transition-colors"
-          style={{
-            background: 'var(--bg-elevated)',
-            border: `1.5px dashed ${files.length > 0 ? 'var(--accent)' : 'var(--border)'}`,
-            color: files.length > 0 ? 'var(--accent)' : 'var(--text-muted)',
-          }}
-        >
-          {files.length > 0 ? (
-            <div>
-              <div className="font-semibold">
-                {files.length} file{files.length === 1 ? '' : 's'} selected · {(totalBytes / 1024).toFixed(1)} KB total
-              </div>
-              <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                Click to add more
-              </div>
-            </div>
-          ) : (
-            <>
-              <Upload size={20} style={{ display: 'inline-block', marginRight: 6 }} />
-              Click to choose model files (you can pick multiple)
-            </>
-          )}
-        </button>
-      </Field>
-
-      {files.length > 0 && (
-        <div
-          className="rounded-lg overflow-hidden"
-          style={{ border: '1px solid var(--border)' }}
-        >
-          {files.map((f, i) => {
-            const stem = f.name.split('.').slice(0, -1).join('.') || f.name
+      <Field label="Preinstalled packages (select one or more)">
+        <div className="grid grid-cols-2 gap-2">
+          {PREINSTALLED_PACKAGES.map((p) => {
+            const active = preinstalled.has(p.id)
             return (
-              <div
-                key={`${f.name}-${i}`}
-                className="flex items-center gap-2 px-3 py-2"
+              <button
+                key={p.id}
+                onClick={() => togglePkg(p.id)}
+                disabled={saving}
+                className="text-left rounded-lg px-3 py-2.5 transition-colors"
                 style={{
-                  background: i % 2 === 0 ? 'var(--bg-card)' : 'var(--bg-elevated)',
-                  borderBottom: i < files.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+                  background: active ? 'var(--accent-light)' : 'var(--bg-elevated)',
+                  border: `1.5px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
                 }}
               >
-                <FileBox size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-                <div
-                  className="text-[12px] font-mono truncate min-w-0 flex-1"
-                  style={{ color: 'var(--text-secondary)' }}
-                  title={f.name}
-                >
-                  {f.name}
+                <div className="text-sm font-semibold" style={{ color: active ? 'var(--accent)' : 'var(--text-primary)' }}>
+                  {p.label}
                 </div>
-                <input
-                  className="input"
-                  style={{ width: 200, padding: '4px 8px', fontSize: 12 }}
-                  placeholder={stem}
-                  value={names[i] ?? ''}
-                  onChange={(e) => setNameAt(i, e.target.value)}
-                  title="Override the model name (defaults to filename stem)"
-                  disabled={saving}
-                />
-                <span
-                  className="text-[10px] font-mono shrink-0"
-                  style={{ color: 'var(--text-muted)', width: 60, textAlign: 'right' }}
-                >
-                  {(f.size / 1024).toFixed(1)} KB
-                </span>
-                <button
-                  onClick={() => removeAt(i)}
-                  disabled={saving}
-                  className="p-1 rounded shrink-0"
-                  style={{ color: 'var(--text-muted)' }}
-                  title="Remove from list"
-                >
-                  <X size={12} />
-                </button>
-              </div>
+                <div className="text-[11px] mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
+                  {p.description}
+                </div>
+              </button>
             )
           })}
         </div>
-      )}
+      </Field>
+
+      {!anyPkgSelected && (<>
+        <Field label="Files (PKL / Joblib / ONNX / JSON, max 50 MB each — multi-select supported)">
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            accept=".pkl,.pickle,.joblib,.onnx,.json"
+            onChange={(e) => {
+              addFiles(e.target.files)
+              if (inputRef.current) inputRef.current.value = ''
+            }}
+            className="hidden"
+          />
+          <button
+            onClick={() => inputRef.current?.click()}
+            className="w-full rounded-lg py-5 text-sm transition-colors"
+            style={{
+              background: 'var(--bg-elevated)',
+              border: `1.5px dashed ${files.length > 0 ? 'var(--accent)' : 'var(--border)'}`,
+              color: files.length > 0 ? 'var(--accent)' : 'var(--text-muted)',
+            }}
+          >
+            {files.length > 0 ? (
+              <div>
+                <div className="font-semibold">
+                  {files.length} file{files.length === 1 ? '' : 's'} selected · {(totalBytes / 1024).toFixed(1)} KB total
+                </div>
+                <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  Click to add more
+                </div>
+              </div>
+            ) : (
+              <>
+                <Upload size={20} style={{ display: 'inline-block', marginRight: 6 }} />
+                Click to choose model files (you can pick multiple)
+              </>
+            )}
+          </button>
+        </Field>
+
+        {files.length > 0 && (
+          <div
+            className="rounded-lg overflow-hidden"
+            style={{ border: '1px solid var(--border)' }}
+          >
+            {files.map((f, i) => {
+              const stem = f.name.split('.').slice(0, -1).join('.') || f.name
+              return (
+                <div
+                  key={`${f.name}-${i}`}
+                  className="flex items-center gap-2 px-3 py-2"
+                  style={{
+                    background: i % 2 === 0 ? 'var(--bg-card)' : 'var(--bg-elevated)',
+                    borderBottom: i < files.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+                  }}
+                >
+                  <FileBox size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                  <div
+                    className="text-[12px] font-mono truncate min-w-0 flex-1"
+                    style={{ color: 'var(--text-secondary)' }}
+                    title={f.name}
+                  >
+                    {f.name}
+                  </div>
+                  <input
+                    className="input"
+                    style={{ width: 200, padding: '4px 8px', fontSize: 12 }}
+                    placeholder={stem}
+                    value={names[i] ?? ''}
+                    onChange={(e) => setNameAt(i, e.target.value)}
+                    title="Override the model name (defaults to filename stem)"
+                    disabled={saving}
+                  />
+                  <span
+                    className="text-[10px] font-mono shrink-0"
+                    style={{ color: 'var(--text-muted)', width: 60, textAlign: 'right' }}
+                  >
+                    {(f.size / 1024).toFixed(1)} KB
+                  </span>
+                  <button
+                    onClick={() => removeAt(i)}
+                    disabled={saving}
+                    className="p-1 rounded shrink-0"
+                    style={{ color: 'var(--text-muted)' }}
+                    title="Remove from list"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </>)}
 
       <Field label="Description (optional — applied to all uploaded models)">
         <input
@@ -642,74 +716,76 @@ function UploadModelModal({
         />
       </Field>
 
-      {/* ── Workflow-execution config ──────────────────────────────── */}
-      <Field label="Output kind">
-        <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
-          {([
-            { k: 'scalar',              l: 'Scalar',              h: '1 prediction per input row' },
-            { k: 'probability_vector',  l: 'Probability vector',  h: 'predict_proba per row' },
-            { k: 'n_step_forecast',     l: 'N-step forecast',     h: '1 input → N output rows' },
-            { k: 'multi_target',        l: 'Multi-target',        h: 'predict per row across N targets' },
-          ] as const).map(({ k, l, h }) => {
-            const active = outputKind === k
-            return (
-              <button
-                key={k}
-                onClick={() => setOutputKind(k as OutputKind)}
-                disabled={saving}
-                className="text-left rounded-md px-3 py-2 transition-colors"
-                style={{
-                  background: active ? 'var(--bg-card)' : 'transparent',
-                  border: `1px solid ${active ? 'var(--accent)' : 'transparent'}`,
-                  boxShadow: active ? '0 1px 4px rgba(0,0,0,0.05)' : 'none',
-                }}
-                title={h}
-              >
-                <div className="text-sm font-semibold" style={{ color: active ? 'var(--accent)' : 'var(--text-primary)' }}>{l}</div>
-                <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{h}</div>
-              </button>
-            )
-          })}
-        </div>
-      </Field>
-
-      {outputKind === 'probability_vector' && (
-        <Field label="Class labels (comma-separated, in model order)" hint="Becomes the p_<label> columns in the output.">
-          <input
-            className="input"
-            value={classLabels}
-            onChange={(e) => setClassLabels(e.target.value)}
-            placeholder="e.g. low, medium, high"
-            disabled={saving}
-          />
+      {/* ── Workflow-execution config (only for custom file uploads) ── */}
+      {!anyPkgSelected && (<>
+        <Field label="Output kind">
+          <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+            {([
+              { k: 'scalar',              l: 'Scalar',              h: '1 prediction per input row' },
+              { k: 'probability_vector',  l: 'Probability vector',  h: 'predict_proba per row' },
+              { k: 'n_step_forecast',     l: 'N-step forecast',     h: '1 input → N output rows' },
+              { k: 'multi_target',        l: 'Multi-target',        h: 'predict per row across N targets' },
+            ] as const).map(({ k, l, h }) => {
+              const active = outputKind === k
+              return (
+                <button
+                  key={k}
+                  onClick={() => setOutputKind(k as OutputKind)}
+                  disabled={saving}
+                  className="text-left rounded-md px-3 py-2 transition-colors"
+                  style={{
+                    background: active ? 'var(--bg-card)' : 'transparent',
+                    border: `1px solid ${active ? 'var(--accent)' : 'transparent'}`,
+                    boxShadow: active ? '0 1px 4px rgba(0,0,0,0.05)' : 'none',
+                  }}
+                  title={h}
+                >
+                  <div className="text-sm font-semibold" style={{ color: active ? 'var(--accent)' : 'var(--text-primary)' }}>{l}</div>
+                  <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{h}</div>
+                </button>
+              )
+            })}
+          </div>
         </Field>
-      )}
 
-      {outputKind === 'multi_target' && (
-        <Field label="Target names (comma-separated, in model order)">
-          <input
-            className="input"
-            value={targetNames}
-            onChange={(e) => setTargetNames(e.target.value)}
-            placeholder="e.g. PD, LGD, EAD"
-            disabled={saving}
-          />
-        </Field>
-      )}
+        {outputKind === 'probability_vector' && (
+          <Field label="Class labels (comma-separated, in model order)" hint="Becomes the p_<label> columns in the output.">
+            <input
+              className="input"
+              value={classLabels}
+              onChange={(e) => setClassLabels(e.target.value)}
+              placeholder="e.g. low, medium, high"
+              disabled={saving}
+            />
+          </Field>
+        )}
 
-      {outputKind === 'n_step_forecast' && (
-        <Field label="Forecast steps">
-          <input
-            type="number"
-            min={1}
-            max={120}
-            className="input"
-            value={forecastSteps}
-            onChange={(e) => setForecastSteps(parseInt(e.target.value) || 1)}
-            disabled={saving}
-          />
-        </Field>
-      )}
+        {outputKind === 'multi_target' && (
+          <Field label="Target names (comma-separated, in model order)">
+            <input
+              className="input"
+              value={targetNames}
+              onChange={(e) => setTargetNames(e.target.value)}
+              placeholder="e.g. PD, LGD, EAD"
+              disabled={saving}
+            />
+          </Field>
+        )}
+
+        {outputKind === 'n_step_forecast' && (
+          <Field label="Forecast steps">
+            <input
+              type="number"
+              min={1}
+              max={120}
+              className="input"
+              value={forecastSteps}
+              onChange={(e) => setForecastSteps(parseInt(e.target.value) || 1)}
+              disabled={saving}
+            />
+          </Field>
+        )}
+      </>)}
 
       {progress && (
         <div
@@ -754,11 +830,13 @@ function UploadModelModal({
       <ModalFooter
         onClose={onClose}
         onSubmit={submit}
-        disabled={files.length === 0 || saving}
+        disabled={(files.length === 0 && preinstalled.size === 0) || saving}
         submitLabel={
           saving
-            ? `Uploading ${progress?.done ?? 0}/${progress?.total ?? files.length}…`
-            : `Register ${files.length || 'Models'}${files.length > 0 ? ` Model${files.length === 1 ? '' : 's'}` : ''}`
+            ? (anyPkgSelected ? `Registering ${progress?.done ?? 0}/${progress?.total ?? preinstalled.size}…` : `Uploading ${progress?.done ?? 0}/${progress?.total ?? files.length}…`)
+            : anyPkgSelected
+              ? `Register ${preinstalled.size} Package${preinstalled.size === 1 ? '' : 's'}`
+              : `Register ${files.length || 'Models'}${files.length > 0 ? ` Model${files.length === 1 ? '' : 's'}` : ''}`
         }
       />
     </Modal>

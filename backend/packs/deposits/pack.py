@@ -211,7 +211,7 @@ def build(*, scenario_severity="base", horizon_months=27, onelake):
 '''
 
     ctx.attach_transform(
-        function_id="capital_planning",
+        function_id=None,
         transform_id="tr-deposits-data-harness",
         name="Data Harness",
         description=(
@@ -272,7 +272,7 @@ def check(df, *, min_rows=12, max_null_rate=0.05, value_bounds=None):
 '''
 
     ctx.attach_transform(
-        function_id="capital_planning",
+        function_id=None,
         transform_id="tr-deposits-dqc",
         name="Data Quality Check",
         description=(

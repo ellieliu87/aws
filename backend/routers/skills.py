@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from agent.skill_loader import (
     USER_SKILLS_DIR,
@@ -71,15 +71,43 @@ def _is_user_skill(skill_name: str) -> bool:
 
 # ── Routes ───────────────────────────────────────────────────────────────
 @router.get("", response_model=list[AgentSkillSchema])
-async def get_skills(groups: list[str] = Depends(get_current_user_groups)):
-    """List every skill the calling user is allowed to see.
+async def get_skills(
+    function_id: str | None = Query(default=None),
+    groups: list[str] = Depends(get_current_user_groups),
+):
+    """List skills the calling user is allowed to see.
 
-    Universal (built-in / user) skills are always returned. Pack-scoped
-    skills are filtered through `is_pack_visible(pack_id, groups)`."""
-    return [
-        _to_schema(s) for s in list_skills()
-        if is_pack_visible(s.pack_id, groups)
-    ]
+    When `function_id` is supplied, pack skills are further filtered to
+    only those whose pack was explicitly imported by the workspace. This
+    keeps workspace-specific agent pickers focused on relevant agents
+    rather than showing every pack installed on the platform."""
+    from routers.functions import BUSINESS_FUNCTIONS
+
+    imported_pack_ids: set[str] | None = None
+    if function_id:
+        fn = next((f for f in BUSINESS_FUNCTIONS if f.id == function_id), None)
+        if fn and fn.imported_packs:
+            imported_pack_ids = {p.pack_id for p in fn.imported_packs}
+
+    result = []
+    for s in list_skills():
+        if not is_pack_visible(s.pack_id, groups):
+            continue
+        if function_id and s.source == "pack" and s.pack_id:
+            if imported_pack_ids is not None:
+                # Workspace has explicit imports — only show imported packs.
+                # Explicit import overrides attach_to_functions.
+                if s.pack_id not in imported_pack_ids:
+                    continue
+            else:
+                # No explicit imports — hide pack skills that target other functions.
+                from packs import get_pack
+                pack = get_pack(s.pack_id)
+                attach = list(pack.attach_to_functions) if pack else []
+                if attach and function_id not in attach:
+                    continue
+        result.append(_to_schema(s))
+    return result
 
 
 @router.get("/_available_tools")

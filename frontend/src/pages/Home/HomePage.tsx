@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowRight, Briefcase, LineChart, Droplet, ShieldAlert, Banknote,
-  Building2, Activity, FileSpreadsheet, Plus,
+  Building2, Activity, FileSpreadsheet, Plus, Trash2,
+  BarChart3, FlaskConical, Boxes, ListChecks, FileBarChart, Database,
 } from 'lucide-react'
 import api from '@/lib/api'
 import { useAuthStore } from '@/store/authStore'
@@ -12,12 +13,18 @@ import NewWorkspaceDrawer from './NewWorkspaceDrawer'
 const ICONS: Record<string, any> = {
   briefcase: Briefcase,
   'line-chart': LineChart,
+  'bar-chart': BarChart3,
   droplet: Droplet,
   'shield-alert': ShieldAlert,
   banknote: Banknote,
   'building-2': Building2,
   activity: Activity,
   'file-spreadsheet': FileSpreadsheet,
+  flask: FlaskConical,
+  boxes: Boxes,
+  checks: ListChecks,
+  'file-bar-chart': FileBarChart,
+  database: Database,
 }
 
 export default function HomePage() {
@@ -26,12 +33,23 @@ export default function HomePage() {
   const [functions, setFunctions] = useState<BusinessFunction[]>([])
   const [loading, setLoading] = useState(true)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
 
   useEffect(() => {
     api.get<BusinessFunction[]>('/api/functions')
       .then((r) => setFunctions(r.data))
       .finally(() => setLoading(false))
   }, [])
+
+  const handleDelete = async (fn: BusinessFunction) => {
+    if (!window.confirm(`Delete workspace "${fn.name}"?\n\nThis removes it from the list. Any data, models, or plots stored in it will no longer be accessible.`)) return
+    try {
+      await api.delete(`/api/functions/${fn.id}`)
+      setFunctions((prev) => prev.filter((f) => f.id !== fn.id))
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || 'Could not delete workspace.')
+    }
+  }
 
   const greeting = (() => {
     const h = new Date().getHours()
@@ -177,24 +195,29 @@ export default function HomePage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {fns.map((f) => {
               const Icon = ICONS[f.icon] || Briefcase
+              const isHovered = hoveredId === f.id
               return (
-                <button
+                <div
                   key={f.id}
                   onClick={() => navigate(`/workspace/${f.id}`)}
-                  className="text-left transition-all group"
+                  className="text-left transition-all"
                   style={{
                     background: 'var(--bg-card)',
                     border: '1px solid var(--border)',
                     borderRadius: 12,
                     padding: 20,
+                    cursor: 'pointer',
+                    transition: 'border-color 0.15s, transform 0.15s, box-shadow 0.15s',
                   }}
                   onMouseEnter={(e) => {
+                    setHoveredId(f.id)
                     const el = e.currentTarget as HTMLElement
                     el.style.borderColor = f.color
                     el.style.transform = 'translateY(-2px)'
                     el.style.boxShadow = `0 12px 28px ${f.color}1F`
                   }}
                   onMouseLeave={(e) => {
+                    setHoveredId(null)
                     const el = e.currentTarget as HTMLElement
                     el.style.borderColor = 'var(--border)'
                     el.style.transform = 'translateY(0)'
@@ -208,11 +231,25 @@ export default function HomePage() {
                     >
                       <Icon size={18} />
                     </div>
-                    <ArrowRight
-                      size={16}
-                      className="transition-transform group-hover:translate-x-1"
-                      style={{ color: 'var(--text-muted)' }}
-                    />
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDelete(f) }}
+                        title="Delete workspace"
+                        className="p-1.5 rounded-lg"
+                        style={{
+                          color: 'var(--error)',
+                          opacity: isHovered ? 1 : 0,
+                          pointerEvents: isHovered ? 'auto' : 'none',
+                          transition: 'opacity 0.15s',
+                        }}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                      <ArrowRight
+                        size={16}
+                        style={{ color: 'var(--text-muted)', transition: 'transform 0.15s', transform: isHovered ? 'translateX(2px)' : 'none' }}
+                      />
+                    </div>
                   </div>
                   <div className="font-display text-base font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
                     {f.name}
@@ -223,7 +260,7 @@ export default function HomePage() {
                   >
                     {f.description}
                   </p>
-                </button>
+                </div>
               )
             })}
           </div>

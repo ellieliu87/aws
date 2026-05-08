@@ -4,7 +4,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from models.schemas import BusinessFunction
+from models.schemas import BusinessFunction, PackImport
 from routers.auth import get_current_user
 
 router = APIRouter()
@@ -122,7 +122,7 @@ async def get_function(function_id: str, _: str = Depends(get_current_user)):
 
 # ── Create a new workspace (in-memory; resets on backend restart) ──────────
 class BusinessFunctionCreate(BaseModel):
-    """Body for the new-workspace drawer. `id` is auto-derived from `name`
+    """Body for the new-workspace modal. `id` is auto-derived from `name`
     when not provided. `default_views` and `sample_metrics` come up empty —
     a freshly-created workspace has no hardcoded content; analysts populate
     it via the Reporting / Data / Models tabs."""
@@ -133,6 +133,19 @@ class BusinessFunctionCreate(BaseModel):
     icon: str = "briefcase"
     color: str = "#004977"
     id: str | None = None  # optional — defaults to slugify(name)
+    imported_packs: list[PackImport] = Field(default_factory=list)
+
+
+@router.delete("/{function_id}", status_code=204)
+async def delete_function(function_id: str, _: str = Depends(get_current_user)):
+    idx = next((i for i, f in enumerate(BUSINESS_FUNCTIONS) if f.id == function_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    BUSINESS_FUNCTIONS.pop(idx)
+    remaining_cats = {f.category for f in BUSINESS_FUNCTIONS}
+    for cat in list(CATEGORY_ORDER):
+        if cat not in remaining_cats:
+            CATEGORY_ORDER.remove(cat)
 
 
 @router.post("", response_model=BusinessFunction, status_code=201)
@@ -157,6 +170,7 @@ async def create_function(
         category=body.category.strip(),
         default_views=[],
         sample_metrics=[],
+        imported_packs=body.imported_packs,
     )
     BUSINESS_FUNCTIONS.append(fn)
     if fn.category not in CATEGORY_ORDER:

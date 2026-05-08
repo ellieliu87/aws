@@ -1,3 +1,8 @@
+export interface PackImport {
+  pack_id: string
+  components: string[]
+}
+
 export interface BusinessFunction {
   id: string
   name: string
@@ -8,6 +13,7 @@ export interface BusinessFunction {
   category: string
   default_views: string[]
   sample_metrics: string[]
+  imported_packs?: PackImport[]
 }
 
 export interface KpiCard {
