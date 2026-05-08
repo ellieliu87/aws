@@ -4,8 +4,10 @@ In a real deployment this would persist connection metadata (and secrets!) in a
 secure store. Here we keep things in process memory and never accept real
 credentials.
 """
+import json
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -120,10 +122,32 @@ SAMPLE_TABLES: dict[str, dict[str, list[tuple[str, str]]]] = {
 
 _DATA_SOURCES: dict[str, DataSource] = {}
 
+DATASOURCES_STORE = Path(__file__).resolve().parent.parent / "data" / "datasources.json"
 
-def _seed():
-    if _DATA_SOURCES:
-        return
+
+def _save() -> None:
+    """Persist all data sources to disk so custom registrations survive restarts."""
+    try:
+        DATASOURCES_STORE.parent.mkdir(parents=True, exist_ok=True)
+        DATASOURCES_STORE.write_text(
+            json.dumps([s.model_dump() for s in _DATA_SOURCES.values()], indent=2)
+        )
+    except Exception:
+        pass
+
+
+def _seed() -> None:
+    # Restore any previously saved sources first (covers custom OneLake extractors
+    # and any other sources registered at runtime).
+    if DATASOURCES_STORE.exists():
+        try:
+            for r in json.loads(DATASOURCES_STORE.read_text()):
+                src = DataSource(**r)
+                _DATA_SOURCES[src.id] = src
+        except Exception:
+            pass
+
+    # Add hardcoded defaults only for IDs not already loaded from disk.
     seeds = [
         DataSource(
             id="ds-snowflake-prod",
@@ -167,7 +191,8 @@ def _seed():
         ),
     ]
     for s in seeds:
-        _DATA_SOURCES[s.id] = s
+        if s.id not in _DATA_SOURCES:
+            _DATA_SOURCES[s.id] = s
 
 
 _seed()
