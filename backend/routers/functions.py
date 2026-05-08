@@ -175,4 +175,14 @@ async def create_function(
     BUSINESS_FUNCTIONS.append(fn)
     if fn.category not in CATEGORY_ORDER:
         CATEGORY_ORDER.append(fn.category)
+
+    # Ensure built-in CCAR + Outlook scenarios are in the scenario registry
+    # so they appear immediately in the new workspace's workflow tab dropdown.
+    # Idempotent — skips any scenario already present from the startup hook.
+    try:
+        from services.data_services import materialize_into_scenarios_registry
+        materialize_into_scenarios_registry(None)
+    except Exception:
+        pass
+
     return fn
