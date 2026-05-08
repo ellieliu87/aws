@@ -7,7 +7,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from agent.tools import reset_request_context, set_request_context
 from cof.orchestrator import AsyncOrchestrator
@@ -44,8 +44,33 @@ class TileBlueprint(BaseModel):
     kpi_aggregation: str | None = None
     kpi_prefix: str | None = None
     kpi_suffix: str | None = None
+    kpi_sublabel: str | None = None
     description: str | None = None
     python_snippet: str | None = None
+
+    # The LLM occasionally returns a single dict instead of a list, or a
+    # plain string instead of a list of strings. Coerce both gracefully.
+    @field_validator("filters", mode="before")
+    @classmethod
+    def _coerce_filters(cls, v: object) -> list:
+        if v is None:
+            return []
+        if isinstance(v, dict):
+            return [v]
+        if isinstance(v, list):
+            return v
+        return []  # unexpected type — treat as empty
+
+    @field_validator("y_fields", mode="before")
+    @classmethod
+    def _coerce_y_fields(cls, v: object) -> list:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v] if v else []
+        if isinstance(v, list):
+            return v
+        return []
 
 
 class TileDesignerResponse(BaseModel):

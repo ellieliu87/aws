@@ -104,7 +104,18 @@ For FEDFUNDS and interest_apy KPIs, use `kpi_suffix: "%"`.
 
 ## Output format
 
-Respond with ONLY this JSON structure — no markdown fences, no extra text:
+Respond with ONLY this JSON structure — no markdown fences, no extra text.
+
+CRITICAL array rules — violations cause a backend validation error:
+- `filters` MUST always be a JSON array `[...]`, even for a single filter. NEVER a bare object `{...}`.
+  ✓ correct:  `"filters": [{"field": "scenario", "op": "eq", "value": "BHCS"}]`
+  ✗ wrong:    `"filters": {"field": "scenario", "op": "eq", "value": "BHCS"}`
+- `y_fields` MUST always be a JSON array `[...]`. NEVER a bare string.
+  ✓ correct:  `"y_fields": ["variable_value"]`
+  ✗ wrong:    `"y_fields": "variable_value"`
+- An empty filter list is `"filters": []`, not `null` or omitted.
+
+Structure:
 
 {"tiles": [{"tile_type": "...", "name": "...", ...}], "narrative_summary": "..."}
 
