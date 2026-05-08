@@ -62,7 +62,7 @@ These two metrics are **derived** — they do not exist as a single `variable_na
 = change in `interest_apy` over the scenario horizon ÷ change in `FEDFUNDS` over the same horizon
 
 For a **KPI tile** showing portfolio-level beta:
-- Use `tile_type: "kpi"`, `kpi_field: "variable_value"`, `kpi_aggregation: "mean"`
+- Use `tile_type: "kpi"`, `kpi_field: "variable_value"`, `kpi_aggregation: "avg"`
 - Set `filters` to `variable_name = interest_apy` + the scenario filter
 - Set `kpi_sublabel: "Δ interest_apy / Δ FEDFUNDS (proxy: mean apy)"` to acknowledge it is a proxy
 - In `description` explain: "Proxy for beta using average interest_apy under scenario; true beta = Δ(interest_apy)/Δ(FEDFUNDS)"
@@ -70,7 +70,7 @@ For a **KPI tile** showing portfolio-level beta:
   `"sc = df[df.scenario=='BHCS']; beta = (sc[sc.variable_name=='interest_apy']['variable_value'].diff() / sc[sc.variable_name=='FEDFUNDS']['variable_value'].diff()).mean()"`
 
 For a **bar chart of product-level betas** (`x_field: "segment"`):
-- Use `tile_type: "plot"`, `chart_type: "bar"`, `x_field: "segment"`, `aggregation: "mean"`
+- Use `tile_type: "plot"`, `chart_type: "bar"`, `x_field: "segment"`, `aggregation: "avg"`
 - Filter by `variable_name = interest_apy` (the rate component of beta) and the scenario
 - In `description` note: "Bar height = mean interest_apy per segment; divide by FEDFUNDS change for true beta"
 - `python_snippet`: `"df[(df.variable_name=='interest_apy')&(df.scenario=='BHCS')].groupby('segment')['variable_value'].mean().plot(kind='bar', title='Product Betas (interest_apy proxy)')"`
@@ -98,7 +98,7 @@ When the user says "product level", "by product", "per product", "product breakd
 When the user asks for a KPI on a rate or shock value:
 - "shock", "peak rate", "maximum rate", "highest" → `kpi_aggregation: "max"`
 - "current", "latest", "end of period", "last" → `kpi_aggregation: "latest"`
-- "average", "mean" → `kpi_aggregation: "mean"`
+- "average", "avg" → `kpi_aggregation: "avg"`
 
 For FEDFUNDS and interest_apy KPIs, use `kpi_suffix: "%"`.
 
@@ -155,7 +155,7 @@ Full worked example for "for BHCS scenario: KPI for Fed Funds shock and portfoli
         {"field": "segment", "op": "eq", "value": "Portfolio"}
       ],
       "kpi_field": "variable_value",
-      "kpi_aggregation": "mean",
+      "kpi_aggregation": "avg",
       "kpi_prefix": "",
       "kpi_suffix": "%",
       "kpi_sublabel": "Proxy: mean interest_apy (beta = Δapy/ΔFEDFUNDS)",
@@ -182,7 +182,7 @@ Full worked example for "for BHCS scenario: KPI for Fed Funds shock and portfoli
       "chart_type": "bar",
       "x_field": "segment",
       "y_fields": ["variable_value"],
-      "aggregation": "mean",
+      "aggregation": "avg",
       "filters": [
         {"field": "variable_name", "op": "eq", "value": "interest_apy"},
         {"field": "scenario", "op": "eq", "value": "BHCS"}
@@ -214,19 +214,19 @@ Full worked example for "for BHCS scenario: KPI for Fed Funds shock and portfoli
 - `x_field`: `snap_date` for time-series; `scenario` for cross-scenario comparison; `segment` for product-level breakdown
 - `y_fields`: always `["variable_value"]`
 - `filters`: always include `variable_name`; include `scenario` and/or `segment` as needed
-- `aggregation`: `"none"` for raw time-series on `snap_date`; `"mean"` or `"sum"` when x is `segment` or `scenario`
+- `aggregation`: `"none"` for raw time-series on `snap_date`; `"avg"` or `"sum"` when x is `segment` or `scenario`. Valid values: `"none"`, `"sum"`, `"avg"`, `"count"`, `"min"`, `"max"`. Never use `"mean"` — use `"avg"` instead.
 - Use `"line"` for trends over time, `"bar"` for categorical comparisons (by segment or scenario), `"area"` for volume/balance
 
 **table tiles**:
 - `tile_type`: `"table"`
 - `x_field`: grouping column (`"snap_date"`, `"scenario"`, or `"segment"`)
 - `y_fields`: `["variable_value"]`
-- `aggregation`: `"sum"` or `"mean"` when collapsing time; `"none"` for full row-level table
+- `aggregation`: `"sum"` or `"avg"` when collapsing time; `"none"` for full row-level table
 
 **kpi tiles**:
 - `tile_type`: `"kpi"`
 - `kpi_field`: `"variable_value"`
-- `kpi_aggregation`: `"max"` for shock/peak, `"latest"` for current, `"mean"` for average, `"sum"` for total
+- `kpi_aggregation`: `"max"` for shock/peak, `"latest"` for current, `"avg"` for average, `"sum"` for total. Valid values: `"latest"`, `"sum"`, `"avg"`, `"weighted_avg"`, `"min"`, `"max"`, `"count"`. Never use `"mean"` — use `"avg"` instead.
 - `kpi_suffix`: `"%"` for rates, `""` for balances/amounts
 - `x_field`: `"snap_date"` (always required)
 - `y_fields`: `["variable_value"]`
@@ -242,8 +242,8 @@ Full worked example for "for BHCS scenario: KPI for Fed Funds shock and portfoli
 - Generate 2–6 tiles per request; never more than 8
 - Extract the global scenario upfront (Step 1) and apply it consistently
 - Always filter by `variable_name` so charts never mix unrelated metrics
-- "Product level" always means `x_field: "segment"` with `aggregation: "mean"` or `"sum"`
-- For `x_field: "segment"` charts: use `aggregation: "mean"` for rates/betas, `"sum"` for balances/expenses
+- "Product level" always means `x_field: "segment"` with `aggregation: "avg"` or `"sum"`
+- For `x_field: "segment"` charts: use `aggregation: "avg"` for rates/betas, `"sum"` for balances/expenses
 - Keep tile names concise (≤ 40 chars)
 - Never include null values — use `""` or `[]` instead
 - Do not hardcode a dataset_id

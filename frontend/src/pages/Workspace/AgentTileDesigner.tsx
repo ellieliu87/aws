@@ -12,6 +12,36 @@ import {
 import api from '@/lib/api'
 import type { Dataset, PlotConfig } from '@/types'
 
+// Backend accepts only these exact string literals — normalize LLM output.
+const VALID_AGG    = new Set(['sum', 'avg', 'count', 'min', 'max', 'none'])
+const VALID_KPI    = new Set(['sum', 'avg', 'weighted_avg', 'latest', 'min', 'max', 'count'])
+const VALID_CHART  = new Set(['line', 'bar', 'area', 'pie', 'scatter', 'stacked_bar'])
+
+function normalizeAggregation(v?: string | null): string {
+  if (!v) return 'none'
+  const low = v.toLowerCase()
+  if (VALID_AGG.has(low)) return low
+  if (low === 'mean' || low === 'average') return 'avg'
+  return 'none'
+}
+
+function normalizeKpiAggregation(v?: string | null): string {
+  if (!v) return 'latest'
+  const low = v.toLowerCase()
+  if (VALID_KPI.has(low)) return low
+  if (low === 'mean' || low === 'average') return 'avg'
+  return 'latest'
+}
+
+function normalizeChartType(v?: string | null): string {
+  if (!v) return 'line'
+  const low = v.toLowerCase()
+  if (VALID_CHART.has(low)) return low
+  if (low === 'stacked') return 'stacked_bar'
+  if (low === 'column') return 'bar'
+  return 'line'
+}
+
 interface TileBlueprint {
   tile_type: 'plot' | 'table' | 'kpi'
   name: string
@@ -24,6 +54,7 @@ interface TileBlueprint {
   kpi_aggregation?: string
   kpi_prefix?: string
   kpi_suffix?: string
+  kpi_sublabel?: string
   description?: string
   python_snippet?: string
 }
@@ -91,19 +122,20 @@ export default function AgentTileDesigner({ functionId, datasets, onClose, onTil
         function_id: functionId,
         name: blueprint.name,
         tile_type: blueprint.tile_type,
-        chart_type: blueprint.chart_type || 'line',
+        chart_type: normalizeChartType(blueprint.chart_type),
         dataset_id: datasetId || result?.dataset_id || null,
         x_field: blueprint.x_field || 'snap_date',
-        y_fields: blueprint.y_fields || ['variable_value'],
-        aggregation: blueprint.aggregation || 'none',
+        y_fields: (blueprint.y_fields?.length ? blueprint.y_fields : ['variable_value']),
+        aggregation: normalizeAggregation(blueprint.aggregation),
         filters: blueprint.filters || [],
         description: blueprint.description || '',
       }
       if (blueprint.tile_type === 'kpi') {
         payload.kpi_field = blueprint.kpi_field || 'variable_value'
-        payload.kpi_aggregation = blueprint.kpi_aggregation || 'latest'
+        payload.kpi_aggregation = normalizeKpiAggregation(blueprint.kpi_aggregation)
         payload.kpi_prefix = blueprint.kpi_prefix || ''
         payload.kpi_suffix = blueprint.kpi_suffix || ''
+        payload.kpi_sublabel = blueprint.kpi_sublabel || null
       }
       await api.post<PlotConfig>('/api/plots', payload)
       setAdded((prev) => new Set(prev).add(idx))
