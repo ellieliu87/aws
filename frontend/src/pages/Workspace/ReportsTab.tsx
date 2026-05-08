@@ -15,6 +15,7 @@ import api from '@/lib/api'
 import { useChatStore } from '@/store/chatStore'
 import Chart from '@/components/charts/Chart'
 import InteractiveTable from '@/components/charts/InteractiveTable'
+import AgentTileDesigner from './AgentTileDesigner'
 import type {
   ChartSpec, Dataset, AnalyticsRun, PlotConfig, KpiPreview,
 } from '@/types'
@@ -52,6 +53,7 @@ export default function ReportsTab({ functionId, functionName, onAskAgent, onCon
   const [runs, setRuns] = useState<AnalyticsRun[]>([])
   const [previews, setPreviews] = useState<Record<string, PreviewBundle>>({})
   const [designerOpen, setDesignerOpen] = useState(false)
+  const [agentDesignerOpen, setAgentDesignerOpen] = useState(false)
   const [editingTile, setEditingTile] = useState<PlotConfig | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -189,6 +191,16 @@ export default function ReportsTab({ functionId, functionName, onAskAgent, onCon
             <Sparkles size={13} /> Ask Agent
           </button>
           <button
+            onClick={() => setAgentDesignerOpen(true)}
+            className="px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5"
+            style={{
+              background: 'var(--bg-card)', border: '1px solid #7C3AED',
+              color: '#7C3AED',
+            }}
+          >
+            <Sparkles size={13} /> Design with AI
+          </button>
+          <button
             onClick={openNew}
             className="px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5"
             style={{ background: 'var(--accent)', color: '#fff' }}
@@ -208,15 +220,24 @@ export default function ReportsTab({ functionId, functionName, onAskAgent, onCon
             No tiles yet
           </div>
           <div className="text-xs mt-1 mb-4" style={{ color: 'var(--text-muted)' }}>
-            Build a plot or interactive table from any data source.
+            Build a plot or interactive table from any data source, or let AI design tiles from a narrative.
           </div>
-          <button
-            onClick={openNew}
-            className="px-3 py-2 rounded-lg text-xs font-semibold"
-            style={{ background: 'var(--accent)', color: '#fff' }}
-          >
-            <Plus size={13} className="inline mr-1" /> New Tile
-          </button>
+          <div className="flex gap-2 justify-center">
+            <button
+              onClick={() => setAgentDesignerOpen(true)}
+              className="px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5"
+              style={{ background: 'var(--bg-card)', border: '1px solid #7C3AED', color: '#7C3AED' }}
+            >
+              <Sparkles size={13} /> Design with AI
+            </button>
+            <button
+              onClick={openNew}
+              className="px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5"
+              style={{ background: 'var(--accent)', color: '#fff' }}
+            >
+              <Plus size={13} /> New Tile
+            </button>
+          </div>
         </div>
       )}
 
@@ -248,6 +269,15 @@ export default function ReportsTab({ functionId, functionName, onAskAgent, onCon
           editing={editingTile}
           onClose={() => setDesignerOpen(false)}
           onSaved={() => { setDesignerOpen(false); load() }}
+        />
+      )}
+
+      {agentDesignerOpen && (
+        <AgentTileDesigner
+          functionId={functionId}
+          datasets={datasets}
+          onClose={() => setAgentDesignerOpen(false)}
+          onTilesCreated={() => { setAgentDesignerOpen(false); load() }}
         />
       )}
     </div>

@@ -39,7 +39,12 @@ async def get_function_workspace(
 ):
     data = get_workspace(function_id)
     if not data:
-        raise HTTPException(status_code=404, detail="Workspace not found for this function")
+        from models.schemas import WorkspaceData
+        data = WorkspaceData(
+            function_id=function_id,
+            function_name=function_id,
+            kpis=[], charts=[], tables=[], insights=[],
+        )
     return data
 
 

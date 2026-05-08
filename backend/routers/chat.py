@@ -111,10 +111,14 @@ def _route(req: ChatMessage) -> str:
             return "run-troubleshooter"
         return "workflow-validator"
     if req.tab == "reporting":
-        # If the user types a tune-style request without first clicking
-        # Tune on a tile, route to plot-tuner so it can list available tiles
-        # by name and ask which one to mutate. The default for non-tune
-        # questions stays tile-explainer.
+        # Design/create intent → reporting-tile-designer
+        if any(k in msg for k in (
+            "design", "create", "generate", "build", "make", "add tile",
+            "new tile", "draft tile", "show me", "visualize", "chart for",
+            "plot for", "dashboard for", "kpi for", "table for",
+        )):
+            return "reporting-tile-designer"
+        # Tune intent → plot-tuner
         if any(k in msg for k in (
             "tune", "filter", "sort", "rank", "limit", "change", "modify",
             "switch", "color", "palette", "font", "label", "title", "axis",

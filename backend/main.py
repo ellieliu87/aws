@@ -58,6 +58,7 @@ from routers import (
     overview_layouts,
     mcp_servers,
     data_services,
+    tile_designer,
 )
 
 app = FastAPI(
@@ -97,6 +98,7 @@ app.include_router(analytics_defs.router, prefix="/api/analytics_defs", tags=["A
 app.include_router(overview_layouts.router, prefix="/api/overview_layouts", tags=["Overview Layouts"])
 app.include_router(mcp_servers.router, prefix="/api/mcp_servers", tags=["MCP Servers"])
 app.include_router(data_services.router, prefix="/api/data_services", tags=["Data Services"])
+app.include_router(tile_designer.router, prefix="/api/tile-designer", tags=["Tile Designer"])
 
 
 @app.on_event("startup")
@@ -136,6 +138,7 @@ async def _ingest_pack_assets():
     # MCP server registration already runs at module import (see top of
     # this file) so the orchestrator sees the live registry when it
     # constructs specialists. No-op here.
+    # tile-designer router registered at /api/tile-designer
 
 
 @app.get("/health")

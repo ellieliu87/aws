@@ -245,6 +245,89 @@ def _seed():
             enabled=True,
             source="builtin",
         ),
+        PythonTool(
+            id="tool-get-macro-schema",
+            name="get_macro_dataset_schema",
+            description=(
+                "Return the schema and variable catalog for the standard macro reporting "
+                "dataset (long format: scenario, snap_date, variable_name, variable_value, "
+                "segment, origin). Use this to understand what fields and variable names are "
+                "available before designing tiles."
+            ),
+            parameters=[
+                {"name": "dataset_id", "type": "string",
+                 "description": "Optional dataset id to inspect. Defaults to 'macro_reporting_sample'.",
+                 "required": False},
+            ],
+            python_source=(
+                'def get_macro_dataset_schema(dataset_id="macro_reporting_sample"):\n'
+                '    """Return schema + variable catalog for the macro reporting dataset."""\n'
+                '    return {\n'
+                '        "dataset_id": dataset_id,\n'
+                '        "format": "long",\n'
+                '        "columns": [\n'
+                '            {"name": "scenario",        "type": "string",  "description": "CCAR/baseline scenario label"},\n'
+                '            {"name": "snap_date",       "type": "date",    "description": "Monthly snapshot date (YYYY-MM-DD)"},\n'
+                '            {"name": "variable_name",   "type": "string",  "description": "Macro variable code"},\n'
+                '            {"name": "variable_value",  "type": "float",   "description": "Numeric value of the variable"},\n'
+                '            {"name": "segment",         "type": "string",  "description": "Geographic/business segment (e.g. National)"},\n'
+                '            {"name": "origin",          "type": "string",  "description": "Source: CCAR or Internal"},\n'
+                '        ],\n'
+                '        "known_variables": [\n'
+                '            "FEDFUNDS", "GDP", "UNEMPLOYMENT", "CPI",\n'
+                '            "M2", "CORP_PROFIT", "UST10Y", "HOUSING_STARTS",\n'
+                '        ],\n'
+                '        "known_scenarios": [\n'
+                '            "Baseline_2026", "BHCB_2026", "BHCS_2026", "FedSA_2026",\n'
+                '        ],\n'
+                '        "date_range": "2023-01-01 to 2025-12-01 (monthly)",\n'
+                '    }\n'
+            ),
+            function_name="get_macro_dataset_schema",
+            enabled=True,
+            source="builtin",
+        ),
+        PythonTool(
+            id="tool-design-reporting-tiles",
+            name="design_reporting_tiles",
+            description=(
+                "Validate and echo back a proposed set of tile blueprints for the "
+                "Reporting dashboard. Pass the JSON array of tile configs from the "
+                "LLM; this tool validates required fields and returns the cleaned list "
+                "ready for the frontend to create via POST /api/plots."
+            ),
+            parameters=[
+                {"name": "tiles_json", "type": "string",
+                 "description": "JSON array of tile blueprint objects.", "required": True},
+                {"name": "dataset_id", "type": "string",
+                 "description": "Dataset id to attach to all tiles.", "required": False},
+            ],
+            python_source=(
+                'def design_reporting_tiles(tiles_json, dataset_id="macro_reporting_sample"):\n'
+                '    """Validate tile blueprints and return cleaned list."""\n'
+                '    import json\n'
+                '    try:\n'
+                '        tiles = json.loads(tiles_json) if isinstance(tiles_json, str) else tiles_json\n'
+                '    except Exception as e:\n'
+                '        return {"error": f"Invalid JSON: {e}"}\n'
+                '    required = {"tile_type", "name"}\n'
+                '    valid, skipped = [], []\n'
+                '    for t in (tiles if isinstance(tiles, list) else []):\n'
+                '        missing = required - set(t.keys())\n'
+                '        if missing:\n'
+                '            skipped.append({"tile": t.get("name","?"), "reason": f"missing {missing}"})\n'
+                '            continue\n'
+                '        t.setdefault("dataset_id", dataset_id)\n'
+                '        t.setdefault("aggregation", "none")\n'
+                '        t.setdefault("filters", [])\n'
+                '        t.setdefault("y_fields", ["variable_value"])\n'
+                '        valid.append(t)\n'
+                '    return {"valid_tiles": valid, "skipped": skipped, "count": len(valid)}\n'
+            ),
+            function_name="design_reporting_tiles",
+            enabled=True,
+            source="builtin",
+        ),
     ]
     for t in builtin_seeds:
         _TOOLS[t.id] = t
