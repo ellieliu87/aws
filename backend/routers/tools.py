@@ -249,38 +249,41 @@ def _seed():
             id="tool-get-macro-schema",
             name="get_macro_dataset_schema",
             description=(
-                "Return the schema and variable catalog for the standard macro reporting "
-                "dataset (long format: scenario, snap_date, variable_name, variable_value, "
-                "segment, origin). Use this to understand what fields and variable names are "
-                "available before designing tiles."
+                "Return the schema and field catalog for the standard reporting dataset "
+                "(long format: scenario, snap_date, variable_name, variable_value, segment, origin). "
+                "Use this to understand available columns, known scenario labels, segment values, "
+                "and example variable names before designing tiles. No dataset_id required."
             ),
-            parameters=[
-                {"name": "dataset_id", "type": "string",
-                 "description": "Optional dataset id to inspect. Defaults to 'macro_reporting_sample'.",
-                 "required": False},
-            ],
+            parameters=[],
             python_source=(
-                'def get_macro_dataset_schema(dataset_id="macro_reporting_sample"):\n'
-                '    """Return schema + variable catalog for the macro reporting dataset."""\n'
+                'def get_macro_dataset_schema():\n'
+                '    """Return schema + field catalog for the long-format reporting dataset."""\n'
                 '    return {\n'
-                '        "dataset_id": dataset_id,\n'
                 '        "format": "long",\n'
+                '        "description": "Standard reporting dataset in long format. Each row is one metric for one scenario/date/segment combination.",\n'
                 '        "columns": [\n'
-                '            {"name": "scenario",        "type": "string",  "description": "CCAR/baseline scenario label"},\n'
-                '            {"name": "snap_date",       "type": "date",    "description": "Monthly snapshot date (YYYY-MM-DD)"},\n'
-                '            {"name": "variable_name",   "type": "string",  "description": "Macro variable code"},\n'
-                '            {"name": "variable_value",  "type": "float",   "description": "Numeric value of the variable"},\n'
-                '            {"name": "segment",         "type": "string",  "description": "Geographic/business segment (e.g. National)"},\n'
-                '            {"name": "origin",          "type": "string",  "description": "Source: CCAR or Internal"},\n'
+                '            {"name": "scenario",       "type": "string", "description": "Scenario label, e.g. BHCB, BHCS, FEDB, FEDSA"},\n'
+                '            {"name": "snap_date",      "type": "date",   "description": "Snapshot date in yyyy-mm-dd format (monthly cadence)"},\n'
+                '            {"name": "variable_name",  "type": "string", "description": "Name of the metric or driver, e.g. FEDFUNDS, interest_apy, interest_expense"},\n'
+                '            {"name": "variable_value", "type": "float",  "description": "Numeric value for this metric"},\n'
+                '            {"name": "segment",        "type": "string", "description": "Business or portfolio segment, e.g. GB, NON-GB, HYMM, Macro, Portfolio"},\n'
+                '            {"name": "origin",         "type": "string", "description": "Row type: input (assumption/driver) or output (model result)"},\n'
                 '        ],\n'
-                '        "known_variables": [\n'
-                '            "FEDFUNDS", "GDP", "UNEMPLOYMENT", "CPI",\n'
-                '            "M2", "CORP_PROFIT", "UST10Y", "HOUSING_STARTS",\n'
+                '        "example_scenarios": ["BHCB", "BHCS", "FEDB", "FEDSA"],\n'
+                '        "example_variable_names": [\n'
+                '            "FEDFUNDS", "interest_apy", "interest_expense",\n'
+                '            "ecr_driven_avg_balance", "rate_driven_balance",\n'
                 '        ],\n'
-                '        "known_scenarios": [\n'
-                '            "Baseline_2026", "BHCB_2026", "BHCS_2026", "FedSA_2026",\n'
-                '        ],\n'
-                '        "date_range": "2023-01-01 to 2025-12-01 (monthly)",\n'
+                '        "example_segments": ["GB", "NON-GB", "HYMM", "Macro", "Portfolio"],\n'
+                '        "origin_values": ["input", "output"],\n'
+                '        "snap_date_format": "yyyy-mm-dd",\n'
+                '        "filter_hints": {\n'
+                '            "by_scenario": {"field": "scenario", "op": "eq", "value": "<scenario>"},\n'
+                '            "by_variable": {"field": "variable_name", "op": "eq", "value": "<variable_name>"},\n'
+                '            "by_segment":  {"field": "segment", "op": "eq", "value": "<segment>"},\n'
+                '            "inputs_only":  {"field": "origin", "op": "eq", "value": "input"},\n'
+                '            "outputs_only": {"field": "origin", "op": "eq", "value": "output"},\n'
+                '        },\n'
                 '    }\n'
             ),
             function_name="get_macro_dataset_schema",

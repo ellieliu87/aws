@@ -56,8 +56,12 @@ class TileDesignerResponse(BaseModel):
 
 _SCHEMA_HINT = (
     "Dataset schema (long format): scenario, snap_date, variable_name, variable_value, segment, origin\n"
-    "Known variable_name values: FEDFUNDS, GDP, UNEMPLOYMENT, CPI, M2, CORP_PROFIT, UST10Y, HOUSING_STARTS\n"
-    "Scenarios: Baseline_2026, BHCB_2026, BHCS_2026, FedSA_2026\n"
+    "snap_date format: yyyy-mm-dd (monthly)\n"
+    "Example scenarios: BHCB, BHCS, FEDB, FEDSA\n"
+    "Example variable_name values: FEDFUNDS, interest_apy, interest_expense, ecr_driven_avg_balance, rate_driven_balance\n"
+    "Example segments: GB, NON-GB, HYMM, Macro, Portfolio\n"
+    "origin values: input (driver/assumption) or output (model result)\n"
+    "Do not hardcode a dataset_id — the frontend supplies it.\n"
 )
 
 
@@ -82,8 +86,8 @@ async def generate_tiles(
 
     extra_context = (
         f"function_id: {body.function_id}\n"
-        f"dataset_id: {body.dataset_id or 'macro_reporting_sample'}\n"
-        f"{_SCHEMA_HINT}"
+        + (f"dataset_id: {body.dataset_id}\n" if body.dataset_id else "")
+        + _SCHEMA_HINT
     )
 
     user_message = (
