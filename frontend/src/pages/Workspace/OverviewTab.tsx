@@ -22,7 +22,7 @@ import remarkGfm from 'remark-gfm'
 import {
   ArrowDown, ArrowUp, Lightbulb, Pin, Edit3, Check,
   BarChart3, Table as TableIcon, Plus, Type, RotateCcw, X, Move,
-  Download, Upload, LayoutGrid, LayoutTemplate, Rows3, Sparkles, ChevronDown,
+  Download, Upload, LayoutGrid, LayoutTemplate, Rows3, Sparkles,
 } from 'lucide-react'
 import api from '@/lib/api'
 import Chart from '@/components/charts/Chart'
@@ -276,6 +276,10 @@ const hiddenKey   = (fn: string) => `cma:overview:hidden:v3:${fn}`
 const templateKey = (fn: string) => `cma:overview:template:v2:${fn}`
 const insightsSkillKey = (fn: string) => `cma:overview:insights_skill:${fn}`
 const showInsightsKey  = (fn: string) => `cma:overview:show_insights:v1:${fn}`
+// User-edited override of the agent-generated insights markdown — empty/null
+// falls back to the agent's most recent output. Cleared automatically when
+// the user picks a different skill or clicks the refresh button.
+const insightsOverrideKey = (fn: string) => `cma:overview:insights_override:v1:${fn}`
 
 const DEFAULT_INSIGHTS_SKILL = 'overview-insights'
 
@@ -352,8 +356,6 @@ export default function OverviewTab({ functionId, onAskAgent, onContextChange }:
   const [templateId, setTemplateId] = useState<TemplateId>(() => loadTemplateId(functionId))
   const [insightsSkillId, setInsightsSkillId] = useState<string>(() => loadInsightsSkill(functionId))
   const [showInsightsCard, setShowInsightsCard] = useState<boolean>(() => loadShowInsights(functionId))
-  const [addTextMenuOpen, setAddTextMenuOpen] = useState(false)
-  const addTextMenuRef = useRef<HTMLDivElement>(null)
   const [serverDefault, setServerDefault] = useState<ServerDefaultBundle | null>(null)
   const [savingDefault, setSavingDefault] = useState(false)
 
@@ -577,12 +579,17 @@ export default function OverviewTab({ functionId, onAskAgent, onContextChange }:
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 50)
   }
   const addInsightsCard = () => {
-    setAddTextMenuOpen(false)
     if (showInsightsCard) {
       // Already present — just scroll to top so user sees it.
       window.scrollTo({ top: 0, behavior: 'smooth' })
       return
     }
+    // A freshly-added insights card always starts on the default
+    // overview-insights agent, even if the analyst previously switched to
+    // another skill in this workspace. They can still pick a different
+    // agent from the in-card dropdown, and that choice persists for as
+    // long as the card stays on the dashboard.
+    setInsightsSkillId(DEFAULT_INSIGHTS_SKILL)
     setShowInsightsCard(true)
     // Shift all existing layout items down to make room at top.
     const newH = 5
@@ -592,18 +599,6 @@ export default function OverviewTab({ functionId, onAskAgent, onContextChange }:
     })
     setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 50)
   }
-
-  // Close the Add Text dropdown when clicking outside
-  useEffect(() => {
-    if (!addTextMenuOpen) return
-    const handler = (e: MouseEvent) => {
-      if (addTextMenuRef.current && !addTextMenuRef.current.contains(e.target as Node)) {
-        setAddTextMenuOpen(false)
-      }
-    }
-    const t = setTimeout(() => document.addEventListener('mousedown', handler), 0)
-    return () => { clearTimeout(t); document.removeEventListener('mousedown', handler) }
-  }, [addTextMenuOpen])
 
   const updateTextCard = (id: string, body: string) => {
     setTextCards((tc) => tc.map((c) => (c.id === id ? { ...c, body } : c)))
@@ -808,60 +803,30 @@ export default function OverviewTab({ functionId, onAskAgent, onContextChange }:
 
       {/* Toolbar */}
       <div className="flex justify-end mb-3 gap-2 flex-wrap">
-        {/* Add Text split button — "Add Note" or "Generate Insights" */}
-        <div className="relative" ref={addTextMenuRef}>
-          <div
-            className="flex rounded-lg overflow-hidden"
-            style={{ border: '1px solid var(--border)' }}
-          >
-            <button
-              onClick={() => { addTextCard(); setAddTextMenuOpen(false) }}
-              className="px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 transition-colors"
-              style={{ background: 'var(--bg-card)', color: 'var(--text-secondary)', borderRight: '1px solid var(--border)' }}
-              title="Add a markdown commentary card"
-            >
-              <Type size={12} /> Add Text
-            </button>
-            <button
-              onClick={() => setAddTextMenuOpen((o) => !o)}
-              className="px-1.5 py-1.5 transition-colors"
-              style={{ background: 'var(--bg-card)', color: 'var(--text-muted)' }}
-              title="More options"
-            >
-              <ChevronDown size={11} />
-            </button>
-          </div>
-          {addTextMenuOpen && (
-            <div
-              className="absolute left-0 top-full mt-1 rounded-lg shadow-lg z-30"
-              style={{
-                width: 220, background: 'var(--bg-card)',
-                border: '1px solid var(--border)', padding: '4px',
-              }}
-            >
-              <button
-                onClick={() => { addTextCard(); setAddTextMenuOpen(false) }}
-                className="w-full text-left px-3 py-2 rounded-md text-xs flex items-start gap-2 hover:bg-[var(--bg-elevated)] transition-colors"
-              >
-                <Type size={13} className="mt-0.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
-                <div>
-                  <div className="font-semibold" style={{ color: 'var(--text-primary)' }}>Add Note</div>
-                  <div style={{ color: 'var(--text-muted)' }}>Blank markdown card you can edit</div>
-                </div>
-              </button>
-              <button
-                onClick={addInsightsCard}
-                className="w-full text-left px-3 py-2 rounded-md text-xs flex items-start gap-2 hover:bg-[var(--bg-elevated)] transition-colors"
-              >
-                <Sparkles size={13} className="mt-0.5 shrink-0" style={{ color: 'var(--warning)' }} />
-                <div>
-                  <div className="font-semibold" style={{ color: 'var(--text-primary)' }}>Generate Insights</div>
-                  <div style={{ color: 'var(--text-muted)' }}>AI narrative based on pinned tiles</div>
-                </div>
-              </button>
-            </div>
-          )}
-        </div>
+        <button
+          onClick={addTextCard}
+          className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
+          style={{
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border)',
+            color: 'var(--text-secondary)',
+          }}
+          title="Add a markdown commentary card"
+        >
+          <Type size={12} /> Add Text
+        </button>
+        <button
+          onClick={addInsightsCard}
+          className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
+          style={{
+            background: 'var(--bg-card)',
+            border: '1px solid #FCD34D',
+            color: '#B45309',
+          }}
+          title="Add a full-width AI-generated insights card based on what's on the dashboard"
+        >
+          <Sparkles size={12} /> Add Insight
+        </button>
         <button
           onClick={exportLayout}
           className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors"
@@ -1306,6 +1271,7 @@ function renderCardBody(
         onSkillChange={ctx.setInsightsSkillId}
         onAskAgent={ctx.onAskAgent}
         editMode={ctx.editMode}
+        textCards={ctx.textCards}
       />
     )
   }
@@ -1338,13 +1304,14 @@ interface InsightSkill {
 }
 
 function InsightsCard({
-  functionId, skillId, onSkillChange, onAskAgent, editMode,
+  functionId, skillId, onSkillChange, onAskAgent, editMode, textCards,
 }: {
   functionId: string
   skillId: string
   onSkillChange: (id: string) => void
   onAskAgent: (q: string) => void
   editMode: boolean
+  textCards: TextCard[]
 }) {
   const [skills, setSkills] = useState<InsightSkill[]>([])
   const [markdown, setMarkdown] = useState('')
@@ -1354,10 +1321,30 @@ function InsightsCard({
   const [pickerOpen, setPickerOpen] = useState(false)
   const pickerRef = useRef<HTMLDivElement>(null)
 
-  // Load available skills for the picker
+  // Inline edit-mode for the agent narrative. When `override` is non-null
+  // we render that instead of the agent output, and persist it across page
+  // reloads so the analyst's wording survives a refresh. Refresh / skill
+  // change clears the override.
+  const [editing, setEditing] = useState(false)
+  const [override, setOverride] = useState<string | null>(() => {
+    try { return localStorage.getItem(insightsOverrideKey(functionId)) } catch { return null }
+  })
+  const [draft, setDraft] = useState('')
+
+  // Load available skills for the picker. Sort the default overview-insights
+  // skill to the top so it's the first thing the analyst sees when they open
+  // the picker; the rest follow alphabetically by display name.
   useEffect(() => {
     api.get<InsightSkill[]>(`/api/workspace/${functionId}/insights/skills`)
-      .then((r) => setSkills(r.data || []))
+      .then((r) => {
+        const list = r.data || []
+        list.sort((a, b) => {
+          if (a.id === DEFAULT_INSIGHTS_SKILL) return -1
+          if (b.id === DEFAULT_INSIGHTS_SKILL) return 1
+          return a.name.localeCompare(b.name)
+        })
+        setSkills(list)
+      })
       .catch(() => {})
   }, [functionId])
 
@@ -1366,10 +1353,18 @@ function InsightsCard({
     try {
       const r = await api.post<{ markdown: string; generated_at: string; skill_name: string }>(
         `/api/workspace/${functionId}/insights`,
-        { skill_id: skillId },
+        {
+          skill_id: skillId,
+          // Pass the analyst's typed notes so the agent can read everything
+          // visible on the dashboard, not just the pinned tiles.
+          text_cards: textCards.map((tc) => ({ id: tc.id, body: tc.body })),
+        },
       )
       setMarkdown(r.data.markdown || '')
       setGeneratedAt(r.data.generated_at || null)
+      // Regenerating clears the user's saved edit so they see the fresh take.
+      setOverride(null)
+      try { localStorage.removeItem(insightsOverrideKey(functionId)) } catch {}
     } catch (e: any) {
       const detail = e?.response?.data?.detail
       setError(typeof detail === 'string' ? detail : (e?.message || 'Failed to generate insights'))
@@ -1379,8 +1374,33 @@ function InsightsCard({
     }
   }
 
-  // Auto-generate on mount + when function or skill changes
-  useEffect(() => { generate() /* eslint-disable-next-line */ }, [functionId, skillId])
+  // Auto-generate on mount + when function or skill changes — but only when
+  // there's no user-saved edit, otherwise we'd silently overwrite their wording.
+  useEffect(() => {
+    if (override == null) generate()
+    /* eslint-disable-next-line */
+  }, [functionId, skillId])
+
+  const startEdit = () => {
+    setDraft(override ?? markdown)
+    setEditing(true)
+  }
+  const saveEdit = () => {
+    setOverride(draft)
+    try { localStorage.setItem(insightsOverrideKey(functionId), draft) } catch {}
+    setEditing(false)
+  }
+  const cancelEdit = () => {
+    setEditing(false)
+    setDraft('')
+  }
+  const resetToAgent = () => {
+    setOverride(null)
+    try { localStorage.removeItem(insightsOverrideKey(functionId)) } catch {}
+    setEditing(false)
+  }
+
+  const displayMarkdown = override ?? markdown
 
   // Close picker on outside click
   useEffect(() => {
@@ -1435,13 +1455,58 @@ function InsightsCard({
           >
             <Sparkles size={11} /> {activeName}
           </button>
+          {!editing && (
+            <button
+              onClick={startEdit}
+              onMouseDown={(e) => e.stopPropagation()}
+              disabled={loading || (!markdown && override == null)}
+              className="p-1 rounded-md transition-colors disabled:opacity-30"
+              style={{ color: 'var(--text-muted)' }}
+              title="Edit the wording — your version replaces the agent text until you refresh"
+            >
+              <Edit3 size={12} />
+            </button>
+          )}
+          {editing && (
+            <>
+              <button
+                onClick={saveEdit}
+                onMouseDown={(e) => e.stopPropagation()}
+                className="p-1 rounded-md transition-colors"
+                style={{ color: 'var(--accent)' }}
+                title="Save edits"
+              >
+                <Check size={13} />
+              </button>
+              <button
+                onClick={cancelEdit}
+                onMouseDown={(e) => e.stopPropagation()}
+                className="p-1 rounded-md transition-colors"
+                style={{ color: 'var(--text-muted)' }}
+                title="Cancel"
+              >
+                <X size={13} />
+              </button>
+            </>
+          )}
+          {override != null && !editing && (
+            <button
+              onClick={resetToAgent}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="px-1.5 py-1 rounded-md text-[10px] font-mono transition-colors"
+              style={{ color: 'var(--text-muted)', background: 'var(--bg-elevated)' }}
+              title="Discard your edits and return to the agent's text (the next refresh will fetch fresh)"
+            >
+              edited
+            </button>
+          )}
           <button
             onClick={generate}
             onMouseDown={(e) => e.stopPropagation()}
-            disabled={loading}
+            disabled={loading || editing}
             className="p-1 rounded-md transition-colors disabled:opacity-50"
             style={{ color: 'var(--text-muted)' }}
-            title="Refresh insights"
+            title="Refresh insights from the agent (clears your edits)"
           >
             <RotateCcw size={12} className={loading ? 'animate-spin' : ''} />
           </button>
@@ -1502,6 +1567,20 @@ function InsightsCard({
                       >
                         {s.name}
                       </div>
+                      {s.id === DEFAULT_INSIGHTS_SKILL && (
+                        <div
+                          className="text-[9px] font-mono px-1.5 py-0.5 rounded shrink-0"
+                          style={{
+                            background: 'var(--accent-light)',
+                            color: 'var(--accent)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                          }}
+                          title="Default agent for the Overview Insights card"
+                        >
+                          default
+                        </div>
+                      )}
                       <div
                         className="ml-auto text-[9px] font-mono px-1.5 py-0.5 rounded shrink-0"
                         style={{
@@ -1526,7 +1605,7 @@ function InsightsCard({
       </div>
 
       <div className="flex-1 min-h-0 overflow-auto">
-        {loading && !markdown ? (
+        {loading && !displayMarkdown ? (
           <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
             Generating insights from <strong>{activeName}</strong>…
           </div>
@@ -1544,7 +1623,29 @@ function InsightsCard({
               retry
             </button>
           </div>
-        ) : markdown ? (
+        ) : editing ? (
+          <textarea
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') saveEdit()
+              if (e.key === 'Escape') cancelEdit()
+            }}
+            className="w-full h-full rounded-md p-2 text-xs"
+            style={{
+              minHeight: 140,
+              fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+              background: 'var(--bg-elevated)',
+              color: 'var(--text-primary)',
+              border: '1px solid var(--border)',
+              resize: 'vertical',
+              outline: 'none',
+              lineHeight: 1.55,
+            }}
+            placeholder="Edit the agent narrative. Markdown is supported — bullets, **bold**, `code`, etc. Cmd/Ctrl+Enter saves, Esc cancels."
+          />
+        ) : displayMarkdown ? (
           <div
             className="markdown-body"
             style={{
@@ -1554,7 +1655,7 @@ function InsightsCard({
             }}
           >
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={insightsMd(editMode ? null : onAskAgent)}>
-              {markdown}
+              {displayMarkdown}
             </ReactMarkdown>
           </div>
         ) : (
