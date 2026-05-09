@@ -1171,7 +1171,7 @@ function renderCardBody(
               return
             }
             ctx.setEntity('tile', tile.id)
-            ctx.onAskAgent(`Explain the "${tile.name}" KPI.`)
+            ctx.onAskAgent(`Explain this KPI ("${tile.name}"). What is the headline number, what's driving it, and what should I watch?`)
           }}
           onMouseDown={(e) => { if (ctx.editMode) e.stopPropagation() }}
           className="text-left w-full h-full flex flex-col justify-center"
@@ -1227,7 +1227,10 @@ function renderCardBody(
           </div>
           {!ctx.editMode && (
             <button
-              onClick={() => ctx.onAskAgent(`Explain the pinned ${isTable ? 'table' : 'chart'} "${tile.name}".`)}
+              onClick={() => {
+                ctx.setEntity('tile', tile.id)
+                ctx.onAskAgent(`Explain this pinned ${isTable ? 'table' : 'chart'} ("${tile.name}"). Cover the headline, trend, outlier, and so-what.`)
+              }}
               className="text-xs px-2 py-1 rounded-md shrink-0"
               style={{
                 background: 'var(--bg-elevated)',

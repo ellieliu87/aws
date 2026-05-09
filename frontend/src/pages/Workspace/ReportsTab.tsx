@@ -67,14 +67,17 @@ export default function ReportsTab({ functionId, functionName, onAskAgent, onCon
     setOpen(true)
   }
 
-  // The "Explain" sparkle on a tile routes to the tile-explainer specialist
-  // (not the tile-tuner). Setting the entity tags the chat with the right id
-  // so the agent can read the spec + preview via tools.
+  // The "Explain" sparkle on a tile routes to either the tile-explainer or
+  // the macro-economist (router decides based on the tile's variables).
+  // Phrasing is deliberate: leads with "Explain", avoids any of the verbs
+  // ("change", "switch", "filter to a bar/line", etc.) that trip the
+  // tune-intent detector and bounce us into plot-tuner.
   const explainTile = (t: PlotConfig) => {
     setEntity('tile', t.id)
     setOpen(true)
+    const kind = t.tile_type === 'kpi' ? 'KPI' : t.tile_type === 'table' ? 'table' : 'chart'
     window.dispatchEvent(new CustomEvent('cma-chat', {
-      detail: `Explain what the "${t.name}" chart is showing — headline, trend, outlier, so-what.`,
+      detail: `Explain this ${kind} ("${t.name}"). Cover the headline, trend or shape, the most notable outlier, and the so-what.`,
     }))
   }
 

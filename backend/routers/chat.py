@@ -57,6 +57,93 @@ def _is_quality_intent(msg: str) -> bool:
 
 
 # ── Routing (frontend context → specialist agent_id) ─────────────────────
+# Variables that indicate a tile is a macro time series. A tile filtering on
+# any of these in `variable_name`, or whose y_field/name mentions one, gets
+# routed to macro-economist for a macro narrative rather than the generic
+# tile-explainer.
+_MACRO_TOKENS = (
+    "fedfunds", "fed funds", "policy rate", "ust", "treasury", "rate path",
+    "rate trajectory", "yield curve", "swap spread",
+    "gdp", "unemployment", "u-rate", "cpi", "inflation", "ppi",
+    "m2", "money supply", "hpi", "house price", "cre price",
+    "bbb spread", "ig spread", "hy spread", "credit spread", "oas",
+    "real economy", "scenario path",
+)
+
+# Hard "explain me what this is" intent. Matched verbatim — these phrases
+# beat tune detection regardless of any other keyword in the message.
+_EXPLAIN_TOKENS = (
+    "explain", "describe", "summarize", "summarise", "interpret",
+    "what is this", "what's this", "what does this", "what is the",
+    "what's the", "what are the", "tell me about", "walk me through",
+    "what is it showing", "what is showing", "is showing",
+    "headline", "what's going on", "so-what", "so what",
+)
+
+# Tune intent — must include an actual *mutation* verb. We deliberately do
+# NOT include bare chart-type words ("bar", "line", "pie", "area") here:
+# those appear in any chart-related message ("explain the line chart…")
+# and were sending Explain clicks to the tuner. The chart-type words still
+# count when paired with a switch verb via the `_TUNE_SWITCH_PHRASES`
+# patterns below.
+_TUNE_VERBS = (
+    "tune", "filter to", "filter by", "filter on", "sort by", "sort asc",
+    "sort desc", "rank by", "limit to", "top n", "top 10",
+    "change to", "change the", "modify", "switch to", "rename",
+    "set color", "set palette", "set font", "set legend", "set style",
+    "set title", "set axis", "set label", "use color", "color by",
+    "ascending", "descending",
+    "make it a", "make this a", "turn into a", "convert to a",
+)
+_TUNE_SWITCH_PHRASES = (
+    "to a bar", "to a line", "to a pie", "to a stacked", "to an area",
+    "as a bar", "as a line", "as a pie", "as an area",
+)
+
+
+def _is_explain_intent(msg: str) -> bool:
+    return any(tok in msg for tok in _EXPLAIN_TOKENS)
+
+
+def _is_tune_intent(msg: str) -> bool:
+    if any(tok in msg for tok in _TUNE_VERBS):
+        return True
+    if any(tok in msg for tok in _TUNE_SWITCH_PHRASES):
+        return True
+    return False
+
+
+def _is_macro_tile(entity_id: str | None) -> bool:
+    """Best-effort check: does this tile show a macro variable?
+    Looks up the saved PlotConfig and inspects its filters, y-fields, and
+    name for known macro indicators. Falls back to False if anything goes
+    wrong (we'd rather route to tile-explainer than break)."""
+    if not entity_id:
+        return False
+    try:
+        from routers.plots import _PLOTS
+        p = _PLOTS.get(entity_id)
+        if not p:
+            return False
+        haystack_parts: list[str] = [p.name or ""]
+        for f in p.filters or []:
+            v = f.get("value") if isinstance(f, dict) else None
+            if isinstance(v, str):
+                haystack_parts.append(v)
+            elif isinstance(v, list):
+                haystack_parts.extend(str(x) for x in v)
+        if p.y_fields:
+            haystack_parts.extend(p.y_fields)
+        if p.x_field:
+            haystack_parts.append(p.x_field)
+        if p.kpi_field:
+            haystack_parts.append(p.kpi_field)
+        haystack = " ".join(haystack_parts).lower()
+        return any(tok in haystack for tok in _MACRO_TOKENS)
+    except Exception:
+        return False
+
+
 def _route(req: ChatMessage) -> str:
     msg = (req.message or "").lower()
 
@@ -85,16 +172,19 @@ def _route(req: ChatMessage) -> str:
     if req.entity_kind == "run":
         return "run-troubleshooter" if ("fail" in msg or "error" in msg) else "model-explainer"
     if req.entity_kind == "tile":
-        # Tune intent → plot-tuner (mutates the persisted spec).
-        # Anything else (default Sparkles click) → tile-explainer (explain).
-        if any(k in msg for k in (
-            "tune", "filter", "sort", "rank", "limit", "change", "modify", "switch",
-            "color", "palette", "font", "label", "title", "axis", "rename",
-            "ascend", "descend", "asc", "desc", "bar", "line", "pie", "area",
-            "format", "legend", "style",
-        )):
+        # Order matters:
+        # 1. Explain intent (the Sparkles "Explain" button, "what is this",
+        #    "describe this") → explainer. If the tile is a macro time
+        #    series (FEDFUNDS, GDP, UST, etc.), prefer macro-economist for
+        #    a richer macro narrative. Otherwise tile-explainer.
+        # 2. Tune intent (mutate the spec) → plot-tuner.
+        # 3. Default fallthrough → tile-explainer (safer than the tuner —
+        #    explainer doesn't mutate state).
+        if _is_explain_intent(msg):
+            return "macro-economist" if _is_macro_tile(req.entity_id) else "tile-explainer"
+        if _is_tune_intent(msg):
             return "plot-tuner"
-        return "tile-explainer"
+        return "macro-economist" if _is_macro_tile(req.entity_id) else "tile-explainer"
     if req.entity_kind == "analytic_def":
         # Self-serve Analytics chart cards — same plot-tuner toolkit applies.
         return "plot-tuner"
@@ -111,6 +201,11 @@ def _route(req: ChatMessage) -> str:
             return "run-troubleshooter"
         return "workflow-validator"
     if req.tab == "reporting":
+        # Explain intent always wins, even if there's a chart-type word in the
+        # message. Without this, "Explain the bar chart …" routed to the
+        # plot-tuner because it pattern-matched "bar".
+        if _is_explain_intent(msg):
+            return "macro-economist" if _is_macro_tile(req.entity_id) else "tile-explainer"
         # Design/create intent → reporting-tile-designer
         if any(k in msg for k in (
             "design", "create", "generate", "build", "make", "add tile",
@@ -118,13 +213,7 @@ def _route(req: ChatMessage) -> str:
             "plot for", "dashboard for", "kpi for", "table for",
         )):
             return "reporting-tile-designer"
-        # Tune intent → plot-tuner
-        if any(k in msg for k in (
-            "tune", "filter", "sort", "rank", "limit", "change", "modify",
-            "switch", "color", "palette", "font", "label", "title", "axis",
-            "rename", "ascend", "descend", "asc", "desc", "bar", "line",
-            "pie", "area", "format", "legend", "style",
-        )):
+        if _is_tune_intent(msg):
             return "plot-tuner"
         return "tile-explainer"
     if req.tab == "analytics":

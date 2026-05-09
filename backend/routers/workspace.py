@@ -236,11 +236,15 @@ async def generate_insights(
     _: str = Depends(get_current_user),
 ):
     """Run the requested skill against this function's pinned-tile digest
-    and return a markdown insight brief."""
-    workspace = get_workspace(function_id)
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found for this function")
+    and return a markdown insight brief.
 
+    Note: `get_workspace()` only returns for the four built-in functions —
+    user-created workspaces (Deposit CCAR Process, etc.) aren't in that
+    registry. The insights endpoint doesn't actually need the legacy
+    WorkspaceData snapshot; the digest comes from `_PLOTS` (pinned tiles)
+    plus the analyst's text cards. Fall back to a synthetic name so a
+    fresh workspace can still generate insights as soon as it has any
+    pinned tile or note."""
     orch = _orch()
     if not orch.available:
         raise HTTPException(
@@ -253,10 +257,13 @@ async def generate_insights(
     if not skill:
         raise HTTPException(status_code=404, detail=f"Skill '{skill_id}' is not loaded.")
 
+    workspace = get_workspace(function_id)
+    function_name = workspace.function_name if workspace else function_id.replace("_", " ").title()
+
     digest, count = _format_pinned_digest(function_id)
     parts = [
         f"function_id: {function_id}",
-        f"function_name: {workspace.function_name}",
+        f"function_name: {function_name}",
         digest,
     ]
     if body.text_cards:
