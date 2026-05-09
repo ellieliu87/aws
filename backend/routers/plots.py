@@ -1,6 +1,7 @@
 """Plots router - per-function report plots that can read from datasets,
 analytics runs, or fall back to sample data for the live designer.
 """
+import logging
 import uuid
 from typing import Any
 
@@ -13,6 +14,7 @@ from routers.datasets import _DATASETS, _read_dataframe, _resolve_path
 from routers.scenarios import _RUNS
 
 router = APIRouter()
+log = logging.getLogger("cma.plots")
 
 
 _PLOTS: dict[str, PlotConfig] = {}
@@ -140,32 +142,61 @@ def _compute_kpi(df: pd.DataFrame, p) -> dict[str, Any] | None:
 
 
 def _apply_filters(df: pd.DataFrame, filters: list[dict[str, Any]]) -> pd.DataFrame:
-    """Apply structured filter dicts of shape {field, op, value}."""
+    """Apply structured filter dicts of shape {field, op, value}.
+
+    Tolerates a few common LLM/UI shape variations so a tile with the
+    intended filter still renders correctly:
+      • Accept `column` or `name` as aliases for `field`.
+      • Coerce the column to string for `eq`/`ne`/`in` so `"BHCB"` matches
+        a column read as `object` even if the value side is non-string.
+    Logs at WARNING level when a filter is skipped — visible in the
+    backend log so we can see why a tile's data didn't change.
+    """
     if not filters or df is None or df.empty:
         return df
     out = df
     for f in filters:
-        field = f.get("field")
+        field = f.get("field") or f.get("column") or f.get("name")
         op = f.get("op", "eq")
         value = f.get("value")
+        if not field:
+            log.warning("plot filter skipped — missing field key: %s", f)
+            continue
         if field not in out.columns:
+            log.warning(
+                "plot filter skipped — field %r not in dataframe columns %s",
+                field, list(out.columns),
+            )
             continue
         col = out[field]
+        before = len(out)
         try:
-            if op == "eq":      mask = col == value
-            elif op == "ne":    mask = col != value
+            if op == "eq":
+                # Coerce both sides to string so numeric/object dtype mismatches
+                # don't silently drop the whole filter.
+                mask = col.astype(str) == str(value)
+            elif op == "ne":
+                mask = col.astype(str) != str(value)
+            elif op == "in":
+                vals = value if isinstance(value, list) else [value]
+                mask = col.astype(str).isin([str(v) for v in vals])
             elif op == "gt":    mask = col > value
             elif op == "gte":   mask = col >= value
             elif op == "lt":    mask = col < value
             elif op == "lte":   mask = col <= value
-            elif op == "in":    mask = col.isin(value if isinstance(value, list) else [value])
             elif op == "contains":
                 mask = col.astype(str).str.contains(str(value), case=False, na=False)
             else:
+                log.warning("plot filter skipped — unknown op %r in %s", op, f)
                 continue
             out = out[mask]
-        except Exception:
-            # Skip filters that fail (e.g., wrong dtype) — never break the preview
+            after = len(out)
+            log.info(
+                "plot filter applied %s %s %r → %d → %d rows",
+                field, op, value, before, after,
+            )
+        except Exception as e:
+            log.warning("plot filter raised %s for %s — skipped", e, f)
             continue
     return out
 

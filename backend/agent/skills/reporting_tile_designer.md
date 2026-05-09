@@ -38,6 +38,27 @@ Example: "for BHCS scenario, show Fed Funds KPI and a rate chart"
 
 Exception: if a tile is explicitly comparing multiple scenarios ("compare BHCS vs BHCB"), omit the scenario filter so all scenarios render as separate series.
 
+## Step 1a — "X and Y respectively" → DUPLICATE every tile per scenario
+
+When the user says **"for BHCB and BHCS respectively"**, **"for each of BHCB and BHCS"**, **"side by side for BHCB and BHCS"**, or any phrasing that asks for parallel outputs across multiple scenarios, you MUST generate one tile per scenario per requested item. Each tile gets its OWN scenario filter (NEVER both at once — that returns zero rows).
+
+Example: "two KPIs for total interest expense, two line charts of fed funds, and two tables of interest apy for BHCB and BHCS respectively"
+→ Generate **6 tiles total**:
+  - KPI #1: name "Total Interest Expense — BHCB", filters include `{"field":"scenario","op":"eq","value":"BHCB"}`
+  - KPI #2: name "Total Interest Expense — BHCS", filters include `{"field":"scenario","op":"eq","value":"BHCS"}`
+  - Line chart #1: name "Fed Funds Rate — BHCB", filters include `{"field":"scenario","op":"eq","value":"BHCB"}`
+  - Line chart #2: name "Fed Funds Rate — BHCS", filters include `{"field":"scenario","op":"eq","value":"BHCS"}`
+  - Table #1: name "Product Interest APY — BHCB", filters include `{"field":"scenario","op":"eq","value":"BHCB"}`
+  - Table #2: name "Product Interest APY — BHCS", filters include `{"field":"scenario","op":"eq","value":"BHCS"}`
+
+Critical rules for the "respectively" pattern:
+- NEVER put both scenarios in one filter — `{"field":"scenario","op":"in","value":["BHCB","BHCS"]}` is wrong here because it makes the two tiles identical.
+- NEVER omit the scenario filter on the line/bar charts — without it, every chart shows all scenarios mixed together and the BHCB and BHCS tiles look identical.
+- ALWAYS include the scenario name in the tile `name` so the user can tell them apart on the dashboard.
+- Each tile in a pair has the SAME variable_name filter and SAME aggregation; only the scenario value differs.
+
+If the user says "two KPIs for total interest expense" the count refers to the per-scenario count, not 2 tiles total — so two scenarios × two KPIs would be 4 KPIs. But the natural reading of "two KPIs … for BHCB and BHCS respectively" is one KPI per scenario = 2 KPIs total. Use the simpler reading unless the user is explicit.
+
 ## Step 2 — Map variable names generously
 
 | User says | `variable_name` to use |
@@ -93,14 +114,19 @@ The backend KPI tile shows the peak value. The `python_snippet` documents the tr
 
 When the user says "product level", "by product", "per product", "product breakdown", or "product mix", set `x_field: "segment"` so each segment bar/row represents a product. Do NOT filter by a single segment — show all segments.
 
-## Step 4 — Determine KPI aggregation for "shock" or "peak"
+## Step 4 — Determine KPI aggregation
 
-When the user asks for a KPI on a rate or shock value:
-- "shock", "peak rate", "maximum rate", "highest" → `kpi_aggregation: "max"`
-- "current", "latest", "end of period", "last" → `kpi_aggregation: "latest"`
-- "average", "avg" → `kpi_aggregation: "avg"`
+Pick `kpi_aggregation` from the user's wording:
+- "shock", "peak rate", "maximum rate", "highest" → `"max"`
+- "current", "latest", "end of period", "last" → `"latest"`
+- "average", "avg", "mean" → `"avg"`
+- **"total", "sum", "cumulative", "aggregate"** → `"sum"`
+- "minimum", "lowest", "trough" → `"min"`
+- "count of" → `"count"`
 
-For FEDFUNDS and interest_apy KPIs, use `kpi_suffix: "%"`.
+Suffix conventions:
+- FEDFUNDS, interest_apy, beta KPIs → `kpi_suffix: "%"`
+- interest_expense KPIs (dollar amounts) → `kpi_suffix: ""`, `kpi_prefix: "$"`. If the value is in millions, set `kpi_suffix: "M"` and document scale in `kpi_sublabel`.
 
 ## Output format
 
