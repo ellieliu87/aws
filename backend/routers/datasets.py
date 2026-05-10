@@ -355,27 +355,29 @@ async def draft_sql(req: DraftSqlRequest, _: str = Depends(get_current_user)):
     description. Used by the Bind Table modal's agent box.
 
     Strategy:
-      1. If the chat orchestrator is configured (OpenAI / COF), ask it
-         to draft a SELECT statement, constraining the answer to use
-         only the columns the table actually has.
-      2. Otherwise, return a sensible boilerplate the analyst can edit.
+      1. Route to the dedicated `sql-drafter` skill which knows the brief
+         names of the well-known OneLake/Snowflake tables in the deposits
+         CCAR pipeline (e.g. "deposit nii engine results" →
+         `ol.finance.capital_markets_and_analytics.nii_engine_operational_records_v3`).
+      2. If the orchestrator or skill is unavailable, return a sensible
+         boilerplate the analyst can edit.
     """
     columns_str = ", ".join(req.columns) if req.columns else "*"
-    prompt = (
-        f"You are a SQL drafter. Generate ONE valid SELECT statement that "
-        f"reads from the table `{req.table_ref}`. The table has columns: "
-        f"{columns_str}. The analyst's request: {req.description!r}. "
-        "Return ONLY the SQL — no markdown, no commentary, no explanation. "
-        "Use only the column names listed above. Use standard SQL syntax."
+    user_message = (
+        f"Description: {req.description!r}\n"
+        f"Table reference (may be empty if the user didn't name one): {req.table_ref!r}\n"
+        f"Known columns (may be empty): {columns_str}\n"
+        "Draft one SELECT statement following the rules in your system prompt. "
+        "Output the SQL text only — no markdown fences, no commentary."
     )
 
     try:
         from cof.orchestrator import AsyncOrchestrator
         orch = AsyncOrchestrator()
-        if orch.available:
+        if orch.available and orch.get_skill("sql-drafter"):
             text = await orch.chat_specialist(
-                agent_id="orchestrator",
-                user_message=prompt,
+                agent_id="sql-drafter",
+                user_message=user_message,
                 extra_context="",
             )
             # Strip markdown fences if the model added them despite instructions.
@@ -386,9 +388,9 @@ async def draft_sql(req: DraftSqlRequest, _: str = Depends(get_current_user)):
                     break
             if sql.endswith("```"):
                 sql = sql[:-3].rstrip()
-            return DraftSqlResponse(sql_query=sql, note="drafted by agent")
+            return DraftSqlResponse(sql_query=sql, note="drafted by sql-drafter agent")
     except Exception as e:
-        log.warning("[draft-sql] orchestrator failed, using stub: %s", e)
+        log.warning("[draft-sql] sql-drafter failed, using stub: %s", e)
 
     # Stub fallback — boilerplate the analyst can edit. Best-effort
     # parse of the description for "limit N" and a generic WHERE clause

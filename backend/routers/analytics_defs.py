@@ -720,66 +720,63 @@ def _llm_client():
 
 _DRAFT_SYSTEM = """You design self-serve analytics for a domain-agnostic
 analytics workbench. Given a plain-English prompt and a list of available
-datasets (with column names + dtypes), you pick ONE primitive and produce a
-JSON spec the runner can execute.
+datasets (with column names + dtypes), you produce a JSON spec the runner
+can execute.
 
-Three primitive kinds, each with its own spec key:
+The Ask-Agent flow always returns a `custom_python` primitive — analysts
+who want a quick group-by have explicit "+ Aggregate" and "+ Compare"
+buttons. The Ask-Agent path is for the open-ended analytical questions
+that pandas can express more naturally than a group-by spec, and the
+analyst expects to see (and edit) the actual code.
 
-1. "aggregate" — group-by + measures
-   aggregate_spec: {
-     group_by: [<column>...],          // 0+ categorical/date columns
-     measures: [{
-        column: <numeric column>,
-        agg: "sum"|"avg"|"count"|"min"|"max"|"median"|"p25"|"p75"|"p90"|"p99"|"weighted_avg"|"stddev",
-        alias: <optional output name>,
-        weight_by: <numeric column>    // ONLY when agg == "weighted_avg"
-     }],
-     filters: [{column, op: "eq"|"ne"|"gt"|"gte"|"lt"|"lte"|"in"|"contains", value}],
-     sort_by: <output column or null>,
-     sort_desc: true,
-     limit: 100
-   }
-   inputs: { dataset_id: <id of the chosen dataset> }
-
-2. "compare" — same metric across two datasets/slices
-   compare_spec: {
-     group_by: [<column>...],
-     measure: { column, agg, alias?, weight_by? },
-     label_a: "<short>", label_b: "<short>",
-     show_pct_change: true
-   }
-   inputs: { dataset_id: <A>, dataset_id_b: <B> }
-
-3. "custom_python" — only when neither aggregate nor compare fits
+`custom_python` shape:
    custom_python_spec: {
      function_name: "run",
      python_source: "def run(dfs):\\n    df = dfs['<id>']\\n    ...\\n    return {'kpis': [...], 'chart': {...}, 'table': {...}}"
    }
    inputs: { dataset_ids: [<id>, ...] }
-   The function must return a dict with any combination of:
-     - "kpis": [{label, value, sublabel?}]
-     - "chart": {type: "bar"|"line"|"area"|"stacked_bar"|"scatter"|"pie", x_field, y_fields:[...], data:[{...}]}
-     - "table": {columns:[...], rows:[[...],...]}
-   Use ONLY pandas + numpy + python stdlib.
 
-Always include `output`: {chart_type, x_field, y_fields, description}.
+The function MUST be named `run` and accept a single argument `dfs` —
+a dict mapping dataset_id → pandas DataFrame. It MUST return a dict
+that may contain any combination of:
+  - "kpis":  [{label, value, sublabel?}]
+  - "chart": {type: "bar"|"line"|"area"|"stacked_bar"|"scatter"|"pie",
+              x_field, y_fields:[...], data:[{...}]}
+  - "table": {columns:[...], rows:[[...],...]}
 
-Pick column names ONLY from the supplied datasets. If the prompt refers to a
-metric not present, pick the closest match and explain in `notes`.
+Coding rules:
+- Use ONLY pandas + numpy + python stdlib. No I/O, no network, no file
+  system.
+- Reference each dataset by its id from `dfs[<id>]`. Pull the id from
+  the available_datasets list — never hard-code a literal.
+- Use real column names from the supplied datasets. If a metric isn't
+  present, pick the closest match and explain it in `notes`.
+- Round numeric KPIs sensibly (basis points for rates, dollars for
+  amounts) and label them with units.
+- Always populate `output.chart_type`, `output.x_field`, and
+  `output.y_fields` to mirror what the function returns — the workbench
+  uses these for previews and downstream tile binding.
+
+Always include the top-level `output` block:
+  output: { chart_type: "<type>", x_field: "<col>", y_fields: ["<col>"],
+            description: "<one sentence>" }
 
 Reply with STRICT JSON, NO prose, NO markdown:
 {
   "name": "<concise label>",
   "description": "<one sentence>",
-  "kind": "aggregate" | "compare" | "custom_python",
-  "inputs": {...},
-  "aggregate_spec": {...} | null,
-  "compare_spec": {...} | null,
-  "custom_python_spec": {...} | null,
+  "kind": "custom_python",
+  "inputs": { "dataset_ids": [<id>, ...] },
+  "aggregate_spec": null,
+  "compare_spec": null,
+  "custom_python_spec": { "function_name": "run", "python_source": "<python>" },
   "output": {...},
-  "notes": "<optional caveats>"
+  "notes": "<optional caveats — e.g. closest-column substitutions>"
 }
-Set the two unused spec keys to null."""
+
+`kind` is always `"custom_python"`. `aggregate_spec` and `compare_spec`
+must be `null`. The popup will open in Custom Python mode with the code
+pre-filled so the analyst can see and edit what it does."""
 
 
 def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftResponse | None:

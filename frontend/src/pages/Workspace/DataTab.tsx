@@ -283,7 +283,6 @@ function DatasetsSection({ functionId, functionName, onAskAgent }: SectionProps)
         <PreviewPanel
           dataset={previewFor}
           onClose={() => setPreviewFor(null)}
-          onAskAgent={onAskAgent}
         />
       )}
     </div>
@@ -945,14 +944,19 @@ function UploadFileModal({
 
 // ── Preview side panel ────────────────────────────────────────────────────
 function PreviewPanel({
-  dataset, onClose, onAskAgent,
+  dataset, onClose,
 }: {
   dataset: Dataset
   onClose: () => void
-  onAskAgent: (q: string) => void
 }) {
   const [preview, setPreview] = useState<DatasetPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Wiring the dataset entity into the chat store before dispatching the
+  // event is what makes the router pick `data-explainer` instead of falling
+  // through to the generic orchestrator. Without it, "Ask Agent" sent a
+  // bare message and either bounced or got a generic answer.
+  const setEntity = useChatStore((s) => s.setEntity)
+  const setOpen = useChatStore((s) => s.setOpen)
 
   useEffect(() => {
     setPreview(null)
@@ -962,6 +966,14 @@ function PreviewPanel({
       .then((r) => setPreview(r.data))
       .catch((e) => setError(e?.response?.data?.detail || 'Could not load preview'))
   }, [dataset.id])
+
+  const askDataExplainer = () => {
+    setEntity('dataset', dataset.id)
+    setOpen(true)
+    window.dispatchEvent(new CustomEvent('cma-chat', {
+      detail: `Explain this dataset ("${dataset.name}"). Walk me through what's in it, what each column means, and call out any data-quality concerns you can see from the preview.`,
+    }))
+  }
 
   return (
     <>
@@ -1046,13 +1058,10 @@ function PreviewPanel({
                     {preview.total_rows != null ? ` of ${preview.total_rows.toLocaleString()}` : ''})
                   </div>
                   <button
-                    onClick={() =>
-                      onAskAgent(
-                        `Look at the dataset "${dataset.name}" — what would you suggest analyzing? Columns: ${preview.columns.map((c) => c.name).join(', ')}.`,
-                      )
-                    }
+                    onClick={askDataExplainer}
                     className="text-[11px] flex items-center gap-1"
                     style={{ color: 'var(--accent)', fontWeight: 600 }}
+                    title="Explain this dataset — columns, contents, and quality concerns"
                   >
                     <Sparkles size={11} /> Ask Agent
                   </button>

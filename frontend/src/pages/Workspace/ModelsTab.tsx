@@ -600,7 +600,7 @@ function UploadModelModal({
   const anyPkgSelected = preinstalled.size > 0
 
   return (
-    <Modal title="Upload Model Artifacts" onClose={onClose}>
+    <Modal title="Upload Model Artifacts" onClose={onClose} minHeight={640}>
       <Field label="Preinstalled packages">
         <div ref={dropdownRef} style={{ position: 'relative' }}>
           <button
@@ -1311,8 +1311,8 @@ function Row({ k, v }: { k: string; v: string }) {
 
 // ── shared modal chrome ─────────────────────────────────────────────────────
 function Modal({
-  title, onClose, children, wide,
-}: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+  title, onClose, children, wide, minHeight,
+}: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean; minHeight?: number }) {
   return (
     <>
       <div className="fixed inset-0 z-40" style={{ background: 'rgba(11,15,25,0.45)' }} onClick={onClose} />
@@ -1323,8 +1323,12 @@ function Modal({
           // Take nearly the whole viewport height — a small 8px breathing
           // margin top + bottom (effectively 96vh tall) so feature
           // checklists and metric tables don't have to scroll inside the
-          // already-scrollable body.
+          // already-scrollable body. `minHeight` keeps the modal a stable
+          // size when its body conditionally hides sections (e.g. the
+          // Upload-Model dialog hides the file picker when a preinstalled
+          // package is selected — without this, the modal collapsed).
           maxHeight: 'calc(100vh - 16px)',
+          minHeight: minHeight ? `min(${minHeight}px, calc(100vh - 16px))` : undefined,
           transform: 'translate(-50%, -50%)',
           background: 'var(--bg-card)',
           border: '1px solid var(--border)',

@@ -132,8 +132,11 @@ function AnalyticsCanvas({ functionId, functionName, onAskAgent, onContextChange
   })()
   const [nodes, setNodes] = useState<RFNode<NodeData>[]>(() => draft?.nodes || [])
   const [edges, setEdges] = useState<Edge[]>(() => draft?.edges || [])
+  // CCAR submission horizon is 9 quarters = 27 months. Default to that so
+  // a fresh workflow lines up with the regulatory ask without the analyst
+  // having to remember the number every time. They can still override.
   const [horizon, setHorizon] = useState<number>(() =>
-    typeof draft?.horizon === 'number' ? draft.horizon : 12
+    typeof draft?.horizon === 'number' ? draft.horizon : 27
   )
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -918,7 +921,7 @@ function AnalyticsCanvas({ functionId, functionName, onAskAgent, onContextChange
           <input
             type="number" min={1} max={500} className="input"
             value={horizon}
-            onChange={(e) => setHorizon(Math.max(1, Math.min(500, parseInt(e.target.value || '12'))))}
+            onChange={(e) => setHorizon(Math.max(1, Math.min(500, parseInt(e.target.value || '27'))))}
           />
         </Field>
         <Field label="Scenario" className="w-52">
