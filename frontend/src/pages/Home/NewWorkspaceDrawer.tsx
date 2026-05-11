@@ -9,6 +9,34 @@ import {
 import api from '@/lib/api'
 import type { BusinessFunction } from '@/types'
 
+/** Workspace ids are slugified from the workspace name on the backend
+ *  (`fid = body.id or _slugify(body.name)`), so deleting "Deposit CCAR
+ *  Process" and re-creating it produces the SAME id. Any per-workspace
+ *  localStorage entries the previous workspace left behind (canvas
+ *  drafts, overview layouts, text cards, insights cache, playbooks
+ *  state) would then leak into the new workspace and look like a stale
+ *  workflow / dashboard. Clear them eagerly at creation time so a fresh
+ *  workspace is genuinely fresh.
+ *
+ *  Matches any key shaped `cma:*:<functionId>` — every per-workspace
+ *  key in the app follows this convention (see grep for callers). */
+function purgeWorkspaceLocalState(functionId: string) {
+  if (!functionId) return
+  try {
+    const suffix = `:${functionId}`
+    const doomed: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k && k.startsWith('cma:') && k.endsWith(suffix)) {
+        doomed.push(k)
+      }
+    }
+    for (const k of doomed) localStorage.removeItem(k)
+  } catch {
+    // localStorage can throw in incognito / quota-exceeded modes — best effort.
+  }
+}
+
 // ── Category presets — each drives default icon + color ──────────────────
 const CATEGORY_PRESETS = [
   { id: 'Treasury',          icon: 'banknote',      color: '#004977', desc: 'ALM, funding, liquidity' },
@@ -164,6 +192,12 @@ export default function NewWorkspaceModal({ open, onClose, onCreated }: Props) {
         color,
         imported_packs: importedPacks,
       })
+      // Backend id is slug(name). If a workspace by this name used to
+      // exist, localStorage still has its drafts/layouts/playbooks state
+      // keyed by the same slug — wipe them so the new workspace doesn't
+      // inherit a stale workflow on the canvas, stale tiles on Overview,
+      // etc.
+      purgeWorkspaceLocalState(r.data.id)
       onCreated?.(r.data)
       onClose()
       navigate(`/workspace/${r.data.id}`)

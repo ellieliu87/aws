@@ -784,9 +784,9 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
 
     Bypasses the LLM and returns a pre-built `custom_python` definition
     that — on Run — loads the commercial CCAR output + rate history
-    datasets, computes projected vs historical betas, classifies each
-    product against the P60 fixed-pricing-percentile assumption, and
-    emits a scatter chart (historical on X, projected on Y) plus KPIs.
+    datasets, computes projected vs historical betas using a configurable
+    historical window, and emits a scatter chart (historical on X,
+    projected on Y) plus a per-product gap table.
 
     Mirrors the 4-agent chat-panel chain (beta-quant → beta-benchmarker
     → beta-visualizer → beta-challenger), but condensed into one
@@ -878,25 +878,67 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
 
     dataset_ids = [ds_proj, ds_hist]
 
-    # Detect lookback hints — when the analyst frames the comparison
-    # against a specific historical period (the 2022/2023 tightening
-    # cycle), narrow the historical regression to that window so the
-    # comparison is "BHCS projection vs the same kind of cycle we just
-    # lived through" rather than "BHCS projection vs a 6-year average
-    # that includes ZIRP".
-    lookback_iso = None
+    # ── Historical lookback window ────────────────────────────────────
+    # Map the analyst's phrasing to an explicit [start, end] window so
+    # the regression covers the *period they meant*, not the whole file.
+    # Mirrors the rules in agent/skills/.../beta_benchmarker.md so the
+    # fast-path and the agent path resolve windows identically.
+    #
+    # Mappings (in priority order — first match wins):
+    #   • "2023 rate hike cycle" / "rate hike cycle" / "hiking cycle"
+    #          → 2022-07-01 to 2024-06-30 (full rise + plateau)
+    #   • "2022 hiking cycle" / "post-COVID hiking" / generic "tightening"
+    #          → 2022-03-01 to 2023-12-31
+    #   • Explicit "YYYY-YYYY" or "YYYY to YYYY" (e.g. "2022-2023")
+    #          → YYYY1-01-01 to YYYY2-12-31
+    #   • Single year "YYYY" → YYYY-01-01 to YYYY-12-31
+    #   • "since YYYY" / "from YYYY" → YYYY-01-01, no end
+    import re as _re
+    lookback_start = None
+    lookback_end = None
     lookback_label = None
-    if "2023 rate hike" in p or "2023 tightening" in p or "2023 hike cycle" in p \
-            or "tightening cycle" in p or "rate hike cycle" in p \
-            or "hiking cycle" in p:
-        lookback_iso = "2022-01-01"
-        lookback_label = "2022-Q1 onwards (the 2022-23 Fed tightening cycle)"
-    elif "since 2023" in p or "from 2023" in p:
-        lookback_iso = "2023-01-01"
-        lookback_label = "2023-Q1 onwards"
-    elif "since 2022" in p or "from 2022" in p:
-        lookback_iso = "2022-01-01"
-        lookback_label = "2022-Q1 onwards"
+
+    # 1) "2023 rate hike cycle" and synonyms
+    if any(s in p for s in (
+        "2023 rate hike", "2023 tightening", "2023 hike cycle",
+        "2023 hiking cycle", "rate hike cycle", "hike cycle", "hiking cycle",
+    )):
+        lookback_start = "2022-07-01"
+        lookback_end = "2024-06-30"
+        lookback_label = "mid-2022 to mid-2024 (the 2023 rate hike cycle)"
+
+    # 2) "2022 hiking cycle" / "post-COVID" / generic "tightening cycle"
+    elif any(s in p for s in (
+        "2022 hike", "2022 hiking", "post-covid hiking", "post covid hiking",
+        "tightening cycle", "fed tightening",
+    )):
+        lookback_start = "2022-03-01"
+        lookback_end = "2023-12-31"
+        lookback_label = "Mar 2022 to Dec 2023 (post-COVID tightening cycle)"
+
+    # 3) Explicit "YYYY-YYYY" or "YYYY to YYYY" — try this BEFORE single
+    #    year so "2022-2023" doesn't get caught by the single-year rule.
+    elif (m := _re.search(r"\b(20\d{2})\s*(?:-|–|—|to)\s*(20\d{2})\b", p)):
+        y1, y2 = int(m.group(1)), int(m.group(2))
+        if y1 <= y2:
+            lookback_start = f"{y1}-01-01"
+            lookback_end   = f"{y2}-12-31"
+            lookback_label = f"Jan {y1} to Dec {y2}"
+
+    # 4) "since YYYY" / "from YYYY" / "YYYY onwards"
+    elif (m := _re.search(r"\b(?:since|from)\s*(20\d{2})\b", p)) \
+            or (m := _re.search(r"\b(20\d{2})\s*onwards?\b", p)):
+        y1 = int(m.group(1))
+        lookback_start = f"{y1}-01-01"
+        lookback_label = f"{y1}-Q1 onwards"
+
+    # 5) Bare single year — last because every prompt with a window also
+    #    contains a year, and we don't want to clobber the cases above.
+    elif (m := _re.search(r"\b(20\d{2})\b", p)):
+        y1 = int(m.group(1))
+        lookback_start = f"{y1}-01-01"
+        lookback_end   = f"{y1}-12-31"
+        lookback_label = f"calendar year {y1}"
 
     # Detect projection scenario — the supervisory cycle has four named
     # paths (BHCB/BHCS/FEDB/FEDSA). The matcher below is hierarchical:
@@ -921,19 +963,22 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
 
     PYTHON_SOURCE = '''def run(dfs):
     """Beta justification — compute projected vs historical effective
-    deposit beta per segment and classify against the P60 fixed-pricing-
-    percentile assumption. Schema: both projection and actuals frames are
-    long-format with columns scenario, snap_date, variable_name,
-    variable_value, segment, origin. Tolerates case + underscore
-    variants in column / variable / origin values. Identifies the two
-    frames by date range (most-recent-spanning = projection)."""
+    deposit beta per segment over an optional historical window. Schema:
+    both projection and actuals frames are long-format with columns
+    scenario, snap_date, variable_name, variable_value, segment, origin.
+    Tolerates case + underscore variants in column / variable / origin
+    values. Identifies the two frames by date range (most-recent-spanning
+    = projection)."""
     import numpy as np
     import pandas as pd
 
-    # Optional lookback for the historical regression — set by the draft
-    # handler when the analyst's prompt names a specific cycle. When None,
-    # the OLS uses every actuals row.
-    HISTORICAL_LOOKBACK = __LOOKBACK_PLACEHOLDER__
+    # Optional lookback bounds for the historical regression — set by the
+    # draft handler when the analyst's prompt names a specific cycle or
+    # year range. Either or both can be None.
+    #   HISTORICAL_LOOKBACK_START → earliest date to include (inclusive)
+    #   HISTORICAL_LOOKBACK_END   → latest date to include (inclusive)
+    HISTORICAL_LOOKBACK_START = __LOOKBACK_START_PLACEHOLDER__
+    HISTORICAL_LOOKBACK_END = __LOOKBACK_END_PLACEHOLDER__
     HISTORICAL_LOOKBACK_LABEL = __LOOKBACK_LABEL_PLACEHOLDER__
     # Optional projection scenario filter — set when the analyst names one
     # of BHCB / BHCS / FEDB / FEDSA. When None, the projection beta is
@@ -1065,13 +1110,17 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
     actuals_df, projection_df = frames[0][1], frames[-1][1]
 
     # Apply the optional historical lookback window (when the analyst's
-    # prompt named a specific cycle).
-    if HISTORICAL_LOOKBACK:
+    # prompt named a specific cycle or year range). Both bounds are
+    # inclusive; either or both may be None.
+    if HISTORICAL_LOOKBACK_START or HISTORICAL_LOOKBACK_END:
         date_col_h = _ci_pick(actuals_df, "snap_date", "date", "period", "as_of_date")
         if date_col_h:
             actuals_df = actuals_df.copy()
             actuals_df[date_col_h] = pd.to_datetime(actuals_df[date_col_h], errors="coerce")
-            actuals_df = actuals_df[actuals_df[date_col_h] >= pd.to_datetime(HISTORICAL_LOOKBACK)]
+            if HISTORICAL_LOOKBACK_START:
+                actuals_df = actuals_df[actuals_df[date_col_h] >= pd.to_datetime(HISTORICAL_LOOKBACK_START)]
+            if HISTORICAL_LOOKBACK_END:
+                actuals_df = actuals_df[actuals_df[date_col_h] <= pd.to_datetime(HISTORICAL_LOOKBACK_END)]
 
     # Apply the optional projection-scenario filter. The match is
     # case-insensitive and tolerates the long-form scenario string used
@@ -1172,24 +1221,37 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
     # Substitute the placeholders the embedded function reads. Scenario
     # filter + lookback window are detected from the analyst's prompt
     # before this point and baked into the python_source so each
-    # AnalyticDefinition records exactly which scenario it ran for.
+    # AnalyticDefinition records exactly which scenario + window it ran for.
     PYTHON_SOURCE = (
         PYTHON_SOURCE
-        .replace("__LOOKBACK_PLACEHOLDER__",       repr(lookback_iso)    if lookback_iso    else "None")
+        .replace("__LOOKBACK_START_PLACEHOLDER__", repr(lookback_start)  if lookback_start  else "None")
+        .replace("__LOOKBACK_END_PLACEHOLDER__",   repr(lookback_end)    if lookback_end    else "None")
         .replace("__LOOKBACK_LABEL_PLACEHOLDER__", repr(lookback_label)  if lookback_label  else "None")
         .replace("__SCENARIO_PLACEHOLDER__",       repr(scenario_code)   if scenario_code   else "None")
         .replace("__SCENARIO_LABEL_PLACEHOLDER__", repr(scenario_label)  if scenario_label  else "None")
     )
 
+    # Build a human-readable description that surfaces exactly which
+    # scenario + window the analytic will run for. The analyst sees this
+    # in the New Analytic popup before clicking Run, so it has to spell
+    # out the assumptions baked into the spec.
+    desc_parts = ["Projected vs historical effective beta per commercial deposit product."]
+    if scenario_label:
+        desc_parts.append(f"Projection scenario: {scenario_label}.")
+    if lookback_label:
+        desc_parts.append(f"Historical window: {lookback_label}.")
+    else:
+        desc_parts.append("Historical window: full actuals file (no lookback narrowing).")
+    desc_parts.append(
+        "Mirrors the 4-agent beta-justification chain "
+        "(quant → benchmarker → visualizer → challenger) as a single "
+        "deterministic analytic."
+    )
+    description = " ".join(desc_parts)
+
     return AnalyticDraftResponse(
         name="Commercial deposit beta — justification",
-        description=(
-            "Projected vs historical effective beta per commercial deposit "
-            "product, classified against the P60 fixed-pricing-percentile "
-            "assumption. Mirrors the 4-agent beta-justification chain "
-            "(quant → benchmarker → visualizer → challenger) as a single "
-            "deterministic analytic."
-        ),
+        description=description,
         kind="custom_python",
         inputs=AnalyticInputs(dataset_ids=dataset_ids),
         custom_python_spec=CustomPythonSpec(
@@ -1203,7 +1265,7 @@ def _maybe_draft_beta_justification(req: AnalyticDraftRequest) -> AnalyticDraftR
             description=(
                 "One point per product. Above the 45° line = projection "
                 "more aggressive than history; below = more conservative. "
-                "Tolerance band ±0.10 = P60 peer-pricing assumption."
+                "Status badge uses a ±0.10 tolerance band."
             ),
         ),
         notes=(

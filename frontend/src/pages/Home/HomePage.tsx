@@ -45,6 +45,19 @@ export default function HomePage() {
     if (!window.confirm(`Delete workspace "${fn.name}"?\n\nThis removes it from the list. Any data, models, or plots stored in it will no longer be accessible.`)) return
     try {
       await api.delete(`/api/functions/${fn.id}`)
+      // Wipe per-workspace localStorage (canvas draft, overview layout,
+      // text cards, playbook state) so re-creating a workspace with the
+      // same name (which slugifies to the same id) doesn't inherit stale
+      // state. Belt-and-suspenders with the same purge in NewWorkspaceDrawer.
+      try {
+        const suffix = `:${fn.id}`
+        const doomed: string[] = []
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i)
+          if (k && k.startsWith('cma:') && k.endsWith(suffix)) doomed.push(k)
+        }
+        for (const k of doomed) localStorage.removeItem(k)
+      } catch {}
       setFunctions((prev) => prev.filter((f) => f.id !== fn.id))
     } catch (e: any) {
       alert(e?.response?.data?.detail || 'Could not delete workspace.')
