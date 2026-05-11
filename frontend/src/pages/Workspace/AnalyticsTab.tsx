@@ -189,9 +189,53 @@ function AnalyticsCanvas({ functionId, functionName, onAskAgent, onContextChange
   }, [functionId])
   useEffect(loadSavedWorkflows, [loadSavedWorkflows])
 
-  // Persist the in-progress canvas to localStorage on every change so
-  // tab switches + page reloads keep what the user built.
+  // When the analyst switches workspaces (functionId changes), reload
+  // canvas state from the new function's draft — otherwise the previous
+  // workspace's nodes/edges stay in React state because the useState
+  // initializers above only run on first mount. A fresh workspace gets an
+  // empty canvas; a workspace with a saved draft gets its draft back.
+  //
+  // `initializedForFn` tracks the functionId the state in scope was last
+  // loaded for. On functionId change we reload AND tell the persist
+  // effect below to skip its next run — otherwise it'd write the
+  // previous workspace's nodes/edges (still in scope this commit) to the
+  // new workspace's localStorage key.
+  const initializedForFn = useRef(functionId)
+  const skipNextPersist = useRef(false)
   useEffect(() => {
+    if (initializedForFn.current === functionId) return
+    initializedForFn.current = functionId
+    skipNextPersist.current = true
+    let nextDraft: any = null
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      nextDraft = raw ? JSON.parse(raw) : null
+    } catch { nextDraft = null }
+    setNodes(nextDraft?.nodes || [])
+    setEdges(nextDraft?.edges || [])
+    setHorizon(typeof nextDraft?.horizon === 'number' ? nextDraft.horizon : 27)
+    setScenarioName(nextDraft?.scenarioName || '')
+    setStartDate(nextDraft?.startDate || '')
+    setView(nextDraft?.view || 'steps')
+    setActiveSavedId(nextDraft?.activeSavedId || null)
+    setActiveSavedName(nextDraft?.activeSavedName || null)
+    setValidation(null)
+    setRunError(null)
+    setLastResult(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [functionId, STORAGE_KEY])
+
+  // Persist the in-progress canvas to localStorage on every change so
+  // tab switches + page reloads keep what the user built. The skip flag
+  // suppresses exactly one tick after a workspace switch — without it,
+  // the previous workspace's state (still in scope this commit) would
+  // be copied into the new workspace's storage key, leaving the user
+  // with a "stale workflow" on the new workspace.
+  useEffect(() => {
+    if (skipNextPersist.current) {
+      skipNextPersist.current = false
+      return
+    }
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         nodes, edges, horizon, scenarioName, startDate, view,

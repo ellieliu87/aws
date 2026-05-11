@@ -61,11 +61,55 @@ then regresses Δrate on ΔFF via OLS.
 
 The tool is schema-tolerant: column names matched case-insensitively
 (underscores / hyphens / spaces ignored), and `variable_name` /
-`origin` values matched against alias lists. Pass `lookback_start`
-(ISO date, e.g. `"2022-01-01"`) only if the analyst asked to narrow
-to the latest tightening cycle. Pass `products_only` if the file
-mixes segments from multiple lines of business and the analyst wants
-just one slice.
+`origin` values matched against alias lists.
+
+### Window selection — `lookback_start` and `lookback_end`
+
+When the analyst's prompt names a specific historical window, scope
+the regression to that window by passing **both** `lookback_start`
+and `lookback_end` (ISO dates, inclusive). Use this mapping:
+
+| Analyst phrase | `lookback_start` | `lookback_end` |
+|---|---|---|
+| "2023 rate hike cycle" / "the rate hike cycle" / "2023 hiking cycle" | `2022-07-01` | `2024-06-30` |
+| "2022 hiking cycle" / "post-COVID hiking" / "Fed tightening" (no year) | `2022-03-01` | `2023-12-31` |
+| "<YYYY>-<YYYY>" or "<YYYY> to <YYYY>" (e.g. "2022-2023") | `YYYY1-01-01` | `YYYY2-12-31` |
+| "<YYYY>" (single year, e.g. "2023") | `YYYY-01-01` | `YYYY-12-31` |
+| "since <YYYY>" / "from <YYYY>" / "<YYYY> onwards" | `YYYY-01-01` | omit |
+| "last N years" | (today − N years, ISO) | omit |
+| "<YYYY>-Q<n>" through "<YYYY>-Q<m>" | start of Q<n> | end of Q<m> |
+
+If the analyst names a rate cycle but no explicit dates, prefer the
+"2023 rate hike cycle → mid-2022 to mid-2024" mapping above; analysts
+usually want the entire rise + plateau, not just the hike months.
+
+If the analyst gives no window at all, omit both parameters — the
+tool uses every row in the file.
+
+Pass `products_only` if the file mixes segments from multiple lines
+of business and the analyst wants just one slice.
+
+### Examples
+
+> "compare against the 2023 rate hike cycle"
+```
+compute_historical_beta(lookback_start="2022-07-01", lookback_end="2024-06-30")
+```
+
+> "use the 2022-2023 window"
+```
+compute_historical_beta(lookback_start="2022-01-01", lookback_end="2023-12-31")
+```
+
+> "since 2022"
+```
+compute_historical_beta(lookback_start="2022-01-01")
+```
+
+> "what is the historical beta?" (no window cue)
+```
+compute_historical_beta()
+```
 
 ## What the tool returns
 
@@ -78,13 +122,14 @@ just one slice.
       "intercept":       0.50,
       "r_squared":       1.00,
       "observations":    24,
-      "date_start":      "2019-03-31",
-      "date_end":        "2024-12-31"
+      "date_start":      "2022-09-30",
+      "date_end":        "2024-06-30"
     },
     ...
   ],
-  "lookback_start": "2019-03-31",
-  "csv_path_used": "..."
+  "lookback_start": "2022-07-01",
+  "lookback_end":   "2024-06-30",
+  "csv_path_used":  "..."
 }
 ```
 
@@ -107,7 +152,8 @@ Pass the tool's result through verbatim:
     ...
   ],
   "lookback_start": "<YYYY-MM-DD or null>",
-  "csv_path_used": "<path>"
+  "lookback_end":   "<YYYY-MM-DD or null>",
+  "csv_path_used":  "<path>"
 }
 ```
 

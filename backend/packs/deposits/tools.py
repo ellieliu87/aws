@@ -1565,6 +1565,16 @@ def register_python_tools(ctx: PackContext) -> None:
                  "the regression to the latest tightening cycle."
              ),
              "required": False},
+            {"name": "lookback_end", "type": "string",
+             "description": (
+                 "ISO date — latest observation to include (inclusive). "
+                 "Defaults to the latest row in the file. Combine with "
+                 "lookback_start to bound the regression to a specific "
+                 "rate cycle window — e.g. '2022-07-01' to '2024-06-30' "
+                 "for the 2023 rate hike cycle, or '2022-01-01' to "
+                 "'2023-12-31' for a 2022-2023 window."
+             ),
+             "required": False},
             {"name": "rate_var_aliases", "type": "array",
              "description": (
                  "Extra aliases for the rate-paid variable_name. "
@@ -1588,11 +1598,15 @@ def register_python_tools(ctx: PackContext) -> None:
              "required": False},
         ],
         python_source='''def compute_historical_beta(csv_path=None, lookback_start=None,
+                              lookback_end=None,
                               rate_var_aliases=None, ff_var_aliases=None,
                               products_only=None):
     """OLS slope of rate_paid on fed_funds per segment, from the long-format
     actuals CSV. Joins per-segment rate paths against the macro fed_funds
-    path on snap_date, then regresses Δy on Δx."""
+    path on snap_date, then regresses Δy on Δx. The optional
+    lookback_start / lookback_end pair bounds the regression window — pass
+    both to scope to a specific rate cycle (e.g. mid-2022 to mid-2024 for
+    the 2023 hike cycle)."""
     import os
     import pandas as pd
 
@@ -1659,6 +1673,8 @@ def register_python_tools(ctx: PackContext) -> None:
     df = df.dropna(subset=[date_col])
     if lookback_start:
         df = df[df[date_col] >= pd.to_datetime(lookback_start)]
+    if lookback_end:
+        df = df[df[date_col] <= pd.to_datetime(lookback_end)]
     if not len(df):
         return {"error": "no rows after applying lookback filter"}
 
@@ -1734,6 +1750,7 @@ def register_python_tools(ctx: PackContext) -> None:
         "ff_var_matched":   ff_matches,
         "rate_var_matched": rate_matches,
         "lookback_start":   lookback_start,
+        "lookback_end":     lookback_end,
         "csv_path_used":    csv_path,
     }
 ''',

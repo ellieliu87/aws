@@ -237,9 +237,13 @@ def _build_context(req: ChatMessage) -> str:
     if req.context:
         parts.append(f"page_context: {req.context}")
     if req.payload:
-        # Workflow validator passes nodes/edges in payload
+        # Used by workflow-validator (nodes/edges), data-explainer (preview
+        # rows the analyst is looking at), and a few other surfaces that
+        # ship structured context with the message. Bumped to 12 KB so a
+        # 25-row sample with 6–10 columns fits without truncation; gpt-oss
+        # has plenty of room to spare on these requests.
         import json
-        parts.append(f"payload: {json.dumps(req.payload, default=str)[:4000]}")
+        parts.append(f"payload: {json.dumps(req.payload, default=str)[:12000]}")
     return "\n".join(parts)
 
 

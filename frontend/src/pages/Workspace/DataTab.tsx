@@ -957,6 +957,7 @@ function PreviewPanel({
   // bare message and either bounced or got a generic answer.
   const setEntity = useChatStore((s) => s.setEntity)
   const setOpen = useChatStore((s) => s.setOpen)
+  const setPayload = useChatStore((s) => s.setPayload)
 
   useEffect(() => {
     setPreview(null)
@@ -969,9 +970,26 @@ function PreviewPanel({
 
   const askDataExplainer = () => {
     setEntity('dataset', dataset.id)
+    // Pass the exact rows the analyst is looking at into [Context] so the
+    // agent narrates THIS view rather than re-fetching a possibly
+    // different slice via get_dataset_preview. The backend stringifies the
+    // payload and trims to its cap; rows that don't fit are dropped, which
+    // is fine — the agent still gets the schema + as many rows as fit.
+    if (preview) {
+      setPayload({
+        dataset_name: dataset.name,
+        source_kind: dataset.source_kind,
+        total_rows: preview.total_rows ?? null,
+        columns: preview.columns,
+        sample_rows: preview.sample_rows,
+        sample_rows_shown: preview.sample_rows.length,
+      })
+    } else {
+      setPayload(null)
+    }
     setOpen(true)
     window.dispatchEvent(new CustomEvent('cma-chat', {
-      detail: `Explain this dataset ("${dataset.name}"). Walk me through what's in it, what each column means, and call out any data-quality concerns you can see from the preview.`,
+      detail: `Explain this dataset ("${dataset.name}"). Use the columns and sample_rows in [Context]'s payload (that's exactly what I'm looking at). Walk me through what's in it, what each column means, and call out any data-quality concerns you can see from those rows.`,
     }))
   }
 
