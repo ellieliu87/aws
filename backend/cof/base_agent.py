@@ -308,11 +308,39 @@ class CofBaseAgent:
             # frontmatter — the AgentSkill default (0) means "use the
             # class default", any positive value caps the run.
             turn_cap = getattr(self.skill, "max_turns", 0) or self.MAX_TURNS
-            result: RunResult = await Runner.run(
-                starting_agent=self._agent,
-                input=messages,
-                max_turns=turn_cap,
-            )
+
+            # Retry once on ModelBehaviorError. The most common cause is the
+            # gpt-oss harmony format emitting a malformed tool call name
+            # (e.g. "rag_search.channel.commentary" instead of "rag_search"),
+            # which the SDK can't resolve against the agent's tool registry
+            # and raises ModelBehaviorError("Tool X not found in agent Y").
+            # The output is non-deterministic so a clean re-run almost
+            # always succeeds. We only retry once — a persistent failure
+            # is a real bug and should propagate so the playbook executor
+            # marks the phase failed instead of hanging.
+            try:
+                from agents.exceptions import ModelBehaviorError
+            except ImportError:
+                ModelBehaviorError = type("ModelBehaviorError", (Exception,), {})  # type: ignore
+
+            attempt = 0
+            while True:
+                try:
+                    result: RunResult = await Runner.run(
+                        starting_agent=self._agent,
+                        input=messages,
+                        max_turns=turn_cap,
+                    )
+                    break
+                except ModelBehaviorError as mbe:
+                    if attempt >= 1:
+                        raise
+                    attempt += 1
+                    log.warning(
+                        "CofBaseAgent[%s] hit ModelBehaviorError (likely "
+                        "malformed gpt-oss tool call), retrying once: %s",
+                        self.skill.name, mbe,
+                    )
 
             trace = _extract_trace(result)
             # Fire on_step for each derived step so the playbook runner can

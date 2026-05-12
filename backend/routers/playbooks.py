@@ -644,7 +644,35 @@ async def _execute_phase(
             pe.error = parse_err
             return
 
-        pe.status = "awaiting_gate" if phase.gate else "completed"
+        # Auto-pass the gate when this is a rerun AND the agent confirms
+        # every prior finding is remediated. Without this the analyst has
+        # to click "Approve" a second time even though they already
+        # green-lit the path via "Send to <upstream> & rerun chain" and
+        # the agent has just told them "all prior issues are fixed". We
+        # only auto-pass when ALL three conditions hold:
+        #   • `pe.prior_findings` is set (this is a rerun cycle, not a
+        #     fresh first-time gate),
+        #   • the new `structured_output.verdict == "approved"`,
+        #   • `findings` is empty AND `remediated_findings` is non-empty
+        #     (the agent explicitly accounted for the prior issues).
+        # If any condition fails, the gate fires normally so the analyst
+        # can still review.
+        if (
+            phase.gate
+            and structured
+            and pe.prior_findings
+            and str(structured.get("verdict", "")).lower() == "approved"
+            and not (structured.get("findings") or [])
+            and (structured.get("remediated_findings") or [])
+        ):
+            pe.status = "completed"
+            pe.gate_decision = "approve"
+            pe.gate_notes = (
+                "Auto-approved: rerun confirmed all prior findings "
+                "remediated and the agent emitted verdict='approved'."
+            )
+        else:
+            pe.status = "awaiting_gate" if phase.gate else "completed"
     except Exception as e:
         pe.status = "failed"
         pe.error = str(e)

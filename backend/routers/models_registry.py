@@ -421,16 +421,35 @@ async def register_from_uri(req: FromUriRequest, _: str = Depends(get_current_us
     pkg_id = package_id_from_uri(req.artifactory_uri)
     pkg_meta = get_package_metadata(pkg_id) if pkg_id else None
 
+    # For preinstalled packages, the package registry IS the authoritative
+    # documentation. Skip the synthetic placeholder train_metrics and
+    # monitoring_metrics seeds — they would just give the model-explainer
+    # agent fake numbers to mistakenly cite (e.g. R²=0.78 isn't a real
+    # metric for an aggregator like NII Calculator). Empty defaults force
+    # the agent to rely on `introspection` alone.
+    if pkg_meta is not None:
+        train_metrics: dict[str, float] = {}
+        monitoring_metrics: list = []
+        # Promote the package's `purpose` paragraph to `description` when
+        # the caller didn't supply a richer one. That way the model card
+        # in the UI shows the full purpose, not just the dropdown's
+        # one-line label.
+        description = req.description or pkg_meta.get("purpose") or req.name
+    else:
+        train_metrics = {"reference": 1.0}
+        monitoring_metrics = _seed_monitoring("external", 0.78)
+        description = req.description
+
     m = TrainedModel(
         id=mid,
         function_id=req.function_id,
         name=req.name,
-        description=req.description,
+        description=description,
         source_kind="uri",
         model_type=req.model_type,
         artifactory_uri=req.artifactory_uri,
-        train_metrics={"reference": 1.0},
-        monitoring_metrics=_seed_monitoring("external", 0.78),
+        train_metrics=train_metrics,
+        monitoring_metrics=monitoring_metrics,
         introspection=pkg_meta,  # None for non-preinstalled URIs
         created_at=now,
     )
