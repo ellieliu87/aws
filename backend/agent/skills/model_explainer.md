@@ -22,7 +22,63 @@ The `get_model` response distinguishes three source kinds:
 
 - **`source_kind: "regression"`** — built directly in the workbench. `coefficients`, `intercept`, `feature_columns`, `train_metrics` are all populated. Talk through them as a linear/logistic model.
 - **`source_kind: "upload"`** — the analyst uploaded a `.pkl` / `.joblib` / `.onnx` / `.json` file. The record carries an **`introspection`** field with everything we could extract from the artifact. **Use it.** Do NOT call this a black box. See the introspection guide below.
-- **`source_kind: "uri"`** — only an artifactory pointer. There's no local file to inspect; describe the URI, the declared model type, and any monitoring metrics, and tell the analyst to download it locally if they need deeper detail.
+- **`source_kind: "uri"`** — registered from an artifactory URI. **First check `introspection`:**
+  - If `introspection.format == "preinstalled_package"`, the model is one of the bundled MaaS / calculator packages and `introspection` carries the package's rich metadata (purpose, components, inputs, outputs, methodology, owner, downstream consumers, limitations). Use it as the source of truth — see the "Preinstalled package guide" below.
+  - If `introspection` is `null`, there's no local file to inspect; describe the URI, the declared model type, and any monitoring metrics, and tell the analyst to download it locally if they need deeper detail.
+
+## Preinstalled package guide (`format: "preinstalled_package"`)
+
+When `source_kind == "uri"` and `introspection.format == "preinstalled_package"`,
+the model is one of the bundled MaaS / calculator packages the analyst
+selected from the Models tab's "Preinstalled packages" dropdown.
+
+`introspection` carries the authoritative metadata for that package:
+
+- `display_name`, `package_id`, `family`, `owner`, `version`
+- `purpose` — one-paragraph summary of what the package does
+- `components[]` — each item is `{name, kind, summary}` describing one
+  sub-model inside the package (e.g. RDMaaS has 8 components: 5 Volume,
+  2 Pricing, 1 Connector)
+- `inputs.macro_drivers`, `inputs.internal_drivers`, `inputs.data_cadence`
+- `outputs.schema`, `outputs.variable_names`, `outputs.segments`,
+  `outputs.long_format`
+- `methodology.summary`, `methodology.model_class`,
+  `methodology.training_window`, `methodology.validation_doc`
+- `downstream_consumers[]` — what reads this package's output
+- `limitations` — when not to use it
+- `regulatory_status` — SR 11-7 / CCAR tier
+- `typical_use` — how analysts wire it on the canvas
+
+**Walk through the package in this order:**
+
+1. **One-line purpose** — lead with `purpose` and `family`. Name the
+   owner if regulator-relevant context.
+2. **Components** — list each `components[].name` with its `kind` and
+   `summary`. For packages with many components (e.g. RDMaaS, 8 items),
+   group by `kind` ("5 Volume models: …; 2 Pricing models: …; 1
+   Connector: …").
+3. **Inputs** — macro drivers, internal drivers, cadence. Cite the
+   exact column names; the analyst will need them to wire the upstream
+   data harness.
+4. **Outputs** — schema (long vs wide), variable_names, segments.
+5. **Methodology** — `methodology.summary` plus model_class. Mention
+   the training window and the validation doc by name so the analyst
+   can find it in the Knowledge Base.
+6. **Downstream consumers** — name the playbooks / workflows / other
+   packages that read this package's output. Often the answer to "why
+   do I need this?"
+7. **Limitations + regulatory status** — one sentence each. Limitations
+   in particular keeps analysts honest about when not to use it.
+8. **Typical use** — the canvas-wiring tip.
+
+Stay grounded in the metadata dict — quote real values verbatim
+(component names, driver names, validation_doc filenames). Don't
+paraphrase to the point of inaccuracy. Don't make up components or
+metrics that aren't in the dict.
+
+If `monitoring_metrics` is populated alongside, you may still call
+`get_model_metrics` for a one-line drift summary — but the package
+metadata is the headline content, not the monitoring trace.
 
 ## Introspection guide for uploaded artifacts
 
@@ -54,6 +110,13 @@ Reports `root_type` and `top_level_keys`. If the JSON is a model card, surface t
 
 ## What to cover in your response
 
+For a **preinstalled package** (`introspection.format == "preinstalled_package"`),
+follow the 8-step walkthrough in the "Preinstalled package guide"
+section above. The package metadata is rich enough on its own — skip
+the generic in-app-model framing below.
+
+For **regression / upload / pickle / ONNX / JSON models**, cover:
+
 1. **Family & architecture** — derive from introspection (class name, sklearn params, ONNX op types). One sentence on what that family means.
 2. **Inputs expected** — feature names from `feature_names`, `feature_columns`, ONNX inputs, or the model's `metadata` field.
 3. **Parameters of note** — coefficients preview, hyperparameters, dataclass fields. Cite real numbers.
@@ -65,5 +128,6 @@ Reports `root_type` and `top_level_keys`. If the JSON is a model card, surface t
 
 - Always pull data via `get_model` and `get_model_metrics`. Never invent.
 - For uploaded artifacts, the `introspection` field is the source of truth. Quote real values from it.
-- Keep total under 280 words.
+- For preinstalled packages, `introspection` is the package metadata — quote `purpose`, `components[].name`, `inputs.macro_drivers`, etc. verbatim. Don't invent components, drivers, or methodology details that aren't in the dict.
+- Keep total under 350 words for preinstalled packages (the metadata is rich), under 280 words for everything else.
 - If introspection failed completely, name the error from `load_error` and suggest a fix (typically: make the model's class importable, then call `/api/models/{id}/reintrospect`).

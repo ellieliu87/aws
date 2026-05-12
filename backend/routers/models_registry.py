@@ -410,6 +410,17 @@ async def reintrospect_model(model_id: str, _: str = Depends(get_current_user)):
 async def register_from_uri(req: FromUriRequest, _: str = Depends(get_current_user)):
     mid = f"mdl-{uuid.uuid4().hex[:10]}"
     now = datetime.utcnow().isoformat() + "Z"
+
+    # If the URI names a preinstalled package, attach its rich metadata
+    # to `introspection` so the model-explainer agent can describe what
+    # the package does. Falls through to None for any other URI scheme.
+    from routers.preinstalled_packages import (
+        get_package_metadata,
+        package_id_from_uri,
+    )
+    pkg_id = package_id_from_uri(req.artifactory_uri)
+    pkg_meta = get_package_metadata(pkg_id) if pkg_id else None
+
     m = TrainedModel(
         id=mid,
         function_id=req.function_id,
@@ -420,6 +431,7 @@ async def register_from_uri(req: FromUriRequest, _: str = Depends(get_current_us
         artifactory_uri=req.artifactory_uri,
         train_metrics={"reference": 1.0},
         monitoring_metrics=_seed_monitoring("external", 0.78),
+        introspection=pkg_meta,  # None for non-preinstalled URIs
         created_at=now,
     )
     _MODELS[mid] = m

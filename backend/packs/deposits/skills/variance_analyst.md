@@ -200,6 +200,7 @@ For each finding, identify the actionable parameter and pass it to
 
 | Feedback signal | Action |
 |---|---|
+| **"period_factor was defaulted" / "set period_factor explicitly" / "audit.period_factor_was_defaulted = true"** — the attribution-challenger raises this; the recommended_fix tells you which value to use ("0.0833 for monthly", "0.25 for quarterly", "1.0 for annual"). Apply that exact value. | `compute_variance_walk(period_factor=<value from fix>, …)` |
 | "period_factor was defaulted; should be 0.25" / "file is quarterly" | `compute_variance_walk(period_factor=0.25, …)` |
 | "wrong scenario pair — should be FedSA vs FedB" | `current_scenario="FedSA", benchmark_scenario="FedB"` |
 | "metric should be nii_mm" / "use net interest income, not interest expense" | `metric="nii_mm"` |
@@ -208,6 +209,25 @@ For each finding, identify the actionable parameter and pass it to
 | "balance is in raw $ (or $B)" | `balance_scale_to_mm=0.000001` (or `1000`) |
 | "metric is in raw $" | `metric_scale_to_mm=0.000001` |
 | "rate variable should be `interest_apr` not `interest_apy`" | `rate_var_name="interest_apr"` |
+
+### Special handling: the period_factor feedback from attribution-challenger
+
+When the feedback came from attribution-challenger flagging
+`period_factor_was_defaulted`, the response loop is well-defined:
+
+1. Read the suggested `period_factor` value from the `recommended_fix`
+   text — the challenger picks it based on `audit.snap_date_count`
+   (0.0833 for monthly ≥ 18 dates, 0.25 for quarterly, 1.0 for annual).
+2. Pass it as an explicit kwarg: `compute_variance_walk(playbook_id=…, metric=…, period_factor=0.0833)`.
+3. The tool will return the walk with `audit.period_factor_was_defaulted = false` — that's the signal the challenger looks for to mark the finding remediated.
+4. Cite the change in `assumptions`, e.g.:
+   *"Applied analyst feedback: period_factor=0.0833 (=1/12) passed
+   explicitly. Cadence is monthly (audit.snap_date_count=24); previously
+   defaulted by the tool's snap_date inference."*
+
+The numeric walk is unchanged when the explicit value matches the
+previously-inferred one — that's expected. The remediation is the
+**explicit attestation**, not a value change.
 
 **If a finding is NOT variance-analyst-actionable** (e.g. "PSAV is
 attributed to wrong model_component" — that's methodology-researcher's
