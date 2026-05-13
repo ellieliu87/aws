@@ -27,6 +27,19 @@ const ICONS: Record<string, any> = {
   database: Database,
 }
 
+// Backend ships six seed workspaces (routers/functions.py). For the demo
+// we only want Investment Portfolio Analytics surfaced on the home grid
+// — the other five built-ins are still in the API (so deep links
+// work) but the home page hides them. User-created workspaces are
+// unaffected: anything whose id isn't on this list shows normally.
+const BUILTIN_IDS: Set<string> = new Set([
+  'market_risk',
+  'interest_rate_risk',
+  'liquidity_management',
+  'capital_planning',
+  'financial_reporting',
+])
+
 export default function HomePage() {
   const { username, role, department } = useAuthStore()
   const navigate = useNavigate()
@@ -37,7 +50,14 @@ export default function HomePage() {
 
   useEffect(() => {
     api.get<BusinessFunction[]>('/api/functions')
-      .then((r) => setFunctions(r.data))
+      // Demo mode: surface only the Investment Portfolio Analytics
+      // workspace + any workspace the user has created themselves.
+      // The backend seeds six built-in workspaces; the other five
+      // (BUILTIN_IDS) are hidden from the home grid to keep the demo
+      // flow focused. They're still reachable by direct URL.
+      .then((r) => setFunctions(
+        r.data.filter((f) => f.id === 'investment_portfolio' || !BUILTIN_IDS.has(f.id))
+      ))
       .finally(() => setLoading(false))
   }, [])
 

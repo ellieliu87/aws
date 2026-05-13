@@ -46,6 +46,81 @@ Translate common analyst phrasing into a `WHERE` clause:
 - **latest / most recent snap_date**: `WHERE snap_date = (SELECT MAX(snap_date) FROM <table>)`.
 - **forecast horizon Q<n> through Q<m>**: leave a comment stating the
   expected range; do not fabricate column names that aren't standard.
+- **run id <N> / run_id <N> / run = <N> / for run <N>**: extract the
+  literal id value the analyst typed and emit
+  `WHERE run_id = '<value>'`.
+
+  **⚠ HARD RULE — `run_id` is ALWAYS quoted as a string**, even when
+  the value is all digits. The column is stored as `VARCHAR` in the
+  source catalog; an unquoted numeric literal is a type-mismatch
+  error at execution time and the query returns no rows.
+
+  ✓ correct:  `WHERE run_id = '166713'`
+  ✗ wrong:    `WHERE run_id = 166713`         (missing quotes)
+  ✗ wrong:    `WHERE run_id = "166713"`       (double quotes — use single)
+
+  **Never hard-code a sample run_id** from these instructions or the
+  examples below. Copy whatever number / id the analyst typed,
+  verbatim, into the single-quoted literal. If the analyst doesn't
+  name a run_id, do NOT add this clause.
+
+## Table-specific filter patterns
+
+Some target tables have well-known query patterns the analyst is
+typically asking for, even when they don't spell out every filter.
+Apply these patterns when the analyst's description matches.
+
+### `ol.finance.capital_markets_and_analytics.nii_engine_operational_records_v3`
+
+The NII engine table holds intermediate AND final outputs of the NII
+calculation, partitioned by `process_stage_name` and `stage_component`.
+The aggregated view is what 99% of analysts actually want.
+
+**⚠ HARD RULE — aggregated-view trigger words.** Whenever the
+analyst's description contains ANY of these words or phrases (match
+case-insensitively):
+
+- `aggregated`
+- `aggregation`
+- `aggregated view`
+- `aggregated results`
+- `aggregated output`
+- `aggregated NII`
+- `portfolio aggregated`
+- `portfolio integration`
+- `final aggregated output`
+- `final NII`
+
+…you MUST add **both** of these filters to the `WHERE` clause:
+
+```
+AND process_stage_name = 'portfolio_integration_output'
+AND stage_component = 'aggregated'
+```
+
+Both filter values are string literals — keep them single-quoted
+exactly as written. Do NOT drop one of the two; do NOT swap the
+column names; do NOT lowercase the values further. Both clauses are
+required because the table is partitioned by stage *and* component,
+and "aggregated" is the component name within the
+`portfolio_integration_output` stage.
+
+Combine with the run_id rule above — the analyst almost always names
+the run when asking for the aggregated view.
+
+**Other patterns on this table** (no trigger word from the list above):
+
+- **"raw" / "stage-level" / "per-component"** — omit the
+  `process_stage_name` / `stage_component` filters; the analyst wants
+  the full per-stage trace and will filter further themselves.
+- **"input" / "engine input" / "before integration"** — emit
+  `AND process_stage_name = 'engine_input'` (omit stage_component so
+  every component flows through).
+
+If the analyst says "deposit NII results" without any of the words
+above, default to the aggregated-view pattern — that's what the
+downstream attribution and reporting workflows consume.
+
 - **limit / top N rows / first N**: append `LIMIT N`. Do **not** add a
   `LIMIT` if the analyst didn't ask for one.
 
@@ -58,6 +133,56 @@ Translate common analyst phrasing into a `WHERE` clause:
   edit this before binding.
 
 ## Examples
+
+> Input: "i want to query aggregated view from deposit NII results for run id 166713"
+
+✓ correct:
+```
+SELECT *
+FROM ol.finance.capital_markets_and_analytics.nii_engine_operational_records_v3
+WHERE run_id = '166713'
+  AND process_stage_name = 'portfolio_integration_output'
+  AND stage_component = 'aggregated'
+```
+
+✗ wrong — `run_id` is unquoted (the column is VARCHAR; this returns zero rows):
+```
+SELECT *
+FROM ol.finance.capital_markets_and_analytics.nii_engine_operational_records_v3
+WHERE run_id = 166713
+  AND process_stage_name = 'portfolio_integration_output'
+  AND stage_component = 'aggregated'
+```
+
+✗ wrong — missing the `stage_component` filter (aggregated trigger word was ignored):
+```
+SELECT *
+FROM ol.finance.capital_markets_and_analytics.nii_engine_operational_records_v3
+WHERE run_id = '166713'
+  AND process_stage_name = 'portfolio_integration_output'
+```
+
+> Input: "deposit NII aggregation for run 902384"
+
+✓ correct (note "aggregation" alone is enough to trigger both filters):
+```
+SELECT *
+FROM ol.finance.capital_markets_and_analytics.nii_engine_operational_records_v3
+WHERE run_id = '902384'
+  AND process_stage_name = 'portfolio_integration_output'
+  AND stage_component = 'aggregated'
+```
+
+> Input: "aggregated NII results, run 50001"
+
+✓ correct:
+```
+SELECT *
+FROM ol.finance.capital_markets_and_analytics.nii_engine_operational_records_v3
+WHERE run_id = '50001'
+  AND process_stage_name = 'portfolio_integration_output'
+  AND stage_component = 'aggregated'
+```
 
 > Input: "deposit nii engine results for BHCS scenario, latest snap_date"
 
