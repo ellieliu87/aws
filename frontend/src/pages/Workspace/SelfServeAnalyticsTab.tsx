@@ -25,6 +25,7 @@ import {
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import api from '@/lib/api'
+import { smartTickFormat } from '@/lib/utils'
 import type {
   AnalyticDefinition, AnalyticDefinitionRun, AnalyticDraftResponse, AnalyticKind,
   AnalyticOutput, AggregateSpec, CompareSpec, CustomPythonSpec, AggregateMeasure,
@@ -640,10 +641,12 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
   })()
 
   // Number formatter (very small subset of Excel-style codes).
+  // When no explicit code is set we fall back to smartTickFormat so axes
+  // don't render long tails of decimals when the agent draws a plot.
   const fmtNum = (v: any): string => {
     if (typeof v !== 'number') return String(v)
     const code = style?.number_format
-    if (!code) return v.toLocaleString(undefined, { maximumFractionDigits: 4 })
+    if (!code) return smartTickFormat(v)
     if (code.includes('%')) return (v * (code.includes('0.') ? 100 : 1)).toFixed((code.split('.')[1] || '').replace(/[^0]/g, '').length || 0) + '%'
     if (code.startsWith('$')) return '$' + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     if (code.endsWith('a')) {
@@ -775,7 +778,7 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
       <YAxis
         stroke="var(--text-muted)"
         tick={{ fontSize }}
-        tickFormatter={style?.number_format ? fmtNum : undefined}
+        tickFormatter={fmtNum}
         label={yLabel ? { value: yLabel, angle: -90, position: 'insideLeft', style: { fontSize, fill: 'var(--text-secondary)' } } : undefined}
       />
       <Tooltip
@@ -783,7 +786,7 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
           background: 'var(--bg-card)', border: '1px solid var(--border)',
           fontSize: fontSize + 1, borderRadius: 8,
         }}
-        formatter={style?.number_format ? (v: any) => fmtNum(v) : undefined}
+        formatter={(v: any) => fmtNum(v)}
       />
       {legendVisible && (
         <Legend
@@ -836,7 +839,7 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
                   dataKey={x_field || ''}
                   stroke="var(--text-muted)"
                   tick={{ fontSize }}
-                  tickFormatter={(xIsNum && style?.number_format) ? fmtNum : undefined}
+                  tickFormatter={xIsNum ? fmtNum : undefined}
                   label={xLabel ? { value: xLabel, position: 'insideBottom', offset: -4, style: { fontSize, fill: 'var(--text-secondary)' } } : undefined}
                 />
                 <YAxis
@@ -847,7 +850,7 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
                   dataKey={yIsNum ? y_fields[0] : undefined}
                   stroke="var(--text-muted)"
                   tick={{ fontSize }}
-                  tickFormatter={(yIsNum && style?.number_format) ? fmtNum : undefined}
+                  tickFormatter={yIsNum ? fmtNum : undefined}
                   label={yLabel ? { value: yLabel, angle: -90, position: 'insideLeft', style: { fontSize, fill: 'var(--text-secondary)' } } : undefined}
                 />
                 <Tooltip
@@ -884,7 +887,7 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
           })()
         ) : type === 'pie' ? (
           <PieChart>
-            <Tooltip formatter={style?.number_format ? (v: any) => fmtNum(v) : undefined} />
+            <Tooltip formatter={(v: any) => fmtNum(v)} />
             {legendVisible && <Legend wrapperStyle={{ fontSize }} verticalAlign={legendVAlign} align={legendHAlign} layout={legendLayout} />}
             <Pie data={sortedData} dataKey={y_fields[0]} nameKey={x_field || ''} outerRadius={90} label={{ fontSize }}>
               {sortedData.map((_, i) => <Cell key={i} fill={palette[i % palette.length]} />)}

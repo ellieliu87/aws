@@ -3,6 +3,7 @@ import {
   Pie, PieChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import type { ChartSpec, PlotStyle } from '@/types'
+import { smartTickFormat } from '@/lib/utils'
 
 const DEFAULT_PALETTE = ['#004977', '#059669', '#D97706', '#DC2626', '#7C3AED', '#0891B2', '#00B8D9', '#A78BFA']
 
@@ -94,7 +95,7 @@ export default function Chart({ spec, height = 240, brushable = false }: Props) 
           <XAxis dataKey={x_key} tick={style.axisTick}>
             {style.xAxisLabel && <Label value={style.xAxisLabel} position="insideBottom" offset={-6} fill="var(--text-secondary)" fontSize={style.fontSize} />}
           </XAxis>
-          <YAxis tick={style.axisTick}>
+          <YAxis tick={style.axisTick} tickFormatter={smartTickFormat}>
             {style.yAxisLabel && <Label value={style.yAxisLabel} angle={-90} position="insideLeft" fill="var(--text-secondary)" fontSize={style.fontSize} />}
           </YAxis>
           <Tooltip contentStyle={tooltipStyle} />
@@ -126,7 +127,7 @@ export default function Chart({ spec, height = 240, brushable = false }: Props) 
           <XAxis dataKey={x_key} tick={style.axisTick}>
             {style.xAxisLabel && <Label value={style.xAxisLabel} position="insideBottom" offset={-6} fill="var(--text-secondary)" fontSize={style.fontSize} />}
           </XAxis>
-          <YAxis tick={style.axisTick}>
+          <YAxis tick={style.axisTick} tickFormatter={smartTickFormat}>
             {style.yAxisLabel && <Label value={style.yAxisLabel} angle={-90} position="insideLeft" fill="var(--text-secondary)" fontSize={style.fontSize} />}
           </YAxis>
           <Tooltip contentStyle={tooltipStyle} />
@@ -150,7 +151,7 @@ export default function Chart({ spec, height = 240, brushable = false }: Props) 
           <XAxis dataKey={x_key} tick={style.axisTick}>
             {style.xAxisLabel && <Label value={style.xAxisLabel} position="insideBottom" offset={-6} fill="var(--text-secondary)" fontSize={style.fontSize} />}
           </XAxis>
-          <YAxis tick={style.axisTick}>
+          <YAxis tick={style.axisTick} tickFormatter={smartTickFormat}>
             {style.yAxisLabel && <Label value={style.yAxisLabel} angle={-90} position="insideLeft" fill="var(--text-secondary)" fontSize={style.fontSize} />}
           </YAxis>
           <Tooltip contentStyle={tooltipStyle} />
@@ -202,10 +203,10 @@ export default function Chart({ spec, height = 240, brushable = false }: Props) 
       <ResponsiveContainer width="100%" height={height}>
         <ScatterChart margin={{ top: 8, right: 12, left: -8, bottom: style.xAxisLabel ? 18 : 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
-          <XAxis dataKey={x_key} tick={style.axisTick}>
+          <XAxis dataKey={x_key} tick={style.axisTick} tickFormatter={smartTickFormat}>
             {style.xAxisLabel && <Label value={style.xAxisLabel} position="insideBottom" offset={-6} fill="var(--text-secondary)" fontSize={style.fontSize} />}
           </XAxis>
-          <YAxis dataKey={y_keys[0]} tick={style.axisTick}>
+          <YAxis dataKey={y_keys[0]} tick={style.axisTick} tickFormatter={smartTickFormat}>
             {style.yAxisLabel && <Label value={style.yAxisLabel} angle={-90} position="insideLeft" fill="var(--text-secondary)" fontSize={style.fontSize} />}
           </YAxis>
           <Tooltip contentStyle={tooltipStyle} />

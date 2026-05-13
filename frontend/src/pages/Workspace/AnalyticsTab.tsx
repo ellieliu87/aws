@@ -15,6 +15,7 @@ import {
   Loader2, Workflow as WorkflowIcon, Save, Bookmark,
 } from 'lucide-react'
 import api from '@/lib/api'
+import { smartTickFormat } from '@/lib/utils'
 import { useChatStore } from '@/store/chatStore'
 import type {
   AnalyticsRun, Scenario, TrainedModel, Dataset, WorkflowResult,
@@ -1609,8 +1610,8 @@ function RunDetailPanel({
                 <LineChart data={run.series} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
                   <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
-                  <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
-                  <RTooltip contentStyle={tooltipStyle} />
+                  <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={smartTickFormat} />
+                  <RTooltip contentStyle={tooltipStyle} formatter={(v: any) => smartTickFormat(v)} />
                   <Line type="monotone" dataKey="prediction" stroke={COLORS[0]} strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 6 }} />
                 </LineChart>
               </ResponsiveContainer>
@@ -1627,8 +1628,8 @@ function RunDetailPanel({
                   <LineChart data={run.series} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" />
                     <XAxis dataKey="month" tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
-                    <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} />
-                    <RTooltip contentStyle={tooltipStyle} />
+                    <YAxis tick={{ fontSize: 11, fill: 'var(--text-muted)' }} tickFormatter={smartTickFormat} />
+                    <RTooltip contentStyle={tooltipStyle} formatter={(v: any) => smartTickFormat(v)} />
                     <Legend wrapperStyle={{ fontSize: 11 }} />
                     {driverKeys.map((k, i) => (
                       <Line key={k} type="monotone" dataKey={k} stroke={COLORS[(i + 1) % COLORS.length]} strokeWidth={2} dot={{ r: 2 }} />
