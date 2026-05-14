@@ -13,9 +13,9 @@ import {
 } from 'recharts'
 
 const PREINSTALLED_PACKAGES = [
-  { id: 'rdmaas',         label: 'RDMaaS',          description: 'Regulatory Data Management as a Service — credit risk & capital models' },
-  { id: 'commaas',        label: 'CommMaaS',         description: 'Commercial Mortgage-backed Securities analytics suite' },
-  { id: 'sbbmaas',        label: 'SBBMaaS',          description: 'Savings Bonds & Bills Model as a Service — rate sensitivity & prepayment' },
+  { id: 'rdmaas',         label: 'RDMaaS',          description: 'Retail Deposit Model as a Service — retail deposit rate and balance models' },
+  { id: 'commaas',        label: 'CommMaaS',         description: 'Commercial Deposit Model as a Service — commercial deposit rate and balance models' },
+  { id: 'sbbmaas',        label: 'SBBMaaS',          description: 'Small Business Model as a Service — small business deposit rate and balance models' },
   { id: 'nii-calculator', label: 'NII Calculator',   description: 'Net Interest Income projection model with rate shock scenarios' },
 ] as const
 
