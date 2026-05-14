@@ -12,7 +12,7 @@ import {
 } from 'recharts'
 import { useChatStore } from '@/store/chatStore'
 import api from '@/lib/api'
-import { cn } from '@/lib/utils'
+import { cn, smartTickFormat } from '@/lib/utils'
 import type { ChatAction } from '@/types'
 
 const AGENT_ICON: Record<string, any> = {
@@ -172,6 +172,7 @@ function BetaScatterChart({ spec }: { spec: BetaScatterSpec }) {
             type="number" dataKey="historical_beta"
             domain={[lo, hi]}
             tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
+            tickFormatter={smartTickFormat}
             label={{
               value: 'Historical β', position: 'insideBottom', offset: -8,
               style: { fontSize: 11, fill: 'var(--text-secondary)' },
@@ -181,6 +182,7 @@ function BetaScatterChart({ spec }: { spec: BetaScatterSpec }) {
             type="number" dataKey="projected_beta"
             domain={[lo, hi]}
             tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
+            tickFormatter={smartTickFormat}
             label={{
               value: 'Projected β', angle: -90, position: 'insideLeft',
               style: { fontSize: 11, fill: 'var(--text-secondary)' },

@@ -709,6 +709,7 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
                 type="number" dataKey="historical_beta"
                 domain={[lo, hi]}
                 tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
+                tickFormatter={smartTickFormat}
                 label={{
                   value: xLabel || 'Historical β',
                   position: 'insideBottom', offset: -8,
@@ -719,6 +720,7 @@ function ChartRenderer({ chart }: { chart: NonNullable<AnalyticDefinitionRun['re
                 type="number" dataKey="projected_beta"
                 domain={[lo, hi]}
                 tick={{ fontSize: 10, fill: 'var(--text-muted)' }}
+                tickFormatter={smartTickFormat}
                 label={{
                   value: yLabel || 'Projected β',
                   angle: -90, position: 'insideLeft',
