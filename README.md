@@ -52,7 +52,23 @@ cma/
 │   │   ├── model_runner.py        ← sandboxed pkl/joblib/onnx prediction
 │   │   ├── data_services.py       ← Data Services aggregation
 │   │   │                            (pa_common_tools + OneLake integrations)
-│   │   └── workspace_data.py      ← static Overview-tab fallback specs
+│   │   ├── workspace_data.py      ← static Overview-tab fallback specs
+│   │   ├── entity_store.py        ← DynamoDB-backed registries + per-request
+│   │   │                            memo (falls back to dicts when unset)
+│   │   ├── async_jobs.py          ← SQS enqueue for long solves
+│   │   ├── corpus_store.py        ← S3 as source of record for documents
+│   │   ├── workflow_compiler.py   ← canvas → Step Functions definition
+│   │   ├── workflow_plans.py      ← compiled-plan registry (audit history)
+│   │   ├── workflow_deploy.py     ← ships plans as state machines
+│   │   └── workflow_artifacts.py  ← model dirs → S3 for the worker
+│   │
+│   ├── infra/                     ← AWS deployment — see docs/ARCHITECTURE.md
+│   │   ├── cdk/async_stack.py     ← DynamoDB · SQS · Lambda · Step Functions
+│   │   │                            · ECR · CodeBuild (one stack)
+│   │   ├── cdk/worker_image/      ← container worker (real .pkl artifacts)
+│   │   ├── build_worker_image.py  ← push source → CodeBuild → ECR
+│   │   ├── deploy_workflows.py    ← privileged deployer for compiled plans
+│   │   └── sync_env.py            ← stack outputs → backend/.env
 │   │
 │   ├── config/
 │   │   └── data_services.example.env  ← env-var docs for proxy-env wiring
@@ -510,11 +526,19 @@ The Settings page (sidebar) has four tabs:
 
 ## Notes & known limitations
 
-- **In-process persistence.** Tokens, datasets uploaded at runtime,
-  models, scenarios, plots, playbook runs, and analytics-definition runs
-  all live in dicts. They reset on backend restart. The pack-bundled
-  datasets and models re-stage on startup from `sample_data/` and
-  `sample_models/`, so those reappear automatically.
+- **Persistence is split.** Datasets, models, saved workflows, and
+  analytics runs are durable when `CMA_STATE_TABLE` points at the
+  DynamoDB table — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+  Without it they fall back to in-process dicts and reset on restart,
+  which is the default for local development.
+  Still in-process either way: auth tokens, scenarios, plots, playbook
+  runs, and analytics-definition runs. The pack-bundled datasets and
+  models re-stage on startup from `sample_data/` and `sample_models/`,
+  so those reappear automatically.
+- **Records are durable; uploaded bytes are not.** A dataset file or
+  model artifact lands on the local disk of whichever node served the
+  request, so on more than one node the record resolves everywhere but
+  only that node can read the file.
 - **Data Services live mode is opt-in.** Outside the corporate proxy,
   Data Services renders static fallback cards — the app stays usable.
   See [Data Services integrations](#data-services-integrations-proxy-env)
