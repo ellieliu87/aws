@@ -784,6 +784,10 @@ class SavedWorkflow(BaseModel):
     scenario_name: str | None = None
     start_date: str | None = None
     view: Literal["steps", "canvas", "spec"] = "canvas"
+    # Whether a run parks for human sign-off before publishing. Per-workflow
+    # rather than global: a scratch what-if does not need a reviewer, and a
+    # filed CCAR result must not be able to skip one.
+    require_approval: bool = True
     created_at: str
     updated_at: str | None = None
 
@@ -811,6 +815,10 @@ class SavedWorkflowCreate(BaseModel):
     scenario_name: str | None = None
     start_date: str | None = None
     view: Literal["steps", "canvas", "spec"] = "canvas"
+    # Whether a run parks for human sign-off before publishing. Per-workflow
+    # rather than global: a scratch what-if does not need a reviewer, and a
+    # filed CCAR result must not be able to skip one.
+    require_approval: bool = True
 
 
 class WorkflowResult(BaseModel):

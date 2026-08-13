@@ -80,6 +80,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def _entity_store_memo(request, call_next):
+    """Memoize registry reads for the span of one request.
+
+    The registries are network calls now (services/entity_store.py), and
+    several handlers look the same id up repeatedly — validation walks the
+    canvas twice, a workflow run resolves a model per step. One memo per
+    request collapses that without making anything stale beyond the request.
+
+    Note this covers the handler, not the body of a streaming response: the
+    memo closes when the handler returns. Code that needs it inside a stream
+    opens its own — see `validate_workflow_payload`.
+    """
+    from services.entity_store import request_cache
+
+    with request_cache():
+        return await call_next(request)
+
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(functions.router, prefix="/api/functions", tags=["Business Functions"])
 app.include_router(workspace.router, prefix="/api/workspace", tags=["Workspace"])

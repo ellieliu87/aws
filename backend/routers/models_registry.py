@@ -14,6 +14,7 @@ UI looks alive. In production these would be appended each time a run scores
 fresh data against the model.
 """
 import json
+import logging
 import os
 import random
 import uuid
@@ -34,23 +35,78 @@ from models.schemas import (
 )
 from packs import is_pack_visible
 from routers.auth import get_current_user, get_current_user_groups
-from routers.datasets import _DATASETS, _read_dataframe, _resolve_path
+from routers.datasets import _read_dataframe, _resolve_path, load_dataset
 
 router = APIRouter()
+
+log = logging.getLogger("cma.models")
 
 ARTIFACT_ROOT = Path(__file__).resolve().parent.parent / "data" / "models"
 ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 SUPPORTED_MODEL_FORMATS = {"pkl", "pickle", "joblib", "onnx", "json"}
 
-_MODELS: dict[str, TrainedModel] = {}
+
+# ── model persistence ───────────────────────────────────────────────────────
+# Phase 5 (see services/entity_store.py): model records live in DynamoDB rather
+# than the `_MODELS` module dict, so a registration survives a restart and a
+# second replica sees the same registry. Without CMA_STATE_TABLE the store
+# falls back to an in-process dict and local behaviour is unchanged.
+#
+# The one behavioural difference callers must respect: `load_model` returns a
+# fresh object, not the registry's copy. Mutating it changes nothing until you
+# hand it back to `store_model`. Everywhere a field is updated in place —
+# `reintrospect_model` here, `last_run` in scenarios.py — now writes back
+# explicitly.
+#
+# As with datasets, this moves the record and not the artifact: the .pkl still
+# sits on the local disk of the node that took the upload.
+# services/workflow_artifacts.py already pushes model directories to S3 for the
+# workers, which is the path to follow when the web tier needs the same.
+_MODEL_ENTITY = "model"
+
+
+def load_model(model_id: str) -> TrainedModel | None:
+    from services import entity_store
+
+    record = entity_store.get(_MODEL_ENTITY, model_id)
+    return TrainedModel(**record) if record else None
+
+
+def store_model(m: TrainedModel) -> TrainedModel:
+    from services import entity_store
+
+    entity_store.put(_MODEL_ENTITY, m.id, m.model_dump())
+    return m
+
+
+def all_models() -> list[TrainedModel]:
+    from services import entity_store
+
+    out: list[TrainedModel] = []
+    for record in entity_store.list_all(_MODEL_ENTITY):
+        try:
+            out.append(TrainedModel(**record))
+        except Exception as e:
+            # One stored item that no longer matches the schema should not
+            # take the whole list down — surface it and keep going.
+            log.warning("skipping unreadable model %s: %s", record.get("id"), e)
+    return out
+
+
+def remove_model(model_id: str) -> None:
+    from services import entity_store
+
+    entity_store.delete(_MODEL_ENTITY, model_id)
 
 
 # ── pack-registered seed ingest ────────────────────────────────────────────
 def _ingest_pack_models() -> None:
-    """Pull model attachments registered by domain packs into `_MODELS`.
+    """Pull model attachments registered by domain packs into the store.
 
-    Called once at startup after `packs.discover_and_register()`. Idempotent."""
+    Called once at startup after `packs.discover_and_register()`. Idempotent —
+    which now also means a second replica's startup is a no-op rather than a
+    re-seed, since the first one's writes are already visible."""
     from packs import model_attachments
 
     try:
@@ -59,8 +115,10 @@ def _ingest_pack_models() -> None:
         introspect_artifact = None  # type: ignore[assignment]
 
     now = datetime.utcnow().isoformat() + "Z"
+    # One listing up front rather than a lookup per attachment.
+    existing = {m.id for m in all_models()}
     for s in model_attachments():
-        if s["model_id"] in _MODELS:
+        if s["model_id"] in existing:
             continue
         try:
             src: Path = s["source_path"]
@@ -112,7 +170,7 @@ def _ingest_pack_models() -> None:
                 target_names=s.get("target_names") or [],
                 forecast_steps=s.get("forecast_steps"),
             )
-            _MODELS[m.id] = m
+            store_model(m)
         except Exception:
             continue
 
@@ -135,7 +193,7 @@ def _seed_monitoring(model_type: str, train_value: float) -> list[ModelMetric]:
 
 
 def _frame_for_dataset(dataset_id: str) -> pd.DataFrame:
-    d = _DATASETS.get(dataset_id)
+    d = load_dataset(dataset_id)
     if not d:
         raise HTTPException(status_code=404, detail=f"Dataset {dataset_id} not found")
     if d.source_kind == "upload" and d.file_path and d.file_format:
@@ -253,7 +311,7 @@ async def list_models(
     function_id: str | None = Query(default=None),
     groups: list[str] = Depends(get_current_user_groups),
 ):
-    items = [m for m in _MODELS.values() if is_pack_visible(m.pack_id, groups)]
+    items = [m for m in all_models() if is_pack_visible(m.pack_id, groups)]
     if function_id:
         items = [m for m in items if m.function_id == function_id]
     items.sort(key=lambda m: m.created_at, reverse=True)
@@ -262,7 +320,7 @@ async def list_models(
 
 @router.get("/{model_id}", response_model=TrainedModel)
 async def get_model(model_id: str, _: str = Depends(get_current_user)):
-    m = _MODELS.get(model_id)
+    m = load_model(model_id)
     if not m:
         raise HTTPException(status_code=404, detail="Model not found")
     return m
@@ -270,9 +328,10 @@ async def get_model(model_id: str, _: str = Depends(get_current_user)):
 
 @router.delete("/{model_id}", status_code=204)
 async def delete_model(model_id: str, _: str = Depends(get_current_user)):
-    m = _MODELS.pop(model_id, None)
+    m = load_model(model_id)
     if not m:
         raise HTTPException(status_code=404, detail="Model not found")
+    remove_model(model_id)
     if m.artifact_path:
         try:
             (ARTIFACT_ROOT / m.artifact_path).unlink(missing_ok=True)
@@ -304,7 +363,7 @@ async def build_regression(req: RegressionRequest, _: str = Depends(get_current_
         created_at=now,
         last_run=now,
     )
-    _MODELS[mid] = m
+    store_model(m)
     return m
 
 
@@ -382,7 +441,7 @@ async def upload_model(
         target_names=target_names,
         forecast_steps=forecast_steps,
     )
-    _MODELS[mid] = m
+    store_model(m)
     return m
 
 
@@ -393,7 +452,7 @@ async def reintrospect_model(model_id: str, _: str = Depends(get_current_user)):
     Useful if you've added the model's class definitions to the Python path
     after upload, or if you've re-uploaded the file to disk manually.
     """
-    m = _MODELS.get(model_id)
+    m = load_model(model_id)
     if not m:
         raise HTTPException(status_code=404, detail="Model not found")
     if m.source_kind != "upload" or not m.artifact_path or not m.file_format:
@@ -403,6 +462,9 @@ async def reintrospect_model(model_id: str, _: str = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Artifact file is missing on disk")
     from agent.model_introspect import introspect_artifact
     m.introspection = introspect_artifact(abs_path, m.file_format)
+    # `m` is a copy, not the registry's object — the write-back is what makes
+    # the re-introspection stick.
+    store_model(m)
     return m
 
 
@@ -453,7 +515,7 @@ async def register_from_uri(req: FromUriRequest, _: str = Depends(get_current_us
         introspection=pkg_meta,  # None for non-preinstalled URIs
         created_at=now,
     )
-    _MODELS[mid] = m
+    store_model(m)
     return m
 
 
@@ -755,13 +817,13 @@ async def register_from_artifactory(req: FromArtifactoryRequest, _: str = Depend
         # build time, not install time.
         forecast_steps=None,
     )
-    _MODELS[mid] = m
+    store_model(m)
     return m
 
 
 @router.get("/{model_id}/metrics")
 async def get_metrics(model_id: str, _: str = Depends(get_current_user)):
-    m = _MODELS.get(model_id)
+    m = load_model(model_id)
     if not m:
         raise HTTPException(status_code=404, detail="Model not found")
     # Group by metric name into series

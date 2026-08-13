@@ -10,6 +10,7 @@ the underlying source. Here we synthesize sample rows from the declared column
 types so the UI looks alive without requiring a real warehouse connection.
 """
 import json
+import logging
 import os
 import random
 import uuid
@@ -34,6 +35,8 @@ from routers.datasources import SAMPLE_TABLES, _DATA_SOURCES
 
 router = APIRouter()
 
+log = logging.getLogger("cma.datasets")
+
 # Files land in backend/data/datasets/{function_id}/{dataset_id}.{ext}
 DATA_ROOT = Path(__file__).resolve().parent.parent / "data" / "datasets"
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -41,20 +44,70 @@ DATA_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 SUPPORTED_FORMATS = {"csv", "parquet", "xlsx", "xls", "json"}
 
-_DATASETS: dict[str, Dataset] = {}
+
+# ── dataset persistence ─────────────────────────────────────────────────────
+# Phase 5 (see services/entity_store.py): dataset records live in DynamoDB
+# rather than the `_DATASETS` module dict, so an analyst's binding survives a
+# restart and a second replica sees the same registry. Without CMA_STATE_TABLE
+# the store falls back to an in-process dict and local behaviour is unchanged.
+#
+# This moves the *record*, not the bytes. An uploaded file still lands on the
+# local disk of whichever node served the request, so on a multi-node
+# deployment the record resolves everywhere but `_resolve_path` only reads on
+# the node that took the upload. That is the same problem `corpus_store` solves
+# for the document corpus, and is the next thing to move.
+_DATASET_ENTITY = "dataset"
+
+
+def load_dataset(dataset_id: str) -> Dataset | None:
+    from services import entity_store
+
+    record = entity_store.get(_DATASET_ENTITY, dataset_id)
+    return Dataset(**record) if record else None
+
+
+def store_dataset(ds: Dataset) -> Dataset:
+    from services import entity_store
+
+    entity_store.put(_DATASET_ENTITY, ds.id, ds.model_dump())
+    return ds
+
+
+def all_datasets() -> list[Dataset]:
+    from services import entity_store
+
+    out: list[Dataset] = []
+    for record in entity_store.list_all(_DATASET_ENTITY):
+        try:
+            out.append(Dataset(**record))
+        except Exception as e:
+            # One stored item that no longer matches the schema should not
+            # take the whole list down — surface it and keep going.
+            log.warning("skipping unreadable dataset %s: %s", record.get("id"), e)
+    return out
+
+
+def remove_dataset(dataset_id: str) -> None:
+    from services import entity_store
+
+    entity_store.delete(_DATASET_ENTITY, dataset_id)
 
 
 # ── pack-registered seed ingest ────────────────────────────────────────────
 def _ingest_pack_datasets() -> None:
-    """Pull dataset attachments registered by domain packs into `_DATASETS`.
+    """Pull dataset attachments registered by domain packs into the store.
 
     Called once at startup after `packs.discover_and_register()` has run.
-    Idempotent: re-calling skips datasets already present."""
+    Idempotent: re-calling skips datasets already present — which now also
+    means a second replica's startup is a no-op rather than a re-seed, since
+    the first one's writes are already visible."""
     from packs import dataset_attachments
 
     now = datetime.utcnow().isoformat() + "Z"
+    # One listing up front rather than a lookup per attachment.
+    existing = {d.id for d in all_datasets()}
     for s in dataset_attachments():
-        if s["dataset_id"] in _DATASETS:
+        if s["dataset_id"] in existing:
             continue
         try:
             src: Path = s["source_path"]
@@ -90,7 +143,7 @@ def _ingest_pack_datasets() -> None:
                 last_synced=now,
                 pack_id=s.get("pack_id"),
             )
-            _DATASETS[ds.id] = ds
+            store_dataset(ds)
         except Exception:
             # Best-effort seeding — never block import on a bad sample file.
             continue
@@ -200,7 +253,7 @@ async def list_datasets(
     function_id: str | None = Query(default=None),
     groups: list[str] = Depends(get_current_user_groups),
 ):
-    items = [d for d in _DATASETS.values() if is_pack_visible(d.pack_id, groups)]
+    items = [d for d in all_datasets() if is_pack_visible(d.pack_id, groups)]
     if function_id:
         items = [d for d in items if d.function_id == function_id]
     items.sort(key=lambda d: d.created_at, reverse=True)
@@ -209,7 +262,7 @@ async def list_datasets(
 
 @router.get("/{dataset_id}", response_model=Dataset)
 async def get_dataset(dataset_id: str, _: str = Depends(get_current_user)):
-    d = _DATASETS.get(dataset_id)
+    d = load_dataset(dataset_id)
     if not d:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return d
@@ -217,9 +270,10 @@ async def get_dataset(dataset_id: str, _: str = Depends(get_current_user)):
 
 @router.delete("/{dataset_id}", status_code=204)
 async def delete_dataset(dataset_id: str, _: str = Depends(get_current_user)):
-    d = _DATASETS.pop(dataset_id, None)
+    d = load_dataset(dataset_id)
     if not d:
         raise HTTPException(status_code=404, detail="Dataset not found")
+    remove_dataset(dataset_id)
     if d.file_path:
         p = DATA_ROOT / d.file_path
         try:
@@ -279,7 +333,7 @@ async def upload_dataset(
         created_at=now,
         last_synced=now,
     )
-    _DATASETS[dataset_id] = ds
+    store_dataset(ds)
     return ds
 
 
@@ -345,7 +399,7 @@ async def bind_from_table(req: DatasetCreateFromTable, _: str = Depends(get_curr
         created_at=now,
         last_synced=now,
     )
-    _DATASETS[dataset_id] = ds
+    store_dataset(ds)
     return ds
 
 
@@ -420,7 +474,7 @@ async def preview_dataset(
     n: int = 10,
     _: str = Depends(get_current_user),
 ):
-    d = _DATASETS.get(dataset_id)
+    d = load_dataset(dataset_id)
     if not d:
         raise HTTPException(status_code=404, detail="Dataset not found")
     n = max(1, min(n, 200))

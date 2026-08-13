@@ -29,6 +29,9 @@ dependencies = [
   # LLM / agents
   "openai>=1.30.0",                     # AsyncOpenAI client (tool drafter etc.)
   "openai-agents>=0.0.1",               # streaming orchestrator + agent SDK
+  # Amazon Bedrock — opt-in via CMA_LLM_PROVIDER=bedrock. Uses the
+  # model-agnostic Converse API, so no vendor-specific SDK is needed.
+  "boto3>=1.34.0",
   # Knowledge Base parsers — text extraction for rag_search
   "pypdf>=4.0.0",                       # .pdf
   "python-docx>=1.1.0",                 # .docx
@@ -41,6 +44,12 @@ dependencies = [
 onnx = [
   "onnx>=1.16.0",                       # only used if you upload .onnx artifacts
   "onnxruntime>=1.17.0",
+]
+# Infrastructure-as-code deps. Not needed to run the app — only to deploy the
+# AWS resources under infra/cdk/.  uv sync --extra infra
+infra = [
+  "aws-cdk-lib>=2.150.0",
+  "constructs>=10.3.0",
 ]
 
 # Dev tooling — install with: uv sync --group dev

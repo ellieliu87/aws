@@ -11,9 +11,9 @@ Three primitives, each described by a small JSON spec:
 
 Definitions are persisted in-memory keyed by id. Each run is recorded as an
 `AnalyticDefinitionRun` and surfaced in the tab's history. The agent-assist
-endpoints (`/draft`, `/runs/{id}/narrate`) use a direct `AsyncOpenAI` call
-with JSON-mode response so the spec can be auto-populated from prose, and
-results can carry a one-paragraph narrative the analyst can pin.
+endpoints (`/draft`, `/runs/{id}/narrate`) call the LLM through
+`cof.llm_provider` — JSON mode for the draft, so the spec can be
+auto-populated from prose, and plain text for the narrative an analyst pins.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ import pandas as pd
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from cof.llm_config import resolve_model
+from cof.llm_provider import LlmNotConfigured, complete, complete_json
 from models.schemas import (
     AggregateMeasure,
     AggregateSpec,
@@ -53,7 +53,7 @@ from models.schemas import (
     CustomPythonSpec,
 )
 from routers.auth import get_current_user
-from routers.datasets import _DATASETS, _read_dataframe, _resolve_path
+from routers.datasets import _read_dataframe, _resolve_path, load_dataset
 
 router = APIRouter()
 
@@ -67,7 +67,7 @@ def _now() -> str:
 
 # ── DataFrame loading ──────────────────────────────────────────────────────
 def _df_for_dataset(dataset_id: str) -> pd.DataFrame:
-    d = _DATASETS.get(dataset_id)
+    d = load_dataset(dataset_id)
     if not d:
         raise HTTPException(status_code=404, detail=f"Dataset {dataset_id} not found")
     try:
@@ -369,8 +369,8 @@ def _run_custom_python(d: AnalyticDefinition) -> AnalyticResult:
         raise HTTPException(status_code=400, detail="At least one dataset must be bound for custom_python")
 
     # Stage every dataset into a temp dir as parquet so the subprocess can
-    # read them deterministically without having to share the in-process
-    # _DATASETS dict.
+    # read them deterministically without having to reach the dataset
+    # registry themselves.
     workdir = Path(tempfile.mkdtemp(prefix="cma_anal_"))
     try:
         for did in ds_ids:
@@ -707,15 +707,8 @@ async def run_definition(def_id: str, _: str = Depends(get_current_user)):
 
 
 # ── Agent assist: draft + narrate ─────────────────────────────────────────
-def _llm_client():
-    """Match oasia: AsyncOpenAI() with no arguments. The SDK auto-resolves
-    OPENAI_BASE_URL / OPENAI_API_KEY from env; corporate COF proxy
-    environments preconfigure these transparently."""
-    try:
-        from openai import AsyncOpenAI
-    except ImportError:
-        raise HTTPException(status_code=503, detail="openai package not installed.")
-    return AsyncOpenAI()
+# Both endpoints go through cof.llm_provider, so the connection (COF proxy,
+# direct OpenAI, or Bedrock) is a config decision — see CMA_LLM_PROVIDER.
 
 
 _DRAFT_SYSTEM = """You design self-serve analytics for a domain-agnostic
@@ -1287,27 +1280,21 @@ async def _draft(req: AnalyticDraftRequest) -> AnalyticDraftResponse:
     if fast is not None:
         return fast
 
-    client = _llm_client()
     user = req.prompt.strip()
     if req.available_datasets:
         user += "\n\n[Available datasets]\n" + json.dumps(req.available_datasets, default=str)[:6000]
     try:
-        completion = await client.chat.completions.create(
-            model=resolve_model(os.getenv("CMA_TOOL_DRAFT_MODEL")),
-            messages=[
-                {"role": "system", "content": _DRAFT_SYSTEM},
-                {"role": "user", "content": user},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
+        data = await complete_json(
+            _DRAFT_SYSTEM,
+            user,
+            model=os.getenv("CMA_TOOL_DRAFT_MODEL"),
         )
+    except LlmNotConfigured as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail=f"LLM returned non-JSON: {e}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
-    raw = completion.choices[0].message.content or ""
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=502, detail=f"LLM returned non-JSON: {e}")
 
     kind = data.get("kind") or "aggregate"
     if kind not in ("aggregate", "compare", "custom_python"):
@@ -1382,7 +1369,6 @@ result over generalities."""
 
 
 async def _narrate(run: AnalyticDefinitionRun) -> str:
-    client = _llm_client()
     if not run.result:
         return run.error or "(no result to narrate)"
 
@@ -1401,14 +1387,13 @@ async def _narrate(run: AnalyticDefinitionRun) -> str:
         payload["table"] = t
 
     try:
-        completion = await client.chat.completions.create(
-            model=resolve_model(os.getenv("CMA_TOOL_DRAFT_MODEL")),
-            messages=[
-                {"role": "system", "content": _NARRATE_SYSTEM},
-                {"role": "user", "content": json.dumps(payload, default=str)[:8000]},
-            ],
-            temperature=0.2,
+        text = await complete(
+            _NARRATE_SYSTEM,
+            json.dumps(payload, default=str)[:8000],
+            model=os.getenv("CMA_TOOL_DRAFT_MODEL"),
         )
+    except LlmNotConfigured as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
-    return (completion.choices[0].message.content or "").strip() or "(empty narrative)"
+    return text or "(empty narrative)"

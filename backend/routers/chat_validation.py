@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from routers.datasets import _DATASETS
-from routers.models_registry import _MODELS
+from routers.datasets import load_dataset
+from routers.models_registry import load_model
 from routers.scenarios import _SCENARIOS
 from routers.transforms import _TRANSFORMS
 
@@ -25,10 +25,10 @@ def _label_for_node(n: dict[str, Any]) -> str:
     kind = n.get("kind")
     ref_id = n.get("ref_id") or ""
     if kind == "model":
-        m = _MODELS.get(ref_id)
+        m = load_model(ref_id)
         return m.name if m else ref_id or "this model"
     if kind == "dataset":
-        d = _DATASETS.get(ref_id)
+        d = load_dataset(ref_id)
         return d.name if d else ref_id or "this dataset"
     if kind == "scenario":
         s = _SCENARIOS.get(ref_id)
@@ -77,7 +77,24 @@ def validate_workflow_payload(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return a list of issue dicts {severity, message, hint, code, node_id?}."""
+    """Return a list of issue dicts {severity, message, hint, code, node_id?}.
+
+    Opens its own registry memo. The HTTP middleware already provides one for
+    the `/workflow-validate` endpoint, but this is also reached from the
+    `validate_workflow` agent tool mid-stream, where the middleware's memo has
+    already closed. `request_cache` joins an active memo rather than nesting,
+    so the endpoint path is unaffected.
+    """
+    from services.entity_store import request_cache
+
+    with request_cache():
+        return _validate_workflow_payload(nodes, edges)
+
+
+def _validate_workflow_payload(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
 
     # ── 0. Empty workflow ──────────────────────────────────────────────────
@@ -140,7 +157,7 @@ def validate_workflow_payload(
         ref_id = n.get("ref_id") or ""
 
         if kind == "model":
-            m = _MODELS.get(ref_id)
+            m = load_model(ref_id)
             if not m:
                 issues.append({
                     "severity": "error",
@@ -186,7 +203,7 @@ def validate_workflow_payload(
                 })
 
         elif kind == "dataset":
-            d = _DATASETS.get(ref_id)
+            d = load_dataset(ref_id)
             if not d:
                 issues.append({
                     "severity": "error",
@@ -279,7 +296,7 @@ def validate_workflow_payload(
     for n in nodes:
         if n.get("kind") != "model":
             continue
-        m = _MODELS.get(n.get("ref_id", ""))
+        m = load_model(n.get("ref_id", ""))
         if not m:
             continue
         expected = [str(f) for f in _model_expected_features(m)]
@@ -299,7 +316,7 @@ def validate_workflow_payload(
                 if sc:
                     available |= {v.lower() for v in sc.variables}
             elif src.get("kind") == "dataset":
-                d = _DATASETS.get(src["ref_id"])
+                d = load_dataset(src["ref_id"])
                 if d:
                     available |= _dataset_columns(d)
             elif src.get("kind") == "transform":
@@ -308,7 +325,7 @@ def validate_workflow_payload(
                 # column-presence check as `Dataset → Model`.
                 t = _TRANSFORMS.get(src["ref_id"])
                 if t and t.output_dataset_id:
-                    d = _DATASETS.get(t.output_dataset_id)
+                    d = load_dataset(t.output_dataset_id)
                     if d:
                         available |= _dataset_columns(d)
             elif src.get("kind") == "model":

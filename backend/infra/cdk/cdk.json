@@ -1,0 +1,13 @@
+{
+  "_comment": "Run with backend/.venv on PATH. PowerShell: $env:PATH = (Resolve-Path ../../.venv/Scripts).Path + ';' + $env:PATH",
+  "app": "python app.py",
+  "watch": {
+    "include": ["**"],
+    "exclude": ["README.md", "cdk*.json", "**/__pycache__", "**/*.pyc", "cdk.out"]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:target-partitions": ["aws", "aws-cn"]
+  }
+}

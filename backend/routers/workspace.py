@@ -14,9 +14,9 @@ from agent.tools import reset_request_context, set_request_context
 from cof.orchestrator import AsyncOrchestrator
 from models.schemas import WorkspaceData
 from routers.auth import get_current_user
-from routers.datasets import _DATASETS, _read_dataframe, _resolve_path
+from routers.datasets import _read_dataframe, _resolve_path, load_dataset
 from routers.plots import _PLOTS, _aggregate, _apply_filters, _compute_kpi
-from routers.scenarios import _RUNS
+from routers.scenarios import load_run
 from services.workspace_data import get_workspace
 
 router = APIRouter()
@@ -82,14 +82,14 @@ def _tile_dataframe(p) -> pd.DataFrame | None:
     no live source. Tries dataset_id first, then run_id."""
     df = None
     if p.dataset_id:
-        d = _DATASETS.get(p.dataset_id)
+        d = load_dataset(p.dataset_id)
         if d and d.source_kind == "upload" and d.file_path and d.file_format:
             try:
                 df = _read_dataframe(_resolve_path(d), d.file_format)
             except Exception:
                 df = None
     if df is None and p.run_id:
-        run = _RUNS.get(p.run_id)
+        run = load_run(p.run_id)
         if run and run.series:
             try:
                 df = pd.DataFrame(run.series)

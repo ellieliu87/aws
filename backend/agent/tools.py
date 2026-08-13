@@ -17,10 +17,16 @@ from typing import Any
 
 import pandas as pd
 
-from routers.datasets import _DATASETS, _read_dataframe, _resolve_path, _synthesize_sample
-from routers.models_registry import _MODELS
+from routers.datasets import (
+    _read_dataframe,
+    _resolve_path,
+    _synthesize_sample,
+    all_datasets,
+    load_dataset,
+)
+from routers.models_registry import load_model
 from routers.plots import _PLOTS, _apply_filters
-from routers.scenarios import _RUNS, _SCENARIOS
+from routers.scenarios import _SCENARIOS, load_run
 from services.workspace_data import get_workspace
 
 
@@ -403,14 +409,20 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
             "name": "rag_search",
             "description": (
                 "Retrieval-Augmented Generation search across a folder of "
-                "documents (markdown, text, CSV, XLSX). Returns the top-k "
-                "matching chunks ranked by keyword score, each with the "
-                "source path and any frontmatter metadata (model_id, "
+                "documents (markdown, text, CSV, XLSX, PDF, DOCX, PPTX). "
+                "Returns the top-k matching chunks, each with the source "
+                "path and any frontmatter metadata (model_id, "
                 "model_component, portfolio_scope) the chunk's parent doc "
-                "carries. Use this to surface methodology / whitepaper "
-                "context behind a forecast number. doc_dir defaults to "
-                "the function's relevant doc folder (configured via the "
-                "CMA_DOCS_ROOT env var, fallback `sample_docs/`)."
+                "carries. Ranking is semantic (embedding similarity) when "
+                "embeddings are configured and falls back to keyword "
+                "overlap otherwise; the `retrieval` field in the response "
+                "says which was used, and `score` is cosine similarity in "
+                "vector mode or a term count in keyword mode — so compare "
+                "scores within a response, not across responses. Use this "
+                "to surface methodology / whitepaper context behind a "
+                "forecast number. doc_dir defaults to the function's "
+                "relevant doc folder (configured via the CMA_DOCS_ROOT env "
+                "var, fallback `sample_docs/`)."
             ),
             "parameters": {
                 "type": "object",
@@ -444,7 +456,7 @@ def _t_get_function_meta(args: dict) -> str:
 
 def _t_profile_dataset(args: dict) -> str:
     did = args.get("dataset_id", "") or _ctx_id_for("dataset")
-    d = _DATASETS.get(did)
+    d = load_dataset(did)
     if not d:
         return json.dumps({"error": f"Dataset `{did}` not found"})
     df = _read_or_synth(d)
@@ -496,7 +508,7 @@ def _t_profile_dataset(args: dict) -> str:
 def _t_get_dataset_preview(args: dict) -> str:
     did = args.get("dataset_id", "") or _ctx_id_for("dataset")
     n = int(args.get("n", 25))
-    d = _DATASETS.get(did)
+    d = load_dataset(did)
     if not d:
         # Common LLM mistake: passing a file path / uploaded-file id where a
         # dataset_id is expected. Redirect to preview_tabular_file rather
@@ -521,7 +533,7 @@ def _t_get_dataset_preview(args: dict) -> str:
             })
         return json.dumps({
             "error":               f"Dataset `{did}` not found",
-            "available_datasets":  sorted(list(_DATASETS.keys()))[:20],
+            "available_datasets":  sorted(d.id for d in all_datasets())[:20],
             "hint":                (
                 "If the analyst attached a file via `[UPLOADED FILES]`, "
                 "use `preview_tabular_file(path=…)` instead — uploaded "
@@ -541,13 +553,13 @@ def _t_get_dataset_preview(args: dict) -> str:
 
 def _t_get_model(args: dict) -> str:
     mid = args.get("model_id", "") or _ctx_id_for("model")
-    m = _MODELS.get(mid)
+    m = load_model(mid)
     return m.model_dump_json(indent=2) if m else json.dumps({"error": f"Model `{mid}` not found"})
 
 
 def _t_get_model_metrics(args: dict) -> str:
     mid = args.get("model_id", "") or _ctx_id_for("model")
-    m = _MODELS.get(mid)
+    m = load_model(mid)
     if not m:
         return json.dumps({"error": f"Model `{mid}` not found"})
     series: dict[str, list[dict[str, Any]]] = {}
@@ -586,7 +598,7 @@ def _t_validate_workflow(args: dict) -> str:
 
 def _t_get_run(args: dict) -> str:
     rid = args.get("run_id", "") or _ctx_id_for("run")
-    r = _RUNS.get(rid)
+    r = load_run(rid)
     return r.model_dump_json(indent=2) if r else json.dumps({"error": f"Run `{rid}` not found"})
 
 
@@ -928,10 +940,38 @@ def _t_set_style(args: dict) -> str:
 
 
 # ── RAG search (built-in) ─────────────────────────────────────────────────
-# Generic keyword-scoring RAG over a folder of documents. Replaces the
-# pack-specific `search_methodology_docs` tool — any agent can use this
-# without each pack re-implementing the same loop. Demo-grade scoring;
-# swap the body for a real vector store in production.
+# Generic RAG over a folder of documents. Replaces the pack-specific
+# `search_methodology_docs` tool — any agent can use this without each pack
+# re-implementing the same loop. Ranking is semantic when embeddings are
+# configured (see agent/retrieval.py) and keyword overlap otherwise.
+#
+# Sub-paths excluded from the corpus, relative to the docs root. `uploads/`
+# holds two kinds of noise: analyst re-uploads of whitepapers already in the
+# curated tree, and machine-generated playbook run outputs under
+# `uploads/playbook/`. Both crowd the top-k with text that adds no
+# information.
+#
+# TRADE-OFF: excluding all of `uploads/` means a freshly uploaded document is
+# NOT searchable, which is a product feature in documents.py. To keep that
+# working while still dropping the generated churn, set
+# CMA_DOCS_EXCLUDE=uploads/playbook instead.
+_DEFAULT_DOCS_EXCLUDE = ("uploads",)
+
+
+def _docs_exclude_prefixes() -> tuple[str, ...]:
+    import os
+
+    raw = os.getenv("CMA_DOCS_EXCLUDE")
+    if raw is None:
+        return _DEFAULT_DOCS_EXCLUDE
+    # An explicitly empty value means "exclude nothing".
+    return tuple(
+        p.strip().strip("/").replace("\\", "/")
+        for p in raw.split(",")
+        if p.strip().strip("/")
+    )
+
+
 def _t_rag_search(args: dict) -> str:
     import glob
     import os
@@ -1033,18 +1073,30 @@ def _t_rag_search(args: dict) -> str:
 
     top_k = int(args.get("top_k") or 5)
 
-    scored: list[dict[str, Any]] = []
+    # ── Pass 1: extract + chunk the corpus ────────────────────────────────
+    # Chunk records are built independently of how they get ranked, so the
+    # vector and keyword paths score exactly the same units.
+    records: list[dict[str, Any]] = []
+    chunk_texts: list[str] = []      # what gets embedded / keyword-scored
+    seen_chunks: set[str] = set()    # collapses duplicate text across docs
     patterns = (
         "*.md", "*.txt", "*.py", "*.json",
         "*.csv", "*.xlsx", "*.xls",
         "*.pdf", "*.docx", "*.pptx",
     )
     seen_paths: set[str] = set()
+    excluded = _docs_exclude_prefixes()
+    skipped_excluded = 0
     for pat in patterns:
         for path in sorted(glob.glob(os.path.join(doc_dir, "**", pat), recursive=True)):
             if path in seen_paths:
                 continue
             seen_paths.add(path)
+            if excluded:
+                rel = os.path.relpath(path, doc_dir).replace("\\", "/")
+                if any(rel == p or rel.startswith(p + "/") for p in excluded):
+                    skipped_excluded += 1
+                    continue
             text = _read_text(path)
             if not text:
                 continue
@@ -1055,23 +1107,102 @@ def _t_rag_search(args: dict) -> str:
                 # paragraphs, and PPTX slides each become their own chunk
                 # (read_text emits `\n\n` between those boundaries).
                 meta, chunks = {}, [c.strip() for c in re.split(r"\n\s*\n", text) if c.strip()]
+            model_id = meta.get("model_id", os.path.basename(path))
+            component = meta.get("model_component", "")
             for i, chunk in enumerate(chunks):
-                tokens = re.findall(r"[a-z0-9_]+", chunk.lower())
-                score = sum(tokens.count(t) for t in q_tokens)
-                if score == 0:
+                # Boilerplate paragraphs repeat verbatim across whitepapers
+                # (shared caveats, identical linkage stanzas). Left in, they
+                # fill the top-k with the same text several times over — the
+                # duplicate-pollution failure the keyword version had too.
+                dedupe_key = " ".join(chunk.lower().split())
+                if dedupe_key in seen_chunks:
                     continue
-                preview = chunk[:480] + ("…" if len(chunk) > 480 else "")
-                scored.append({
-                    "score":           score,
-                    "model_id":        meta.get("model_id", os.path.basename(path)),
-                    "model_component": meta.get("model_component", ""),
+                seen_chunks.add(dedupe_key)
+
+                records.append({
+                    "model_id":        model_id,
+                    "model_component": component,
                     "portfolio_scope": meta.get("portfolio_scope", ""),
                     "doc_path":        path,
                     "chunk_index":     i,
-                    "preview":         preview,
+                    "preview":         chunk[:480] + ("…" if len(chunk) > 480 else ""),
                 })
+                # Prepend the parent document's identity before scoring. A
+                # paragraph describing attrition may never use the word, so a
+                # bare chunk is close to context-free; carrying the model name
+                # and component makes the vector represent "this passage, in
+                # this document" rather than "this passage, from nowhere".
+                header = " · ".join(p for p in (model_id, component) if p)
+                chunk_texts.append(f"{header}\n{chunk}" if header else chunk)
+
+    if not records:
+        return json.dumps({"query": query, "doc_dir": doc_dir,
+                           "retrieval": "none", "matches": []})
+
+    # ── Pass 2: rank ──────────────────────────────────────────────────────
+    # Semantic ranking when embeddings are available, keyword overlap when
+    # they aren't. `score_chunks` returns None rather than raising so a
+    # missing AWS setup degrades the answer instead of breaking the tool.
+    from agent.retrieval import score_chunks
+
+    keyword_scores = [
+        sum(re.findall(r"[a-z0-9_]+", chunk.lower()).count(t) for t in q_tokens)
+        for chunk in chunk_texts
+    ]
+    vector_scores = score_chunks(query, chunk_texts)
+
+    if vector_scores is None:
+        mode = "keyword"
+        scored = []
+        for record, score in zip(records, keyword_scores):
+            if score == 0:
+                continue
+            record["score"] = score
+            scored.append(record)
+    else:
+        # Hybrid via reciprocal rank fusion. Neither ranker wins outright on
+        # this corpus: embeddings handle paraphrase ("churn" → "attrition")
+        # but every document here is a deposit-balance model, so they all sit
+        # close together in vector space; term overlap is blunt but precise
+        # when the analyst uses the corpus's own vocabulary. RRF combines
+        # them on rank rather than score, so it needs no normalisation
+        # between two scales that aren't comparable.
+        mode = "hybrid"
+        rrf_k = 60
+
+        def _ranks(scores: list[float]) -> list[int]:
+            order = sorted(range(len(scores)), key=lambda i: -scores[i])
+            ranks = [0] * len(scores)
+            for position, index in enumerate(order):
+                ranks[index] = position
+            return ranks
+
+        vector_ranks = _ranks(vector_scores)
+        keyword_ranks = _ranks([float(s) for s in keyword_scores])
+
+        for i, record in enumerate(records):
+            fused = 1.0 / (rrf_k + 1 + vector_ranks[i])
+            # A chunk with no term overlap gets no keyword vote at all —
+            # otherwise every chunk in the corpus receives rank credit.
+            if keyword_scores[i] > 0:
+                fused += 1.0 / (rrf_k + 1 + keyword_ranks[i])
+            record["score"] = round(fused, 5)
+            record["vector_score"] = round(vector_scores[i], 4)
+            record["keyword_score"] = keyword_scores[i]
+        scored = records
+
     scored.sort(key=lambda r: -r["score"])
-    return json.dumps({"query": query, "doc_dir": doc_dir, "matches": scored[:top_k]})
+    return json.dumps({
+        "query": query,
+        "doc_dir": doc_dir,
+        "retrieval": mode,
+        "corpus": {
+            "chunks": len(records),
+            "files_excluded": skipped_excluded,
+            "excluded_prefixes": list(excluded),
+        },
+        "matches": scored[:top_k],
+    })
 
 
 # ── Handler ───────────────────────────────────────────────────────────────
@@ -1230,14 +1361,14 @@ def _read_or_synth(d, n: int = 2000) -> pd.DataFrame | None:
 
 def _tile_dataframe(p) -> pd.DataFrame | None:
     if p.dataset_id:
-        d = _DATASETS.get(p.dataset_id)
+        d = load_dataset(p.dataset_id)
         if d and d.source_kind == "upload" and d.file_path and d.file_format:
             try:
                 return _read_dataframe(_resolve_path(d), d.file_format)
             except Exception:
                 return None
     if p.run_id:
-        run = _RUNS.get(p.run_id)
+        run = load_run(p.run_id)
         if run and run.series:
             return pd.DataFrame(run.series)
     return None

@@ -321,8 +321,8 @@ async def _refresh_macro_scenario_from_onelake():
             return
         import pandas as pd
         df = pd.DataFrame(rows)
-        from routers.datasets import _DATASETS, _resolve_path
-        d = _DATASETS.get("ds-onelake-macro-scenario")
+        from routers.datasets import _resolve_path, load_dataset
+        d = load_dataset("ds-onelake-macro-scenario")
         if d:
             df.to_csv(_resolve_path(d), index=False)
             print(f"[startup] refreshed Macro scenario from OneLake — {len(df)} rows")

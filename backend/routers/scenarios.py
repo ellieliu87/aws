@@ -14,13 +14,15 @@ For built-in models (regression-trained in-app) we apply the linear / logistic
 formula to the scenario's macro variables. For uploaded / external models we
 synthesize a plausible response curve so the UI works end-to-end.
 """
+import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from models.schemas import (
     AnalyticsRun,
@@ -39,15 +41,103 @@ from models.schemas import (
     WorkflowValidationResult,
 )
 from routers.auth import get_current_user
-from routers.datasets import _DATASETS, _read_dataframe, _resolve_path
-from routers.models_registry import _MODELS
+from routers.datasets import _read_dataframe, _resolve_path, load_dataset
+from routers.models_registry import load_model, store_model
 
 router = APIRouter()
 
 
+log = logging.getLogger("cma.scenarios")
+
 _SCENARIOS: dict[str, Scenario] = {}
-_RUNS: dict[str, AnalyticsRun] = {}
-_SAVED_WORKFLOWS: dict[str, SavedWorkflow] = {}
+# Saved workflows and analytics runs moved to services/entity_store.py in
+# Phase 5 — see `_load_workflow` / `_store_workflow` and the run accessors
+# below. `_SCENARIOS` is the last one here, and the awkward one: most of its
+# entries are built at startup from packs and data services rather than
+# created by a user, so it is a cache of derived state, not user data.
+
+
+# ── run persistence ────────────────────────────────────────────────────────
+# Runs differ from the other registries in two ways that matter.
+#
+# They are append-only and unbounded — one item per execution, forever, where
+# datasets and models are a fixed handful. And each one carries its whole
+# result `series`, so a run item is orders of magnitude larger than a model.
+# `_input_dataframe` caps rows at `horizon`, which keeps the normal case to a
+# few KB, but `horizon_months` has no upper bound, so `store_run` cannot
+# assume the item fits in DynamoDB's 400 KB limit.
+_RUN_ENTITY = "run"
+
+# 400 KB is the hard item limit; leave room for the key attributes and for
+# Decimal encoding being wider than the JSON we measure.
+_MAX_RUN_BYTES = 380 * 1024
+
+# Page size for the run history. The cap exists because the index makes a
+# large page genuinely expensive again — a page of runs carries their series.
+RUNS_PAGE_DEFAULT = 200
+RUNS_PAGE_MAX = 500
+
+
+def _run_index_pk(function_id: str) -> str:
+    return f"{_RUN_ENTITY}#{function_id}"
+
+
+def load_run(run_id: str) -> AnalyticsRun | None:
+    from services import entity_store
+
+    record = entity_store.get(_RUN_ENTITY, run_id)
+    return AnalyticsRun(**record) if record else None
+
+
+def store_run(run: AnalyticsRun) -> AnalyticsRun:
+    """Persist a run, trimming the series if the record would not fit.
+
+    The computation already succeeded by the time this is called, so failing
+    the request because its *history record* is oversized would be the wrong
+    trade. Instead the row-level detail is dropped and the run is kept, with a
+    note saying so; the caller still gets the full series back in the response.
+    """
+    from services import entity_store
+
+    payload = run.model_dump()
+    if entity_store.enabled():
+        size = len(json.dumps(payload, default=str).encode("utf-8"))
+        if size > _MAX_RUN_BYTES:
+            log.warning(
+                "run %s is %d bytes, over the %d limit — persisting without "
+                "its %d series rows",
+                run.id, size, _MAX_RUN_BYTES, len(run.series),
+            )
+            dropped = len(run.series)
+            payload["series"] = []
+            note = f"[series omitted from history: {dropped} rows exceeded the record size limit]"
+            payload["notes"] = f"{run.notes} {note}".strip() if run.notes else note
+    # Index by (function, time) so the history page can read the newest N
+    # without walking every run ever recorded. `created_at` is an ISO-8601
+    # UTC string, which sorts lexicographically in timestamp order — the
+    # property the whole index depends on.
+    entity_store.put(
+        _RUN_ENTITY, run.id, payload, index=(_run_index_pk(run.function_id), run.created_at)
+    )
+    return run
+
+
+def all_runs() -> list[AnalyticsRun]:
+    from services import entity_store
+
+    out: list[AnalyticsRun] = []
+    for record in entity_store.list_all(_RUN_ENTITY):
+        try:
+            out.append(AnalyticsRun(**record))
+        except Exception as e:
+            log.warning("skipping unreadable run %s: %s", record.get("id"), e)
+    return out
+
+
+def remove_run(run_id: str) -> None:
+    from services import entity_store
+
+    entity_store.delete(_RUN_ENTITY, run_id)
 
 
 # ── Built-in scenarios ──────────────────────────────────────────────────────
@@ -76,7 +166,7 @@ def _scenario_dataframe(scenario_id: str) -> pd.DataFrame:
     # upload / sql_table — parse the bound dataset
     if not sc.dataset_id:
         raise HTTPException(status_code=400, detail="Scenario has no underlying dataset")
-    d = _DATASETS.get(sc.dataset_id)
+    d = load_dataset(sc.dataset_id)
     if not d:
         raise HTTPException(status_code=404, detail="Bound dataset is missing")
     if d.source_kind == "upload" and d.file_path and d.file_format:
@@ -96,7 +186,7 @@ def _scenario_dataframe(scenario_id: str) -> pd.DataFrame:
 
 
 def _apply_model(model_id: str, scenario_df: pd.DataFrame) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    m = _MODELS.get(model_id)
+    m = load_model(model_id)
     if not m:
         raise HTTPException(status_code=404, detail=f"Model {model_id} not found")
 
@@ -396,7 +486,7 @@ async def preview_scenario(
 
 @router.post("/scenarios/from-dataset", response_model=Scenario, status_code=201)
 async def scenario_from_dataset(req: ScenarioCreateFromDataset, _: str = Depends(get_current_user)):
-    d = _DATASETS.get(req.dataset_id)
+    d = load_dataset(req.dataset_id)
     if not d:
         raise HTTPException(status_code=404, detail="Dataset not found")
     sid = f"scn-{uuid.uuid4().hex[:10]}"
@@ -430,19 +520,59 @@ async def delete_scenario(scenario_id: str, _: str = Depends(get_current_user)):
 # ── Run routes ─────────────────────────────────────────────────────────────
 @router.get("/runs", response_model=list[AnalyticsRun])
 async def list_runs(
+    response: Response,
     function_id: str | None = Query(default=None),
+    limit: int = Query(default=RUNS_PAGE_DEFAULT, ge=1, le=RUNS_PAGE_MAX),
+    cursor: str | None = Query(default=None),
     _: str = Depends(get_current_user),
 ):
-    items = list(_RUNS.values())
+    """Newest runs first.
+
+    With a `function_id` this reads the (function, time) index and stops after
+    `limit` items, so the cost does not grow with the number of runs on record.
+    Without one there is no index partition to query and it falls back to
+    reading the whole run partition — the old behaviour, still capped.
+
+    The body stays a plain array so existing callers are unaffected; the
+    continuation token comes back in the `X-Next-Cursor` header, and its
+    absence means this was the last page.
+    """
+    from services import entity_store
+
+    if function_id:
+        try:
+            records, next_cursor = entity_store.query_index(
+                _run_index_pk(function_id), limit=limit, cursor=cursor,
+            )
+        except entity_store.IndexUnavailable:
+            # Expected between deploying this code and running `cdk deploy`.
+            log.warning("run index not deployed yet — falling back to a full read")
+            records, next_cursor = None, None
+        if records is not None:
+            if next_cursor:
+                response.headers["X-Next-Cursor"] = next_cursor
+            return _runs_from(records)
+
+    items = all_runs()
     if function_id:
         items = [r for r in items if r.function_id == function_id]
     items.sort(key=lambda r: r.created_at, reverse=True)
-    return items
+    return items[:limit]
+
+
+def _runs_from(records: list[dict]) -> list[AnalyticsRun]:
+    out: list[AnalyticsRun] = []
+    for record in records:
+        try:
+            out.append(AnalyticsRun(**record))
+        except Exception as e:
+            log.warning("skipping unreadable run %s: %s", record.get("id"), e)
+    return out
 
 
 @router.get("/runs/{run_id}", response_model=AnalyticsRun)
 async def get_run(run_id: str, _: str = Depends(get_current_user)):
-    r = _RUNS.get(run_id)
+    r = load_run(run_id)
     if not r:
         raise HTTPException(status_code=404, detail="Run not found")
     return r
@@ -450,9 +580,9 @@ async def get_run(run_id: str, _: str = Depends(get_current_user)):
 
 @router.delete("/runs/{run_id}", status_code=204)
 async def delete_run(run_id: str, _: str = Depends(get_current_user)):
-    if run_id not in _RUNS:
+    if not load_run(run_id):
         raise HTTPException(status_code=404, detail="Run not found")
-    del _RUNS[run_id]
+    remove_run(run_id)
 
 
 def _input_dataframe(scenario_id: str | None, dataset_id: str | None, horizon: int) -> tuple[pd.DataFrame, str, str]:
@@ -468,7 +598,7 @@ def _input_dataframe(scenario_id: str | None, dataset_id: str | None, horizon: i
         s = _SCENARIOS.get(scenario_id)
         return df, "scenario", (s.name if s else scenario_id)
     if dataset_id:
-        d = _DATASETS.get(dataset_id)
+        d = load_dataset(dataset_id)
         if not d:
             raise HTTPException(status_code=404, detail=f"Dataset {dataset_id} not found")
         if d.source_kind == "upload" and d.file_path and d.file_format:
@@ -501,8 +631,11 @@ async def create_run(req: RunRequest, _: str = Depends(get_current_user)):
     try:
         df, input_kind, input_label = _input_dataframe(req.scenario_id, req.dataset_id, req.horizon_months)
         series, summary = _apply_model(req.model_id, df)
-        m = _MODELS[req.model_id]
+        m = load_model(req.model_id)
+        if not m:
+            raise HTTPException(status_code=404, detail=f"Model {req.model_id} not found")
         m.last_run = started.isoformat() + "Z"
+        store_model(m)
         run = AnalyticsRun(
             id=rid,
             function_id=req.function_id,
@@ -539,7 +672,7 @@ async def create_run(req: RunRequest, _: str = Depends(get_current_user)):
             created_at=started.isoformat() + "Z",
             duration_ms=(datetime.utcnow() - started).total_seconds() * 1000,
         )
-    _RUNS[rid] = run
+    store_run(run)
     return run
 
 
@@ -719,7 +852,7 @@ def _apply_node_config(node: WorkflowNode, df: pd.DataFrame) -> pd.DataFrame:
     cols_lower = {str(c).lower() for c in df.columns}
     missing_per_model: dict[str, list[str]] = {}
     for mid in required_models:
-        m = _MODELS.get(mid)
+        m = load_model(mid)
         if not m:
             continue
         features = list(m.feature_columns or []) or list((m.feature_mapping or {}).keys())
@@ -993,7 +1126,7 @@ def _write_csv_combined(
     filename = cfg.get("filename") or f"{dest_node.id}-combined.csv"
     combined: list[dict[str, Any]] = []
     for run in upstream_runs:
-        m = _MODELS.get(run.model_id)
+        m = load_model(run.model_id)
         seg = m.name if m else run.model_id
         for row in run.series:
             combined.append({"segment": seg, **row})
@@ -1126,12 +1259,48 @@ def _summarize_saved(w: SavedWorkflow) -> SavedWorkflowSummary:
     )
 
 
+# ── workflow persistence ──────────────────────────────────────────────────
+# Phase 5: saved workflows live in DynamoDB, not in `_SAVED_WORKFLOWS`. Without
+# CMA_STATE_TABLE the store falls back to an in-process dict, so local
+# development is unchanged — but with it, a restart no longer loses the
+# analyst's work and a second replica sees the same data.
+_WORKFLOW_ENTITY = "workflow"
+
+
+def _load_workflow(workflow_id: str) -> SavedWorkflow | None:
+    from services import entity_store
+
+    record = entity_store.get(_WORKFLOW_ENTITY, workflow_id)
+    return SavedWorkflow(**record) if record else None
+
+
+def _store_workflow(workflow: SavedWorkflow) -> None:
+    from services import entity_store
+
+    entity_store.put(_WORKFLOW_ENTITY, workflow.id, workflow.model_dump())
+
+
+def _all_workflows() -> list[SavedWorkflow]:
+    from services import entity_store
+
+    out: list[SavedWorkflow] = []
+    for record in entity_store.list_all(_WORKFLOW_ENTITY):
+        try:
+            out.append(SavedWorkflow(**record))
+        except Exception as e:
+            # A stored item that no longer matches the schema should not break
+            # the whole list — surface it and keep going.
+            log.warning("skipping unreadable workflow %s: %s",
+                        record.get("id"), e)
+    return out
+
+
 @router.get("/workflows", response_model=list[SavedWorkflowSummary])
 async def list_saved_workflows(
     function_id: str | None = Query(default=None),
     _: str = Depends(get_current_user),
 ):
-    items = list(_SAVED_WORKFLOWS.values())
+    items = _all_workflows()
     if function_id:
         items = [w for w in items if w.function_id == function_id]
     items.sort(key=lambda w: w.updated_at or w.created_at, reverse=True)
@@ -1140,10 +1309,34 @@ async def list_saved_workflows(
 
 @router.get("/workflows/{workflow_id}", response_model=SavedWorkflow)
 async def get_saved_workflow(workflow_id: str, _: str = Depends(get_current_user)):
-    w = _SAVED_WORKFLOWS.get(workflow_id)
+    w = _load_workflow(workflow_id)
     if not w:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return w
+
+
+# ── canvas -> state machine ───────────────────────────────────────────────
+def _register_plan(workflow: SavedWorkflow) -> None:
+    """Compile the canvas and record the plan, so the analyst finds out now.
+
+    Deliberately does NOT deploy. This endpoint runs in the web tier, which
+    holds no permission to create AWS resources; `infra/deploy_workflows.py`
+    ships pending plans under a separate, privileged identity. See
+    services/workflow_plans.py.
+
+    A broken graph is the analyst's problem to fix while the diagram is still
+    on screen, so a compile error is a 400. Anything else — no bucket
+    configured, S3 unavailable — must not block saving their work.
+    """
+    from services.workflow_compiler import WorkflowCompileError
+    from services.workflow_plans import compile_and_register
+
+    try:
+        compile_and_register(workflow.model_dump())
+    except WorkflowCompileError as e:
+        raise HTTPException(status_code=400, detail=f"Workflow cannot run: {e}")
+    except Exception as e:
+        log.warning("plan registration skipped for %s: %s", workflow.id, e)
 
 
 @router.post("/workflows", response_model=SavedWorkflow, status_code=201)
@@ -1161,9 +1354,11 @@ async def save_workflow(req: SavedWorkflowCreate, _: str = Depends(get_current_u
         scenario_name=req.scenario_name,
         start_date=req.start_date,
         view=req.view,
+        require_approval=req.require_approval,
         created_at=now,
     )
-    _SAVED_WORKFLOWS[wid] = w
+    _register_plan(w)
+    _store_workflow(w)
     return w
 
 
@@ -1173,7 +1368,7 @@ async def update_saved_workflow(
     req: SavedWorkflowCreate,
     _: str = Depends(get_current_user),
 ):
-    existing = _SAVED_WORKFLOWS.get(workflow_id)
+    existing = _load_workflow(workflow_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Workflow not found")
     now = datetime.utcnow().isoformat() + "Z"
@@ -1188,16 +1383,47 @@ async def update_saved_workflow(
         scenario_name=req.scenario_name,
         start_date=req.start_date,
         view=req.view,
+        require_approval=req.require_approval,
         created_at=existing.created_at,
         updated_at=now,
     )
-    _SAVED_WORKFLOWS[workflow_id] = updated
+    _register_plan(updated)
+    _store_workflow(updated)
     return updated
+
+
+@router.get("/workflows/{workflow_id}/plans")
+async def list_workflow_plans(workflow_id: str, _: str = Depends(get_current_user)):
+    """Every compiled version of this workflow's executable plan.
+
+    The audit answer to "which calculation produced the number we filed?" —
+    each version is kept, never overwritten, with the hash and timestamp of
+    the plan that actually ran.
+    """
+    from services.workflow_plans import get_index
+
+    try:
+        index = get_index(workflow_id)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Plan registry unavailable: {e}")
+    if not index:
+        raise HTTPException(status_code=404, detail="No compiled plans for this workflow")
+    return index
 
 
 @router.delete("/workflows/{workflow_id}", status_code=204)
 async def delete_saved_workflow(workflow_id: str, _: str = Depends(get_current_user)):
-    _SAVED_WORKFLOWS.pop(workflow_id, None)
+    # Ask the deployer to remove the machine; the plan history stays, because
+    # deleting a workflow should not erase the record of what it used to do.
+    try:
+        from services.workflow_plans import request_delete
+
+        request_delete(workflow_id)
+    except Exception as e:
+        log.warning("could not request machine deletion for %s: %s", workflow_id, e)
+    from services import entity_store
+
+    entity_store.delete(_WORKFLOW_ENTITY, workflow_id)
     return None
 
 
@@ -1275,7 +1501,7 @@ async def create_workflow_run(req: WorkflowRequest, _: str = Depends(get_current
                 detail=f"Model node '{node.id}' has no input — connect a dataset, scenario, or upstream model.",
             )
 
-        m = _MODELS.get(node.ref_id)
+        m = load_model(node.ref_id)
         if not m:
             raise HTTPException(status_code=404, detail=f"Model {node.ref_id} not found")
 
@@ -1337,6 +1563,7 @@ async def create_workflow_run(req: WorkflowRequest, _: str = Depends(get_current
 
         rid = f"run-{uuid.uuid4().hex[:10]}"
         m.last_run = run_started.isoformat() + "Z"
+        store_model(m)
         # Stitch the run-context (scenario, start_date) into `notes` so
         # the run-history panel shows them inline. Storing them as
         # first-class fields would require schema + UI surface area we
@@ -1369,7 +1596,7 @@ async def create_workflow_run(req: WorkflowRequest, _: str = Depends(get_current
             created_at=run_started.isoformat() + "Z",
             duration_ms=(datetime.utcnow() - run_started).total_seconds() * 1000,
         )
-        _RUNS[rid] = run
+        store_run(run)
         runs.append(run)
         model_runs_by_node[node.id] = run
         outputs[node.id] = series

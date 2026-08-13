@@ -10,8 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from models.schemas import PlotConfig, PlotConfigCreate
 from routers.auth import get_current_user
-from routers.datasets import _DATASETS, _read_dataframe, _resolve_path
-from routers.scenarios import _RUNS
+from routers.datasets import _read_dataframe, _resolve_path, load_dataset
+from routers.scenarios import load_run
 
 router = APIRouter()
 log = logging.getLogger("cma.plots")
@@ -273,12 +273,12 @@ async def get_fields(
     _: str = Depends(get_current_user),
 ):
     if dataset_id:
-        d = _DATASETS.get(dataset_id)
+        d = load_dataset(dataset_id)
         if not d:
             raise HTTPException(status_code=404, detail="Dataset not found")
         return {"fields": [c.name for c in d.columns]}
     if run_id:
-        run = _RUNS.get(run_id)
+        run = load_run(run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         if run.series:
@@ -303,7 +303,7 @@ async def preview_plot(plot_id: str, _: str = Depends(get_current_user)):
     kpi_payload: dict[str, Any] | None = None
 
     if p.dataset_id:
-        d = _DATASETS.get(p.dataset_id)
+        d = load_dataset(p.dataset_id)
         if d and d.source_kind == "upload" and d.file_path and d.file_format:
             try:
                 df = _read_dataframe(_resolve_path(d), d.file_format)
@@ -319,7 +319,7 @@ async def preview_plot(plot_id: str, _: str = Depends(get_current_user)):
             except Exception:
                 rows = None
     if rows is None and p.run_id:
-        run = _RUNS.get(p.run_id)
+        run = load_run(p.run_id)
         if run and run.series:
             df = pd.DataFrame(run.series)
             df = _apply_filters(df, p.filters)

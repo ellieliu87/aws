@@ -159,6 +159,13 @@ async def upload_document(
     contents = await file.read()
     target_path.write_bytes(contents)
 
+    # Mirror to S3 when a corpus bucket is configured, so the upload survives
+    # this node. Best-effort: the write to disk already succeeded, and an S3
+    # hiccup must not turn a successful upload into an error for the analyst.
+    from services.corpus_store import upload_one
+
+    upload_one(target_path, root)
+
     rel = target_path.relative_to(root)
     return DocumentInfo(
         id=str(rel).replace("\\", "/"),
@@ -358,14 +365,10 @@ async def extract_whitepaper(
     if len(raw_text) > 12000:
         raw_text = raw_text[:12000] + "\n\n[... source truncated for extraction ...]"
 
-    # LLM call — same OpenAI client construction the analytics_defs draft
-    # endpoint uses, so we inherit the corporate-proxy compat.
-    try:
-        from openai import AsyncOpenAI
-    except ImportError:
-        raise HTTPException(status_code=503, detail="openai package not installed")
-    from cof.llm_config import resolve_model
-    client = AsyncOpenAI()
+    # LLM call — goes through cof.llm_provider so the provider (COF proxy,
+    # direct OpenAI, or Claude on Bedrock) is a config decision. See
+    # CMA_LLM_PROVIDER in cof/llm_config.py.
+    from cof.llm_provider import LlmNotConfigured, complete
 
     user_prompt = (
         "Extract a structured methodology whitepaper from the source text below. "
@@ -389,18 +392,17 @@ async def extract_whitepaper(
     user_prompt += f"\n--- SOURCE TEXT ---\n{raw_text}\n--- END SOURCE TEXT ---"
 
     try:
-        completion = await client.chat.completions.create(
-            model=resolve_model(os.getenv("CMA_TOOL_DRAFT_MODEL")),
-            messages=[
-                {"role": "system", "content": _EXTRACT_SYSTEM},
-                {"role": "user",   "content": user_prompt},
-            ],
-            temperature=0.2,
+        md_text = await complete(
+            _EXTRACT_SYSTEM,
+            user_prompt,
+            model=os.getenv("CMA_TOOL_DRAFT_MODEL"),
         )
+    except LlmNotConfigured as e:
+        # Setup-required, not an upstream failure — the operator can fix this.
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
 
-    md_text = (completion.choices[0].message.content or "").strip()
     if not md_text:
         raise HTTPException(status_code=502, detail="LLM returned empty extraction")
     # Some models wrap the whole response in a fenced ```markdown block.

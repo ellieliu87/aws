@@ -44,7 +44,12 @@ from models.schemas import (
     VarianceWalkResult,
 )
 from routers.auth import get_current_user, get_user_record
-from routers.datasets import _DATASETS, _read_dataframe, _resolve_path, _synthesize_sample
+from routers.datasets import (
+    _read_dataframe,
+    _resolve_path,
+    _synthesize_sample,
+    load_dataset,
+)
 from routers.scenarios import _SCENARIOS
 
 router = APIRouter()
@@ -61,7 +66,7 @@ def _now() -> str:
 
 
 def _summarize_dataset(dataset_id: str) -> str | None:
-    d = _DATASETS.get(dataset_id)
+    d = load_dataset(dataset_id)
     if not d:
         return None
     parts = [f"`{d.name}` (id={d.id}) — {d.source_kind}, {len(d.columns)} columns"]

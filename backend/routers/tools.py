@@ -18,7 +18,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from cof.llm_config import resolve_model
 from models.schemas import (
     PythonTool,
     PythonToolCreate,
@@ -485,38 +484,24 @@ async def draft_tool(req: ToolDraftRequest, _: str = Depends(get_current_user)):
     Uses the same OpenAI/COF connection the orchestrator uses; if neither is
     configured, returns 503 with a setup-required message.
     """
-    try:
-        from openai import AsyncOpenAI
-    except ImportError:
-        raise HTTPException(status_code=503, detail="openai package not installed.")
-
-    # Match oasia: AsyncOpenAI() with no arguments. The SDK auto-resolves
-    # OPENAI_BASE_URL / OPENAI_API_KEY from the environment; corporate COF
-    # proxy environments preconfigure these so no env vars need to be set.
-    client = AsyncOpenAI()
+    from cof.llm_provider import LlmNotConfigured, complete_json
 
     user_msg = req.prompt.strip()
     if req.context:
         user_msg += f"\n\n[Additional context]\n{req.context.strip()}"
 
     try:
-        completion = await client.chat.completions.create(
-            model=resolve_model(os.getenv("CMA_TOOL_DRAFT_MODEL")),
-            messages=[
-                {"role": "system", "content": _DRAFT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
+        data = await complete_json(
+            _DRAFT_SYSTEM_PROMPT,
+            user_msg,
+            model=os.getenv("CMA_TOOL_DRAFT_MODEL"),
         )
+    except LlmNotConfigured as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail=f"LLM returned non-JSON: {e}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
-
-    raw = completion.choices[0].message.content or ""
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=502, detail=f"LLM returned non-JSON: {e}")
 
     # Normalize and validate the agent's draft before returning. We are lenient
     # — accept missing optional fields, reject only on clearly-broken outputs.

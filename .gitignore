@@ -24,3 +24,9 @@ dist/
 # Backend runtime data (created by uploads at runtime)
 backend/data/datasets/
 backend/data/models/
+
+# Env backups (may contain secrets)
+.env.*
+!.env.example
+backend/data/rag_index/
+backend/infra/cdk/cdk.out/
