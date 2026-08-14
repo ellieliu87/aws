@@ -181,6 +181,10 @@
   .decision dd p:last-child { margin-bottom: 0; }
   .decision dt.chose { color: var(--accent); }
   .decision dt.gaveup { color: var(--trap); }
+  .decision dt.how { color: var(--accent-2); }
+  /* Named services carry the weight in the How rows — let them stand out
+     without turning every one into a logo wall. */
+  .decision dd b { color: var(--ink); font-weight: 600; }
   @media (min-width: 700px) {
     .decision dl { grid-template-columns: 5.4rem 1fr; }
     .decision dt { grid-column: 1; }
@@ -759,7 +763,11 @@
 
 <section id="decisions">
   <h2><span class="n">6</span>Design decisions and trade-offs</h2>
-  <p class="sub">Each decision states the problem, the options, the choice, and what was given up.</p>
+  <p class="sub">Each decision states the problem, the options considered, what was chosen, how it was actually built, and what was given up.</p>
+
+  <div class="note">
+    <p><strong>Three of these needed no AWS service at all.</strong> 6.6 is a language feature, 6.8 is twenty lines of application logic, and 6.5 is deliberately <em>less</em> AWS than the obvious implementation. Reaching for a service is a choice like any other, and the <b>How</b> row says plainly when the answer was to not reach for one.</p>
+  </div>
 
   <div class="decision">
     <h3>6.1 — Externalising state before changing the hosting</h3>
@@ -767,6 +775,11 @@
       <dt>Problem</dt><dd>The application could not run as more than one copy.</dd>
       <dt>Options</dt><dd>Add sticky sessions at the load balancer so each user always returns to the same server; or move the state out of the process.</dd>
       <dt class="chose">Chose</dt><dd>Move the state out. Sticky sessions would have hidden the problem rather than solved it — a server restart still loses that user's work, and one overloaded server cannot shed load to another.</dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p><b>Amazon DynamoDB</b>, reached through one module that exposes four operations — get, put, delete, list — over plain dictionaries. Each registry gained matching accessors in place of its dictionary.</p>
+        <p>Deliberately one seam rather than scattered database calls: it is the only place that knows storage exists, which is what made the per-request cache in 6.6 and the index in 6.7 possible without touching any caller. With no table configured it falls back to an in-process dictionary, so the original behaviour is still a code path that runs.</p>
+      </dd>
       <dt class="gaveup">Gave up</dt><dd>Reads that used to be instant memory lookups became network calls. That cost was real and had to be paid back — see 6.6.</dd>
     </dl>
   </div>
@@ -776,6 +789,8 @@
     <dl>
       <dt>Problem</dt><dd>Four kinds of record needed durable storage.</dd>
       <dt class="chose">Chose</dt><dd>A single table, where each record's key is its type plus its id. Fewer things to provision, monitor and back up. The alternative — four tables — buys separation the application does not need, since nothing queries across types.</dd>
+      <dt class="how">How</dt>
+      <dd><p>One <b>DynamoDB</b> table declared in <b>AWS CDK</b>, so the infrastructure is version-controlled alongside the application. Records are grouped by type and identified by id within it — see the diagram in §5. On-demand billing, so an idle system bills nothing.</p></dd>
       <dt class="gaveup">Gave up</dt><dd>It is less immediately obvious to someone browsing the console. A diagram and this document are the mitigation.</dd>
     </dl>
   </div>
@@ -789,6 +804,11 @@
       <dd>
         <p>The second. A Cognito token is <em>signed</em> and carries the user's identity, role, department and group memberships inside it. Any server verifies it mathematically against Cognito's public keys — no lookup, so nothing to share.</p>
         <p>A shared session store is still a shared dependency: another thing to scale, another thing whose outage is an outage. Verification needs nothing but the token and a cached public key.</p>
+      </dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p><b>Amazon Cognito</b> holds the users and issues the tokens. The application verifies them itself: it fetches the pool's public keys once, caches them, and checks each token's signature, expiry, issuer, audience and type on every request.</p>
+        <p>Job titles and department ride along as custom attributes on the user; group membership arrives as a standard claim and feeds the existing permission filter unchanged. Sixty seconds of clock-skew tolerance, because a token minted a moment ago can look fractionally future-dated to a machine whose clock differs — found the hard way, on the real pool.</p>
       </dd>
       <dt class="gaveup">Gave up</dt>
       <dd>
@@ -806,6 +826,11 @@
       <dd>
         <p>Move the sequence out of application code and into a <b>state machine</b> — a workflow written down as data, which AWS runs on your behalf, remembering where each execution has got to. "Wait for a human" becomes one of its steps, so the execution parks and holds until the reviewer answers, surviving restarts and deployments.</p>
         <p>The approval gate is a <em>control</em>. A control implemented as a convention that a repair routine cleans up after is difficult to evidence to an examiner. A control implemented as a state machine has an execution history showing who approved what and when.</p>
+      </dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p><b>AWS Step Functions</b>, using its wait-for-callback pattern. When the execution reaches the gate it hands out a one-time token and stops — consuming nothing while it waits. The approval endpoint returns that token, and the execution resumes from exactly where it paused.</p>
+        <p>A twenty-four hour limit on the wait, with the expiry wired to its own explicit end state rather than left to time out silently.</p>
       </dd>
       <dt class="gaveup">Gave up</dt><dd>Orchestration logic now lives in two places conceptually — the canvas the analyst draws, and the state machine it compiles into. Managed by generating the second from the first.</dd>
     </dl>
@@ -883,6 +908,11 @@
         <p>The web tier should not hold permission to create infrastructure, because that permission is what an attacker who compromises it inherits — and attaching roles is the sharpest edge of it, since whoever can attach roles can potentially attach one more privileged than they hold.</p>
         <p>Nothing is lost on the analyst's side: a broken diagram is still rejected in under a second, while they are looking at it. Compiling is the half that produces the user-facing value, and it is the half that needs no permissions at all.</p>
       </dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p>The compiler is ordinary Python with no AWS libraries at all — canvas in, <b>Amazon States Language</b> (the JSON dialect Step Functions reads) out. That is what makes it safe to run in the web tier, and it is unit-testable offline.</p>
+        <p>Compiled plans are versioned into <b>S3</b>. A separate deployment script, run under its own more privileged identity, picks up pending plans and creates the state machines. The web tier's role simply does not include permission to do that.</p>
+      </dd>
       <dt>Bonus</dt>
       <dd>
         <p>Every compiled version is retained rather than overwritten, with its hash and timestamp. That is the audit answer to "which calculation produced the number we filed?"</p>
@@ -900,6 +930,12 @@
         <p>Remember records for the duration of a single request. Twenty-one round trips became two.</p>
         <p>Scoped to one request deliberately: a longer-lived cache introduces staleness, where one server shows an old version of a model another server just updated. Scoped this way, the data is internally consistent for the operation and fresh on the next one.</p>
       </dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p><b>No AWS service — a language feature.</b> Python's <code>contextvars</code>, which the async runtime copies for each task. The web framework runs every request in its own task, so per-request isolation comes for free: concurrent requests cannot see each other's entries and nothing survives into the next one.</p>
+        <p>It lives in the storage module, so writes refresh it automatically and no caller can forget to invalidate. Every hit is a copy, so code that modifies what it received cannot corrupt the next reader. Misses are remembered too — validation asks about the same missing reference repeatedly.</p>
+        <p>Worth stating plainly: a managed cache would have added a network hop to fix a problem caused by network hops.</p>
+      </dd>
       <dt class="gaveup">Gave up</dt><dd>Within one long-running operation the data is a snapshot. For a workflow run that is arguably the property you want: the run should not observe a model changing underneath it halfway through.</dd>
     </dl>
   </div>
@@ -909,6 +945,12 @@
     <dl>
       <dt>Problem</dt><dd>Listing an analyst's recent runs meant reading <em>every run ever recorded</em> and sorting them, because the records were organised by identifier — which sorts meaninglessly. Cost grew forever.</dd>
       <dt class="chose">Chose</dt><dd>A secondary index organising the same records by function and time, so "the newest fifty" is a direct range read that stops after fifty. The cost of a page no longer depends on how many runs exist — ten runs or ten million, the same.</dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p>A <b>DynamoDB global secondary index</b> — a second, automatically maintained view of the same records, keyed by function and timestamp instead of by id. Added in CDK; DynamoDB backfills it.</p>
+        <p>Reads walk it newest-first and stop at the page size, returning a continuation marker for the next page. That marker travels back in an HTTP header rather than in the response body, so existing callers that expect a plain list are unaffected.</p>
+        <p>Timestamps are stored as text in a format that sorts chronologically when sorted alphabetically — which is the property the whole index depends on.</p>
+      </dd>
       <dt class="gaveup">Gave up</dt><dd>Nothing, on the read path. But it fixed only half the problem: storage still grows without bound. Read cost and retention are separate questions and only the first is answered — see §7.4.</dd>
     </dl>
   </div>
@@ -919,6 +961,8 @@
       <dt>Problem</dt><dd>The database caps a single record at 400 KB. A run carries its full result set, so an unusually large run exceeds it — and the write fails <em>after</em> the computation has already succeeded.</dd>
       <dt>Options</dt><dd>Fail the request; silently truncate; or store the result elsewhere and link to it.</dd>
       <dt class="chose">Chose</dt><dd>Keep the run record, drop the row-level detail, and annotate it with how many rows were omitted. The user still receives their complete results; only the historical copy is trimmed. Failing would discard work that succeeded; silently truncating would produce a record that lies.</dd>
+      <dt class="how">How</dt>
+      <dd><p><b>Application logic, no service.</b> Before writing, the record is measured; if it exceeds the limit the row-level results are dropped and a note recording how many rows were omitted is attached. The complete results still go back to the caller — only the stored history is trimmed.</p></dd>
       <dt class="gaveup">Gave up</dt><dd>Full history for outsized runs. Storing the payload in object storage is the right long-term answer and is the next step if large runs become common — this is a deliberate, documented interim.</dd>
     </dl>
   </div>
@@ -928,6 +972,11 @@
     <dl>
       <dt>Problem</dt><dd>Moving the records to a database left the <em>files</em> — uploaded datasets, model artifacts — on the local disk of whichever server received the upload. This is worse than an obvious failure: the record appears everywhere, so the dataset shows in every listing, and then reading it fails on every server except one.</dd>
       <dt class="chose">Chose</dt><dd>Uploads write to object storage as well as local disk, and any server missing a file fetches it on demand and keeps a local copy. A cache rather than direct reads every time, because model files are read repeatedly during a run.</dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p><b>Amazon S3</b>, with local disk demoted to a cache. Uploads write to both. Reads take the local file if it exists; if not, the file is fetched, saved locally, and used from there onwards.</p>
+        <p>The download lands under a temporary name and is renamed into place, so a second reader never catches a half-written file. Model artifacts additionally trigger a listing of their folder so the companion files come along.</p>
+      </dd>
       <dt>Detail</dt><dd>Model artifacts depend on companion files to load at all. Fetching the model without them fails with an error naming a missing <em>class</em>, not a missing <em>file</em> — a confusing way to discover the problem. The fetch brings the companions along.</dd>
     </dl>
   </div>
@@ -942,6 +991,8 @@
         <p>Every document in the corpus describes deposit balance modelling, so every passage resembles every other and semantic similarity has almost nothing to separate. Meanwhile analysts search using the corpus's own vocabulary, which is precisely where keyword matching is strongest.</p>
       </dd>
       <dt class="chose">Chose</dt><dd>Ship it switched off, one setting away, with the condition for revisiting written down: a larger, more varied corpus. Which is exactly the regulatory-filings case, where many agencies across decades describe the same concepts in different words.</dd>
+      <dt class="how">How</dt>
+      <dd><p><b>Amazon Bedrock</b> for the embedding model, with vectors cached by content hash so re-indexing an unchanged document costs nothing. Results combined with the existing keyword ranking, then both measured against the same query set. The whole path is behind a single environment variable, which is what makes "built but off" a real state rather than a claim.</p></dd>
       <dt>Caveat</dt><dd>Five queries, written by the same person who chose the expected answers. A defensible benchmark needs analyst-written queries with blind relevance labels. The measurement was enough to decline an upgrade, not enough to call the question settled.</dd>
     </dl>
   </div>
@@ -950,6 +1001,11 @@
     <h3>6.11 — Lambda now; containers when the constraints change</h3>
     <dl>
       <dt class="chose">Chose</dt><dd>Lambda for computation. Runs are short, bursty and event-driven, and it costs nothing when idle.</dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p><b>AWS Lambda</b>, running a container image so the scientific-computing libraries and the model files fit. The image is built by <b>AWS CodeBuild</b> and stored in <b>Amazon ECR</b> — no developer needs Docker locally, and the image tag is a hash of the source, so "what exactly is running?" has an answer.</p>
+        <p>Work reaches it from an <b>SQS</b> queue; AWS delivers messages to the function and scales it on queue depth. One image serves every job type, selected by a mode field in the message.</p>
+      </dd>
       <dt>Revisit when</dt>
       <dd>
         <p>Any of these becomes true, and none is yet: a single run exceeds fifteen minutes (Lambda's hard limit); the container image exceeds ten gigabytes; a model needs more memory than Lambda provides, or a GPU; or cold-start latency stops being acceptable.</p>
