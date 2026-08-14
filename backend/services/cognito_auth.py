@@ -143,6 +143,12 @@ def verify(token: str) -> dict[str, Any]:
             algorithms=["RS256"],
             issuer=issuer(),
             audience=client_id(),
+            # Clock skew is real: a token minted by Cognito a moment ago can
+            # have an `iat` fractionally ahead of this host's clock, which
+            # without leeway is rejected as "not yet valid" — a confusing
+            # intermittent 401 that looks like anything but a clock problem.
+            # 60s is the usual allowance; it shortens no expiry meaningfully.
+            leeway=60,
             options={"require": ["exp", "iss", "aud", "token_use"]},
         )
     except Exception as e:
