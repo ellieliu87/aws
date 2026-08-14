@@ -59,6 +59,8 @@ cma/
 │   │   ├── corpus_store.py        ← S3 as source of record for documents
 │   │   ├── blob_store.py          ← S3 for uploaded datasets + artifacts
 │   │   │                            (local disk becomes a cache)
+│   │   ├── cognito_auth.py        ← verify Cognito JWTs offline (no session
+│   │   │                            store), falls back to mock auth
 │   │   ├── workflow_compiler.py   ← canvas → Step Functions definition
 │   │   ├── workflow_plans.py      ← compiled-plan registry (audit history)
 │   │   ├── workflow_deploy.py     ← ships plans as state machines
@@ -547,9 +549,12 @@ The Settings page (sidebar) has four tabs:
   See [Data Services integrations](#data-services-integrations-proxy-env)
   for how to flip on `pa_common_tools` and OneLake when you're inside
   the proxy.
-- **Auth is mock** — single account, in-memory bearer-token store. The
-  `groups` column is honored by `is_pack_visible(...)`, but there's no
-  flow for adding a second user yet.
+- **Auth is mock by default** — single account, in-memory bearer-token
+  store, and no flow for adding a second user. Set
+  `CMA_COGNITO_USER_POOL_ID` + `CMA_COGNITO_CLIENT_ID` and the token
+  becomes a Cognito JWT verified offline instead, with `cognito:groups`
+  feeding the same `is_pack_visible(...)` filter. See
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Subprocess sandbox is process-isolation only.** Python tools run in
   a fresh `python` subprocess with a wall-clock timeout. There is no
   imports allowlist, no RLIMIT, no seccomp, no chroot. Don't deploy

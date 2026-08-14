@@ -32,6 +32,9 @@ dependencies = [
   # Amazon Bedrock — opt-in via CMA_LLM_PROVIDER=bedrock. Uses the
   # model-agnostic Converse API, so no vendor-specific SDK is needed.
   "boto3>=1.34.0",
+  # Verifying Cognito-issued JWTs offline. `crypto` pulls in `cryptography`
+  # for RS256; PyJWKClient handles fetching and caching the pool's public keys.
+  "pyjwt[crypto]>=2.8.0",
   # Knowledge Base parsers — text extraction for rag_search
   "pypdf>=4.0.0",                       # .pdf
   "python-docx>=1.1.0",                 # .docx

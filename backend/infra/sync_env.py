@@ -27,6 +27,8 @@ MAPPING = {
     "SolverFunctionArn": "CMA_SOLVER_FUNCTION_ARN",
     "PlaybookRoleArn": "CMA_PLAYBOOK_ROLE_ARN",
     "StateTableName": "CMA_STATE_TABLE",
+    "UserPoolId": "CMA_COGNITO_USER_POOL_ID",
+    "UserPoolClientId": "CMA_COGNITO_CLIENT_ID",
 }
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 

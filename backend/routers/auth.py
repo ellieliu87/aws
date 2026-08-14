@@ -1,4 +1,19 @@
-"""Auth router - mock LDAP-style authentication for the CMA Workbench."""
+"""Auth router - Cognito when configured, mock LDAP-style otherwise.
+
+Two ways to answer "who is calling?", chosen by whether a Cognito user pool is
+configured:
+
+  mock      the token is a UUID and `_token_store` remembers what it means.
+            Fine for one process; it is also the single reason a second
+            replica rejects a token the first one issued.
+
+  cognito   the token is a signed JWT that carries the claims. Verified
+            offline against the pool's public keys, so any replica can
+            validate a token no replica issued. See services/cognito_auth.py.
+
+The three dependencies below are the only things the rest of the app uses, so
+switching modes changes nothing outside this file.
+"""
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
@@ -7,7 +22,9 @@ from models.schemas import LoginRequest, LoginResponse, UserInfo
 
 router = APIRouter()
 
-# In-memory token store: token -> {username, role, department}
+# In-memory token store: token -> {username, role, department}. Used only in
+# mock mode; with Cognito configured nothing is written here, which is the
+# whole point.
 _token_store: dict[str, dict] = {}
 
 MOCK_PASSWORD = "capital1"
@@ -31,30 +48,65 @@ _DEFAULT_PROFILES = {
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
-def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
-    if not token or token not in _token_store:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return _token_store[token]["username"]
+def _principal(token: str | None) -> dict:
+    """Resolve a bearer token to {username, role, department, groups}.
 
+    The one place the two modes differ. Everything below it — and every
+    `Depends(get_current_user)` in the app — is mode-agnostic.
+    """
+    from services import cognito_auth
 
-def get_user_record(token: str = Depends(oauth2_scheme)) -> dict:
+    if cognito_auth.enabled():
+        try:
+            return cognito_auth.principal(token or "")
+        except cognito_auth.AuthError as e:
+            # The reason is logged inside the verifier; the caller gets the
+            # same message for every failure so a probe learns nothing.
+            raise HTTPException(status_code=401, detail="Invalid or expired token") from e
+
     if not token or token not in _token_store:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return _token_store[token]
 
 
+def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
+    return _principal(token)["username"]
+
+
+def get_user_record(token: str = Depends(oauth2_scheme)) -> dict:
+    return _principal(token)
+
+
 def get_current_user_groups(token: str = Depends(oauth2_scheme)) -> list[str]:
     """Return the calling user's group memberships. Used to filter pack-scoped
     artifacts; an empty list (or "*") means "all groups"."""
-    if not token or token not in _token_store:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return list(_token_store[token].get("groups", []))
+    return list(_principal(token).get("groups", []))
 
 
 @router.post("/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
     if not request.username:
         raise HTTPException(status_code=400, detail="Username required")
+
+    from services import cognito_auth
+
+    if cognito_auth.enabled():
+        try:
+            token = cognito_auth.login(request.username, request.password or "")
+        except cognito_auth.AuthError as e:
+            raise HTTPException(status_code=401, detail=str(e)) from e
+        # Read the profile back out of the token rather than trusting the
+        # request: the claims are what every subsequent call will be judged
+        # against, so the login response should show exactly those.
+        who = cognito_auth.principal(token)
+        return LoginResponse(
+            token=token,
+            username=who["username"],
+            role=who["role"],
+            department=who["department"],
+            groups=who["groups"],
+        )
+
     if request.username.lower() != MOCK_USERNAME or request.password != MOCK_PASSWORD:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -77,6 +129,15 @@ async def login(request: LoginRequest):
 
 @router.post("/logout")
 async def logout(token: str = Depends(oauth2_scheme)):
+    from services import cognito_auth
+
+    if cognito_auth.enabled():
+        # Revokes the refresh token, so no new tokens can be minted. The
+        # bearer already issued stays valid until it expires — see the
+        # revocation note in services/cognito_auth.py.
+        cognito_auth.logout(token or "")
+        return {"message": "Logged out"}
+
     if token and token in _token_store:
         del _token_store[token]
     return {"message": "Logged out"}

@@ -29,6 +29,9 @@ from aws_cdk import (
     aws_codebuild as codebuild,
 )
 from aws_cdk import (
+    aws_cognito as cognito,
+)
+from aws_cdk import (
     aws_dynamodb as dynamodb,
 )
 from aws_cdk import (
@@ -141,6 +144,60 @@ class AsyncSolveStack(Stack):
             sort_key=dynamodb.Attribute(name="gsi1sk",
                                         type=dynamodb.AttributeType.STRING),
             projection_type=dynamodb.ProjectionType.ALL,
+        )
+
+        # -- identity -----------------------------------------------------
+        # The last piece of per-process state. `routers/auth.py` mints a UUID
+        # and remembers what it stands for in a module dict, so a second
+        # replica rejects a token the first one issued. A Cognito JWT carries
+        # its claims instead, and every replica verifies it offline against
+        # this pool's public keys - nothing is looked up, so nothing is shared.
+        #
+        # `custom:role` and `custom:department` exist because the workbench
+        # already shows both on the user badge, and `cognito:groups` maps onto
+        # the `groups` list that `is_pack_visible` filters domain packs by. The
+        # claim names are the contract with services/cognito_auth.py.
+        user_pool = cognito.UserPool(
+            self, "Users",
+            self_sign_up_enabled=False,          # analysts are provisioned, not registered
+            sign_in_aliases=cognito.SignInAliases(username=True, email=True),
+            standard_attributes=cognito.StandardAttributes(
+                email=cognito.StandardAttribute(required=True, mutable=True),
+            ),
+            custom_attributes={
+                "role": cognito.StringAttribute(max_len=128, mutable=True),
+                "department": cognito.StringAttribute(max_len=128, mutable=True),
+            },
+            password_policy=cognito.PasswordPolicy(
+                min_length=12,
+                require_lowercase=True, require_uppercase=True,
+                require_digits=True, require_symbols=False,
+            ),
+            # A lab pool. Real deployments keep this and turn on MFA.
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
+        user_pool_client = user_pool.add_client(
+            "WorkbenchClient",
+            # No secret: the token is verified by signature, not by the caller
+            # proving it holds one, and a secret would mean every InitiateAuth
+            # call also computes a SECRET_HASH for no security gain here.
+            generate_secret=False,
+            auth_flows=cognito.AuthFlow(
+                # Keeps the existing login form working: the frontend still
+                # posts a username and password and gets a token back. The
+                # production path is the Hosted UI authorization-code flow,
+                # which keeps the password out of this service entirely.
+                user_password=True,
+                user_srp=True,
+            ),
+            # Short, because offline verification cannot see a sign-out: a
+            # revoked session's ID token stays valid until it expires, so the
+            # TTL *is* the revocation window.
+            id_token_validity=Duration.hours(1),
+            access_token_validity=Duration.hours(1),
+            refresh_token_validity=Duration.days(30),
+            prevent_user_existence_errors=True,
         )
 
         # -- image registry + remote builder ------------------------------
@@ -351,6 +408,10 @@ class AsyncSolveStack(Stack):
                   description="CMA_PLAYBOOK_ROLE_ARN")
         CfnOutput(self, "StateTableName", value=table.table_name,
                   description="CMA_STATE_TABLE")
+        CfnOutput(self, "UserPoolId", value=user_pool.user_pool_id,
+                  description="CMA_COGNITO_USER_POOL_ID")
+        CfnOutput(self, "UserPoolClientId", value=user_pool_client.user_pool_client_id,
+                  description="CMA_COGNITO_CLIENT_ID")
         CfnOutput(self, "WorkerImageRepo", value=image_repo.repository_uri,
                   description="ECR repo for the container worker")
         CfnOutput(self, "WorkerImageBuildProject", value=builder.project_name,

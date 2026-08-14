@@ -143,6 +143,52 @@ must not grow into one.
 
 ---
 
+## Cognito — identity without a session store
+
+A UUID token is a pointer into one process's memory, which is the single
+reason a second replica rejects a token the first one issued. The fix is not a
+shared token table — it is to stop needing one.
+
+A Cognito **ID token** carries its claims and is verified offline against the
+pool's public keys (`services/cognito_auth.py`). Nothing is looked up, so
+nothing is shared. What stays in process memory is a cache of Cognito's
+*public* keys, which is safe per-replica because it holds no session state.
+
+**Claim contract**, matching what the workbench already displays and filters on:
+
+| Claim | Used for |
+|---|---|
+| `cognito:username` | the username every router sees |
+| `cognito:groups` | the `groups` list `is_pack_visible` filters packs by |
+| `custom:role` | the user badge |
+| `custom:department` | the user badge |
+
+**Why the ID token, not the access token.** The API needs `custom:role` and
+`custom:department`, which Cognito puts only on the ID token. The purist rule —
+ID tokens for the client, access tokens for APIs — applies when the API is a
+separate resource server; here the API *is* the application that authenticated
+the user. `verify` asserts `token_use == "id"` rather than inferring it, so a
+future switch to scoped access tokens fails loudly instead of silently
+accepting the wrong shape.
+
+**Revocation.** Offline verification never asks Cognito anything, so a
+signed-out token keeps validating until it expires. `global_sign_out` revokes
+the refresh token immediately, so no *new* tokens can be minted, but the one in
+the user's hand lives out its TTL. Hence the 1-hour token validity: the TTL
+*is* the revocation window. A denylist would fix it and would also reintroduce
+the shared lookup this design exists to remove.
+
+**Login** uses `USER_PASSWORD_AUTH` so the existing login form keeps working —
+the frontend still posts a username and password and gets a token back. The
+production path is the Hosted UI authorization-code flow, which keeps the
+password out of this service entirely. This is the migration step, not the
+destination.
+
+Without `CMA_COGNITO_USER_POOL_ID` the mock login is untouched, so local
+development needs no AWS account.
+
+---
+
 ## SQS + Lambda — the async solve path
 
 **`Solves` queue → worker → `SolvesDlq` after 3 attempts.**
@@ -354,6 +400,6 @@ from packs, so arguably a cache), `playbooks._RUNS`, and
 task mutates its run in place as it progresses and polling reads the mutation,
 which needs a write-back-per-transition design rather than a find-and-replace.
 
-**Auth is still in-process.** The bearer-token store is a module dict, so a
-second replica rejects tokens the first one issued. It is the last piece of
-genuinely user-facing state that has not moved.
+**Auth is stateless when a pool is configured**, and a module dict otherwise —
+see the Cognito section above. The mock path is still the default, so the
+in-process token store is what runs locally.
