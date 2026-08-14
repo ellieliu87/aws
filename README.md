@@ -18,6 +18,14 @@ a directory drop, not a code-base rewrite.
   endpoint (`COF_BASE_URL`). Chosen at startup; `chat_specialist` raises
   with a clear setup-required message if neither is configured.
 
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [docs/SOLUTION-ARCHITECTURE.md](docs/SOLUTION-ARCHITECTURE.md) | **Start here.** What the system is, why it was re-architected, and the reasoning behind each design decision — in plain language. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The AWS implementation reference: exact configuration, service limits that shape the code, deployment order. |
+| [docs/ORCHESTRATOR.md](docs/ORCHESTRATOR.md) | Workflow engine mechanics step by step, and the corporate-proxy data integrations. |
+
 ## Architecture at a glance
 
 ```
