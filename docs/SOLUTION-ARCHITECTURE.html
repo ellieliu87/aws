@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The CMA Workbench on AWS</title>
+<style>
+  :root {
+    --paper:    #EFF2F4;
+    --surface:  #FBFCFD;
+    --surface-2:#E6EBEF;
+    --ink:      #131C22;
+    --ink-2:    #38474F;
+    --muted:    #64757F;
+    --rule:     #D3DBE1;
+    --rule-2:   #BEC9D1;
+    --accent:   #1F5A70;
+    --accent-2: #2E7E9B;
+    --free:     #2B6A4B;
+    --watch:    #8A6410;
+    --trap:     #9C3A29;
+    --free-bg:  #DFEDE5;
+    --watch-bg: #F2E9D4;
+    --trap-bg:  #F3DFDA;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:    #0F1519;
+      --surface:  #171F25;
+      --surface-2:#1F2A31;
+      --ink:      #E2EAEF;
+      --ink-2:    #BCCAD3;
+      --muted:    #8B9AA4;
+      --rule:     #263239;
+      --rule-2:   #33434C;
+      --accent:   #7DB4CC;
+      --accent-2: #A2CEE0;
+      --free:     #63B78C;
+      --watch:    #D4A54F;
+      --trap:     #E28A75;
+      --free-bg:  #163024;
+      --watch-bg: #33290F;
+      --trap-bg:  #351E19;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:    #0F1519;
+    --surface:  #171F25;
+    --surface-2:#1F2A31;
+    --ink:      #E2EAEF;
+    --ink-2:    #BCCAD3;
+    --muted:    #8B9AA4;
+    --rule:     #263239;
+    --rule-2:   #33434C;
+    --accent:   #7DB4CC;
+    --accent-2: #A2CEE0;
+    --free:     #63B78C;
+    --watch:    #D4A54F;
+    --trap:     #E28A75;
+    --free-bg:  #163024;
+    --watch-bg: #33290F;
+    --trap-bg:  #351E19;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 16.5px;
+    line-height: 1.62;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 61rem; margin: 0 auto; padding: 3.5rem 1.5rem 6rem; }
+
+  h1, h2, h3, h4 {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    font-weight: 600;
+    text-wrap: balance;
+    line-height: 1.22;
+    margin: 0;
+  }
+  h1 { font-size: 2.55rem; letter-spacing: -0.015em; }
+  h2 { font-size: 1.6rem; letter-spacing: -0.01em; }
+  h3 { font-size: 1.14rem; }
+  h4 { font-size: 1rem; }
+
+  p { margin: 0 0 1rem; max-width: 68ch; }
+  ul, ol { margin: 0 0 1rem; padding-left: 1.15rem; max-width: 68ch; }
+  li { margin-bottom: 0.4rem; }
+  li::marker { color: var(--muted); }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent-2); outline-offset: 3px; border-radius: 2px;
+  }
+
+  code {
+    font-family: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+    font-size: 0.87em;
+    background: var(--surface-2);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+  }
+
+  .eyebrow {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.72rem; letter-spacing: 0.13em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 0.6rem;
+  }
+
+  header.masthead {
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 1.6rem;
+    margin-bottom: 2.2rem;
+  }
+  header.masthead p.lede {
+    font-size: 1.12rem; color: var(--ink-2); margin-top: 1rem; max-width: 60ch;
+  }
+  .factbar {
+    display: flex; flex-wrap: wrap; gap: 0.5rem 1.75rem; margin-top: 1.4rem;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.76rem; color: var(--muted);
+  }
+  .factbar b { color: var(--ink-2); font-weight: 600; }
+
+  /* contents */
+  nav.toc {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 1.1rem 1.3rem; margin-bottom: 1rem;
+  }
+  nav.toc h2 {
+    font-size: 0.72rem; font-family: ui-monospace, Consolas, monospace;
+    letter-spacing: 0.13em; text-transform: uppercase; color: var(--muted);
+    margin-bottom: 0.7rem; border: none; padding: 0;
+  }
+  nav.toc ol {
+    list-style: none; padding: 0; margin: 0; max-width: none;
+    columns: 2; column-gap: 2.5rem;
+  }
+  nav.toc li { margin-bottom: 0.3rem; font-size: 0.93rem; break-inside: avoid; }
+  nav.toc .n {
+    font-family: ui-monospace, Consolas, monospace; color: var(--muted);
+    font-size: 0.8rem; margin-right: 0.5rem;
+  }
+
+  section { margin-top: 3.2rem; }
+  section > h2 {
+    padding-bottom: 0.5rem; border-bottom: 1px solid var(--rule-2); margin-bottom: 1.3rem;
+  }
+  section > h2 .n {
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 0.95rem; color: var(--accent); margin-right: 0.7rem;
+    font-weight: 600; letter-spacing: 0;
+  }
+  section > h2 + p.sub { color: var(--muted); margin-top: -0.4rem; }
+
+  h3 { margin-top: 2rem; margin-bottom: 0.5rem; }
+  h4 { margin-top: 1.4rem; margin-bottom: 0.35rem; }
+
+  /* decision records — the structure IS the content here */
+  .decision {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 3px; padding: 1.15rem 1.3rem; margin: 1.3rem 0;
+  }
+  .decision > h3 { margin: 0 0 0.9rem; font-size: 1.08rem; }
+  .decision dl { margin: 0; display: grid; gap: 0.7rem 1.1rem; }
+  .decision dt {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.66rem; letter-spacing: 0.1em; text-transform: uppercase;
+    font-weight: 600; color: var(--muted); padding-top: 0.22rem;
+  }
+  .decision dd { margin: 0; font-size: 0.95rem; color: var(--ink-2); }
+  .decision dd p { margin: 0 0 0.5rem; max-width: 62ch; }
+  .decision dd p:last-child { margin-bottom: 0; }
+  .decision dt.chose { color: var(--accent); }
+  .decision dt.gaveup { color: var(--trap); }
+  @media (min-width: 700px) {
+    .decision dl { grid-template-columns: 5.4rem 1fr; }
+    .decision dt { grid-column: 1; }
+    .decision dd { grid-column: 2; }
+  }
+
+  /* tables */
+  .tablewrap {
+    overflow-x: auto; border: 1px solid var(--rule);
+    border-radius: 3px; background: var(--surface); margin-bottom: 1.2rem;
+  }
+  table { border-collapse: collapse; width: 100%; min-width: 34rem; font-size: 0.9rem; }
+  th, td {
+    text-align: left; padding: 0.62rem 0.85rem;
+    border-bottom: 1px solid var(--rule); vertical-align: top;
+  }
+  thead th {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600;
+    background: var(--surface-2); border-bottom: 1px solid var(--rule-2);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.svc {
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 0.82rem; white-space: nowrap;
+  }
+
+  .pill {
+    display: inline-block;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.68rem; letter-spacing: 0.05em; text-transform: uppercase;
+    padding: 0.15em 0.5em; border-radius: 2px; white-space: nowrap; font-weight: 600;
+  }
+  .pill.free  { background: var(--free-bg);  color: var(--free); }
+  .pill.watch { background: var(--watch-bg); color: var(--watch); }
+  .pill.trap  { background: var(--trap-bg);  color: var(--trap); }
+
+  /* figures */
+  figure { margin: 1.6rem 0 2rem; }
+  .figbox {
+    overflow-x: auto; border: 1px solid var(--rule);
+    border-radius: 3px; background: var(--surface); padding: 1rem;
+  }
+  figure svg { max-width: 100%; height: auto;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  figcaption {
+    font-size: 0.88rem; color: var(--muted); margin-top: 0.7rem; max-width: 68ch;
+  }
+  figcaption b { color: var(--ink); }
+
+  .note {
+    border: 1px solid var(--rule-2); border-left: 3px solid var(--accent);
+    background: var(--surface); border-radius: 3px;
+    padding: 0.9rem 1.1rem; margin: 1.3rem 0; font-size: 0.94rem;
+  }
+  .note p:last-child { margin-bottom: 0; }
+  .note strong { color: var(--ink); }
+  .note.warn { border-left-color: var(--watch); }
+
+  details {
+    border: 1px solid var(--rule); border-radius: 3px;
+    background: var(--surface); padding: 0.75rem 1rem; margin-bottom: 0.7rem;
+  }
+  summary { cursor: pointer; font-weight: 600; font-size: 0.96rem; }
+  details[open] summary {
+    margin-bottom: 0.7rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--rule);
+  }
+  details p { font-size: 0.94rem; }
+  details p:last-child { margin-bottom: 0; }
+
+  footer {
+    margin-top: 4rem; padding-top: 1.2rem; border-top: 1px solid var(--rule);
+    font-size: 0.83rem; color: var(--muted);
+  }
+
+  @media (max-width: 620px) {
+    h1 { font-size: 2rem; }
+    .wrap { padding: 2.5rem 1.1rem 4rem; }
+    nav.toc ol { columns: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="masthead">
+  <p class="eyebrow">Solution architecture · CMA Workbench</p>
+  <h1>The CMA Workbench on AWS</h1>
+  <p class="lede">What the system is, why it needed re-architecting, and the reasoning behind each design decision — written to be read start to finish by someone who has not seen the code.</p>
+  <div class="factbar">
+    <span><b>Domain</b> capital planning · CCAR stress testing</span>
+    <span><b>Stack</b> FastAPI · React · AWS</span>
+    <span><b>Deployed</b> CmaWorkbenchAsync · us-east-1</span>
+    <span><b>Status</b> state tier built · hosting tier designed</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><span class="n">1</span><a href="#what">What the system does</a></li>
+    <li><span class="n">2</span><a href="#why">Why it needed re-architecting</a></li>
+    <li><span class="n">3</span><a href="#principles">Principles applied throughout</a></li>
+    <li><span class="n">4</span><a href="#how">How the platform works</a></li>
+    <li><span class="n">5</span><a href="#arch">The architecture, before and after</a></li>
+    <li><span class="n">6</span><a href="#decisions">Design decisions and trade-offs</a></li>
+    <li><span class="n">7</span><a href="#regulator">Meeting a regulator's expectations</a></li>
+    <li><span class="n">8</span><a href="#status">Built versus designed</a></li>
+    <li><span class="n">9</span><a href="#order">Why this order</a></li>
+    <li><span class="n">10</span><a href="#cost">Cost</a></li>
+    <li><span class="n">11</span><a href="#questions">Questions I expect</a></li>
+  </ol>
+</nav>
+
+<section id="what">
+  <h2><span class="n">1</span>What the system does</h2>
+
+  <p>The CMA Workbench is a self-service analytics platform for the analysts who produce a bank's capital-planning numbers — the deposit balance forecasts and net-interest-income projections that feed CCAR stress testing and the annual outlook.</p>
+
+  <p>Before a tool like this, that work is spreadsheets and one-off scripts. The workbench gives an analyst four things in one place:</p>
+
+  <ul>
+    <li><b>Data</b> — connect to a warehouse table or upload a file, and see its schema and sample rows immediately.</li>
+    <li><b>Models</b> — register an existing model artifact, or train a regression in the browser against bound data.</li>
+    <li><b>Workflows</b> — draw a pipeline on a canvas (data → transform → model → output), run it, and download the result.</li>
+    <li><b>Agents</b> — ask questions in plain language, with AI agents that can read the datasets, models, and runs the analyst is looking at.</li>
+  </ul>
+
+  <div class="note">
+    <p><strong>The characteristic that drives the architecture:</strong> the numbers this produces get filed with a regulator. That single fact shaped more of the design than any performance requirement did.</p>
+  </div>
+</section>
+
+<section id="why">
+  <h2><span class="n">2</span>Why it needed re-architecting</h2>
+
+  <p>The original build kept everything it knew in the memory of one running process — every dataset, every registered model, every completed run, every logged-in user's session.</p>
+
+  <p>Three consequences followed, and the third is the one that matters:</p>
+
+  <ol>
+    <li><b>Restarting lost work.</b> Deploy a fix on Friday afternoon and every dataset an analyst uploaded that week was gone.</li>
+    <li><b>It could not scale.</b> Adding a second server would not help, because the two servers would disagree about reality — a dataset uploaded to one was invisible to the other.</li>
+    <li><b>There was no durable record of what happened.</b> If a regulator asked "which calculation produced this number?", the honest answer was that the evidence lived in a process that had since restarted.</li>
+  </ol>
+
+  <div class="note">
+    <p><strong>The diagnosis matters more than the symptoms.</strong> This was not a deployment problem. There is no amount of load balancing, auto-scaling, or containerisation that fixes a process which holds its own truth. It was a <em>data design</em> problem, and it had to be solved as one before any hosting change would mean anything.</p>
+    <p>That is the thesis of this architecture, and the reason the work happened in the order it did.</p>
+  </div>
+</section>
+
+<section id="principles">
+  <h2><span class="n">3</span>Principles applied throughout</h2>
+  <p class="sub">Five rules shaped every decision that follows.</p>
+
+  <h4>Fix the data design before the hosting</h4>
+  <p>Moving state out of the process is what makes a second server meaningful. Doing it in the other order produces servers that disagree with each other — worse than one honest server.</p>
+
+  <h4>Every AWS dependency is optional</h4>
+  <p>Each integration checks for its configuration and falls back to the original local behaviour when absent. A developer with no AWS account runs the full application. This is not developer convenience for its own sake: it means the fallback path is exercised constantly, so it still works when it is needed, and the system stays testable without a cloud account.</p>
+
+  <h4>Prefer managed services with no idle cost</h4>
+  <p>This is a system used by a handful of analysts in bursts. Anything billing a standing capacity floor is the wrong shape, regardless of its technical merits.</p>
+
+  <h4>Make the audit trail a property of the design, not a feature</h4>
+  <p>Versioned artifacts, retained execution history, and immutable compiled plans are cheaper to build in from the start than to add under regulatory pressure.</p>
+
+  <h4>Say plainly what is built and what is designed</h4>
+  <p>Section 8 lists both. A design document that blurs the two is not usable by anyone.</p>
+</section>
+
+<section id="how">
+  <h2><span class="n">4</span>How the platform works</h2>
+  <p class="sub">Two distinct paths through the system, with different requirements.</p>
+
+  <h3>The interactive path</h3>
+  <p>An analyst clicks something; the answer comes back immediately. Browsing datasets, previewing data, editing a chart, talking to an agent. These are short, chatty, and latency-sensitive — including agent responses, which stream back token by token over a held-open connection.</p>
+
+  <h3>The workflow engine</h3>
+  <p>An analyst draws a pipeline on a canvas and runs it. This is the heart of the product, and it works like this:</p>
+
+  <ol>
+    <li><b>Validate before running.</b> The canvas is checked for problems while the diagram is still on screen — circular dependencies, a model whose input is missing, a model expecting a column the upstream data does not have. Fixing a broken pipeline is far cheaper before it runs than after.</li>
+    <li><b>Work out the order.</b> The pipeline is a dependency graph, so the engine sorts it into an execution order and rejects anything circular.</li>
+    <li><b>Resolve the inputs.</b> Each step's input is assembled from what feeds it — a scenario, an uploaded dataset, a warehouse table, or the output of an earlier model.</li>
+    <li><b>Run each model in isolation.</b> Model artifacts are third-party code. They execute in a separate sandboxed process with a time limit, so a model that hangs or crashes cannot take the platform down with it.</li>
+    <li><b>Record every run.</b> Inputs, outputs, timing, status, and the scenario context are all retained.</li>
+    <li><b>Write the outputs.</b> Results go to a CSV download or a warehouse table. Where several models feed one output — three deposit models feeding a net-interest-income calculator, for instance — their results are merged and labelled by source.</li>
+    <li><b>Explain failures in the analyst's language.</b> Failures are classified into named causes with a plain-English hint (<code>FEATURE_MISMATCH</code>, <code>DQC_FAILED</code>, <code>TIMEOUT</code>) rather than surfacing a stack trace. An analyst who can read the error can usually fix it themselves.</li>
+  </ol>
+
+  <p>Analysts can save named pipelines and reload them. The in-progress canvas also survives a browser reload independently, so switching tabs never loses work.</p>
+</section>
+
+<section id="arch">
+  <h2><span class="n">5</span>The architecture, before and after</h2>
+  <p class="sub">Two drawings. The interesting thing is not the box count — it is that two specific things started out in the wrong place.</p>
+
+  <figure>
+    <div class="figbox">
+<svg viewBox="0 0 820 390" role="img" aria-label="Current architecture in four zones: the browser; a Vite dev server on the laptop serving the React bundle and proxying slash-api; a single FastAPI process on the same laptop holding application state in memory and running the model engine as an in-request subprocess; and managed AWS services for models and the document corpus.">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+          <marker id="ah-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+          </marker>
+        </defs>
+
+        <!-- zones, drawn first so they sit behind everything -->
+        <rect x="8" y="26" width="126" height="352" rx="4" fill="var(--surface-2)"/>
+        <text x="14" y="18" font-size="9" letter-spacing="0.08em" fill="var(--muted)">CLIENT</text>
+
+        <rect x="144" y="26" width="146" height="352" rx="4" fill="var(--surface-2)"/>
+        <text x="150" y="18" font-size="9" letter-spacing="0.08em" fill="var(--muted)">FRONTEND · your laptop</text>
+
+        <rect x="300" y="26" width="300" height="352" rx="4" fill="var(--surface-2)"/>
+        <text x="306" y="18" font-size="9" letter-spacing="0.08em" fill="var(--muted)">BACKEND · your laptop</text>
+
+        <rect x="612" y="26" width="200" height="352" rx="4" fill="var(--surface-2)"/>
+        <text x="618" y="18" font-size="9" letter-spacing="0.08em" fill="var(--accent)">AWS · managed</text>
+
+        <!-- client -->
+        <rect x="16" y="170" width="104" height="52" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="68" y="194" text-anchor="middle" font-size="12" fill="currentColor">Browser</text>
+        <text x="68" y="210" text-anchor="middle" font-size="10" fill="var(--muted)">React 18</text>
+
+        <line x1="120" y1="196" x2="162" y2="196" stroke="currentColor" stroke-width="1.5" marker-end="url(#ah)"/>
+
+        <rect x="156" y="164" width="122" height="64" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="217" y="184" text-anchor="middle" font-size="11" fill="currentColor">Vite dev server</text>
+        <text x="217" y="199" text-anchor="middle" font-size="9.5" fill="var(--muted)">:5173 serves the</text>
+        <text x="217" y="212" text-anchor="middle" font-size="9.5" fill="var(--muted)">React bundle</text>
+
+        <line x1="278" y1="196" x2="314" y2="196" stroke="currentColor" stroke-width="1.5" marker-end="url(#ah)"/>
+        <text x="296" y="188" text-anchor="middle" font-size="9" fill="var(--muted)">proxies</text>
+        <text x="296" y="212" text-anchor="middle" font-size="9" fill="var(--muted)">/api</text>
+
+        <!-- the single process -->
+        <rect x="320" y="52" width="252" height="304" rx="4" fill="none" stroke="currentColor" stroke-width="2"/>
+        <text x="446" y="72" text-anchor="middle" font-size="12" fill="currentColor">ONE uvicorn process :8001</text>
+
+        <rect x="336" y="86" width="220" height="38" rx="3" fill="none" stroke="currentColor" stroke-width="1"/>
+        <text x="446" y="110" text-anchor="middle" font-size="11" fill="currentColor">20 FastAPI routers</text>
+
+        <rect x="336" y="136" width="220" height="52" rx="3" fill="none" stroke="var(--trap)" stroke-width="1.75"/>
+        <text x="446" y="157" text-anchor="middle" font-size="11" fill="var(--trap)">state: 12 module dicts</text>
+        <text x="446" y="174" text-anchor="middle" font-size="9.5" fill="var(--muted)">datasets · runs · playbooks · tokens</text>
+
+        <rect x="336" y="200" width="220" height="52" rx="3" fill="none" stroke="var(--trap)" stroke-width="1.75"/>
+        <text x="446" y="221" text-anchor="middle" font-size="11" fill="var(--trap)">engine as subprocess</text>
+        <text x="446" y="238" text-anchor="middle" font-size="9.5" fill="var(--muted)">inside the HTTP request, 30 s cap</text>
+
+        <rect x="336" y="264" width="220" height="38" rx="3" fill="none" stroke="currentColor" stroke-width="1"/>
+        <text x="446" y="288" text-anchor="middle" font-size="11" fill="currentColor">local sample_docs/</text>
+
+        <text x="446" y="326" text-anchor="middle" font-size="10" fill="var(--trap)">restart = every dataset, run and token gone</text>
+        <text x="446" y="342" text-anchor="middle" font-size="10" fill="var(--trap)">one heavy solve can take down the API</text>
+
+        <!-- aws, already built -->
+        <line x1="572" y1="106" x2="626" y2="106" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ah-a)"/>
+        <text x="599" y="98" text-anchor="middle" font-size="9" fill="var(--muted)">converse</text>
+        <rect x="632" y="82" width="172" height="48" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="718" y="102" text-anchor="middle" font-size="11" fill="var(--accent)">Bedrock · Nova</text>
+        <text x="718" y="118" text-anchor="middle" font-size="9.5" fill="var(--muted)">4 call sites</text>
+
+        <line x1="572" y1="180" x2="626" y2="180" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ah-a)"/>
+        <text x="599" y="172" text-anchor="middle" font-size="9" fill="var(--muted)">embed</text>
+        <rect x="632" y="156" width="172" height="48" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="4 3"/>
+        <text x="718" y="176" text-anchor="middle" font-size="11" fill="var(--accent)">Bedrock · Titan</text>
+        <text x="718" y="192" text-anchor="middle" font-size="9.5" fill="var(--muted)">built, off by default</text>
+
+        <line x1="572" y1="286" x2="626" y2="286" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ah-a)"/>
+        <line x1="626" y1="296" x2="572" y2="296" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ah-a)"/>
+        <text x="599" y="278" text-anchor="middle" font-size="9" fill="var(--muted)">push / pull</text>
+        <rect x="632" y="262" width="172" height="52" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="718" y="282" text-anchor="middle" font-size="11" fill="var(--accent)">S3 · corpus</text>
+        <text x="718" y="298" text-anchor="middle" font-size="9.5" fill="var(--muted)">versioned, 36 objects</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Before.</b> Four zones, left to right: the browser, then two separate processes on one machine — a dev server serving the React bundle and proxying <code>/api</code> through to the application — then managed AWS. Blue is on AWS and working.
+      <br><br>
+      The two red boxes are the whole problem. Application state lives <em>inside</em> the process, and the quant engine runs <em>inside</em> the HTTP request. Neither is a deployment issue — you cannot fix either by adding a second copy of this process.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <div class="figbox">
+<svg viewBox="0 0 880 470" role="img" aria-label="Target architecture in four zones: a frontend zone where CloudFront and S3 serve the static React bundle with no server; a backend zone where a load balancer fans requests across stateless Fargate replicas authenticated by Cognito; a state and managed services zone holding DynamoDB, S3 and Bedrock; and an async workers zone where SQS, a Lambda worker and a Step Functions state machine with a human approval gate run off the request path.">
+        <defs>
+          <marker id="bh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+          <marker id="bh-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+          </marker>
+        </defs>
+
+        <!-- zones, drawn first so they sit behind everything -->
+        <rect x="6" y="120" width="272" height="98" rx="4" fill="var(--surface-2)"/>
+        <text x="12" y="133" font-size="9" letter-spacing="0.08em" fill="var(--muted)">FRONTEND · static bundle, no server</text>
+
+        <rect x="296" y="40" width="310" height="178" rx="4" fill="var(--surface-2)"/>
+        <text x="302" y="53" font-size="9" letter-spacing="0.08em" fill="var(--muted)">BACKEND · stateless API</text>
+
+        <rect x="640" y="64" width="188" height="206" rx="4" fill="var(--surface-2)"/>
+        <text x="646" y="77" font-size="9" letter-spacing="0.08em" fill="var(--muted)">STATE + MANAGED SERVICES</text>
+
+        <rect x="130" y="296" width="698" height="88" rx="4" fill="var(--surface-2)"/>
+        <text x="136" y="310" font-size="9" letter-spacing="0.08em" fill="var(--muted)">ASYNC WORKERS · off the request path</text>
+
+        <!-- edge -->
+        <rect x="12" y="150" width="92" height="46" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="58" y="178" text-anchor="middle" font-size="11" fill="currentColor">Browser</text>
+
+        <line x1="104" y1="173" x2="140" y2="173" stroke="currentColor" stroke-width="1.5" marker-end="url(#bh)"/>
+
+        <rect x="146" y="142" width="120" height="62" rx="3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 3"/>
+        <text x="206" y="166" text-anchor="middle" font-size="11" fill="currentColor">CloudFront</text>
+        <text x="206" y="182" text-anchor="middle" font-size="11" fill="currentColor">+ S3 static</text>
+        <text x="206" y="196" text-anchor="middle" font-size="9" fill="var(--muted)">React build</text>
+
+        <line x1="266" y1="173" x2="302" y2="173" stroke="currentColor" stroke-width="1.5" marker-end="url(#bh)"/>
+
+        <rect x="308" y="150" width="86" height="46" rx="3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 3"/>
+        <text x="351" y="178" text-anchor="middle" font-size="11" fill="currentColor">ALB</text>
+
+        <!-- cognito -->
+        <rect x="308" y="60" width="86" height="46" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="351" y="88" text-anchor="middle" font-size="11" fill="var(--accent)">Cognito</text>
+        <line x1="351" y1="106" x2="351" y2="144" stroke="var(--accent)" stroke-width="1.25" marker-end="url(#bh-a)"/>
+        <text x="378" y="130" text-anchor="middle" font-size="9" fill="var(--muted)">JWT</text>
+
+        <!-- stateless replicas: three offset cards -->
+        <rect x="446" y="132" width="150" height="58" rx="3" fill="none" stroke="currentColor" stroke-width="1"/>
+        <rect x="440" y="140" width="150" height="58" rx="3" fill="none" stroke="currentColor" stroke-width="1"/>
+        <rect x="434" y="148" width="150" height="58" rx="3" fill="none" stroke="currentColor" stroke-width="2"/>
+        <text x="509" y="172" text-anchor="middle" font-size="11" fill="currentColor">FastAPI on Fargate</text>
+        <text x="509" y="189" text-anchor="middle" font-size="9.5" fill="var(--muted)">stateless · N replicas</text>
+        <line x1="394" y1="173" x2="428" y2="173" stroke="currentColor" stroke-width="1.5" marker-end="url(#bh)"/>
+
+        <!-- externalised state -->
+        <line x1="584" y1="150" x2="646" y2="112" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#bh-a)"/>
+        <rect x="652" y="86" width="164" height="50" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="734" y="106" text-anchor="middle" font-size="11" fill="var(--accent)">DynamoDB</text>
+        <text x="734" y="122" text-anchor="middle" font-size="9.5" fill="var(--muted)">4 registries + gsi1</text>
+
+        <line x1="584" y1="172" x2="646" y2="172" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#bh-a)"/>
+        <rect x="652" y="148" width="164" height="50" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="734" y="168" text-anchor="middle" font-size="11" fill="var(--accent)">S3</text>
+        <text x="734" y="184" text-anchor="middle" font-size="9.5" fill="var(--muted)">corpus · artifacts</text>
+
+        <line x1="584" y1="194" x2="646" y2="232" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#bh-a)"/>
+        <rect x="652" y="210" width="164" height="50" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="734" y="230" text-anchor="middle" font-size="11" fill="var(--accent)">Bedrock</text>
+        <text x="734" y="246" text-anchor="middle" font-size="9.5" fill="var(--muted)">Converse · embeddings</text>
+
+        <!-- async path -->
+        <line x1="509" y1="206" x2="509" y2="316" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#bh)"/>
+        <text x="509" y="268" text-anchor="middle" font-size="9" fill="var(--muted)">enqueue solve,</text>
+        <text x="509" y="281" text-anchor="middle" font-size="9" fill="var(--muted)">return 202</text>
+
+        <rect x="434" y="322" width="150" height="50" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="509" y="342" text-anchor="middle" font-size="11" fill="var(--accent)">SQS</text>
+        <text x="509" y="358" text-anchor="middle" font-size="9.5" fill="var(--muted)">+ dead-letter queue</text>
+
+        <line x1="584" y1="347" x2="646" y2="347" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#bh-a)"/>
+        <text x="615" y="339" text-anchor="middle" font-size="9" fill="var(--muted)">poll</text>
+
+        <rect x="652" y="322" width="164" height="50" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="734" y="342" text-anchor="middle" font-size="11" fill="var(--accent)">Lambda worker</text>
+        <text x="734" y="358" text-anchor="middle" font-size="9.5" fill="var(--muted)">scales on depth</text>
+
+        <line x1="734" y1="322" x2="734" y2="266" stroke="var(--accent)" stroke-width="1.25" marker-end="url(#bh-a)"/>
+        <text x="788" y="298" text-anchor="middle" font-size="9" fill="var(--muted)">writes result</text>
+
+        <!-- step functions -->
+        <rect x="140" y="322" width="256" height="50" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="268" y="342" text-anchor="middle" font-size="11" fill="var(--accent)">Step Functions</text>
+        <text x="268" y="358" text-anchor="middle" font-size="9.5" fill="var(--muted)">playbook phases + human approval gate</text>
+        <line x1="396" y1="347" x2="428" y2="347" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#bh-a)"/>
+
+        <!-- observability strip -->
+        <rect x="140" y="404" width="676" height="42" rx="3" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="478" y="424" text-anchor="middle" font-size="10.5" fill="var(--muted)">CloudWatch logs + traces · CloudTrail audit · Secrets Manager · KMS · least-privilege task roles</text>
+        <text x="478" y="438" text-anchor="middle" font-size="9.5" fill="var(--muted)">all of it defined in CDK, so the environment is reproducible and disposable</text>
+
+        <!-- legend -->
+        <line x1="12" y1="404" x2="44" y2="404" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="52" y="408" font-size="9.5" fill="var(--muted)">built</text>
+        <line x1="12" y1="424" x2="44" y2="424" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 3"/>
+        <text x="52" y="428" font-size="9.5" fill="var(--muted)">planned</text>
+      </svg>
+    </div>
+    <figcaption>
+      <b>After.</b> Same four zones, rearranged. Solid blue exists today; dashed is still to build. Both red boxes are gone, and notice <em>how</em>: state moved sideways into DynamoDB, S3 and Cognito so any replica can serve any request, and the engine moved <em>downwards</em> out of the request path onto a queue, so a spike in solves grows the worker pool instead of taking down the API.
+      <br><br>
+      Everything still dashed is the hosting tier — a CDN, a load balancer, and stateless replicas. That is configuration. Everything now solid was a data-design change, which is why it went first: you cannot reach this drawing by deploying harder.
+    </figcaption>
+  </figure>
+
+  <h3>What each service is doing, and why it was chosen</h3>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Service</th><th>Role</th><th>Why this one</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="svc">DynamoDB</td>
+          <td>Datasets, models, saved workflows, completed runs</td>
+          <td>Access patterns are simple and known in advance — fetch one item by id, or list all of a type. On-demand billing costs nothing when nobody is clicking. A relational database would bill for an idle instance and buy flexibility this workload does not need.</td>
+        </tr>
+        <tr>
+          <td class="svc">Cognito</td>
+          <td>Identity</td>
+          <td>Issues signed tokens that carry the user's identity and permissions, so no server needs to look up a session. See §6.3.</td>
+        </tr>
+        <tr>
+          <td class="svc">S3</td>
+          <td>Uploaded files, model artifacts, documents, results</td>
+          <td>Versioning matters less for durability than for evidence: it answers which version of a methodology document was in force when a number was published.</td>
+        </tr>
+        <tr>
+          <td class="svc">SQS + Lambda</td>
+          <td>Computation off the request path</td>
+          <td>A model run inside a web request is a resource risk with a user-visible failure mode. Queued work runs on a worker that scales independently; failures retry three times, then land in a dead-letter queue rather than disappearing.</td>
+        </tr>
+        <tr>
+          <td class="svc">Step Functions</td>
+          <td>Multi-step runs with human approval</td>
+          <td>"Wait for a person" is a first-class durable state rather than a process that must stay alive. See §6.4.</td>
+        </tr>
+        <tr>
+          <td class="svc">ECR + CodeBuild</td>
+          <td>The worker's container image</td>
+          <td>Built inside AWS from uploaded source, so no developer needs Docker and the build is reproducible. The image tag is a hash of the source, which makes "what exactly is running?" answerable.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>How the records are organised</h3>
+
+  <figure>
+    <div class="figbox">
+<svg viewBox="0 0 840 320" role="img" aria-label="The state table groups records by type and identifies them within it: workflow, dataset, model and run partitions each holding records keyed by id. Run records additionally carry a second key of function plus timestamp, which forms a sparse index containing only runs, ordered by time.">
+  <defs>
+    <marker id="th-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+
+  <!-- base table -->
+  <text x="20" y="22" font-size="9.5" letter-spacing="0.08em" fill="var(--muted)">THE STATE TABLE — grouped by type, identified by id</text>
+  <rect x="20" y="34" width="400" height="216" rx="4" fill="var(--surface-2)"/>
+
+  <text x="38" y="56" font-size="9.5" letter-spacing="0.06em" fill="var(--muted)">GROUP</text>
+  <text x="196" y="56" font-size="9.5" letter-spacing="0.06em" fill="var(--muted)">RECORD</text>
+  <line x1="34" y1="64" x2="406" y2="64" stroke="var(--rule-2)" stroke-width="1"/>
+
+  <text x="38" y="88"  font-size="11.5" fill="currentColor">workflow</text>
+  <text x="196" y="88"  font-size="11.5" fill="var(--muted)">sw-abc123</text>
+  <text x="38" y="118" font-size="11.5" fill="currentColor">dataset</text>
+  <text x="196" y="118" font-size="11.5" fill="var(--muted)">ds-abc123</text>
+  <text x="38" y="148" font-size="11.5" fill="currentColor">model</text>
+  <text x="196" y="148" font-size="11.5" fill="var(--muted)">mdl-abc123</text>
+
+  <rect x="30" y="164" width="380" height="76" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="38" y="188" font-size="11.5" fill="var(--accent)">run</text>
+  <text x="196" y="188" font-size="11.5" fill="var(--muted)">run-abc123</text>
+  <text x="38" y="212" font-size="11.5" fill="var(--accent)">run</text>
+  <text x="196" y="212" font-size="11.5" fill="var(--muted)">run-def456</text>
+  <text x="38" y="232" font-size="9" fill="var(--muted)">…and one more for every execution, forever</text>
+
+  <text x="38" y="272" font-size="10" fill="currentColor">Fetch one record: direct lookup.</text>
+  <text x="38" y="288" font-size="10" fill="currentColor">List a whole group: one read.</text>
+  <text x="38" y="304" font-size="10" fill="var(--muted)">Neither scans the table.</text>
+
+  <!-- bridge -->
+  <line x1="424" y1="200" x2="486" y2="200" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#th-a)"/>
+  <text x="455" y="186" text-anchor="middle" font-size="9" fill="var(--muted)">runs also</text>
+  <text x="455" y="217" text-anchor="middle" font-size="9" fill="var(--muted)">carry a 2nd key</text>
+
+  <!-- index -->
+  <text x="492" y="22" font-size="9.5" letter-spacing="0.08em" fill="var(--accent)">THE INDEX — the same runs, re-keyed by time</text>
+  <rect x="492" y="34" width="330" height="216" rx="4" fill="var(--surface-2)"/>
+
+  <text x="510" y="56" font-size="9.5" letter-spacing="0.06em" fill="var(--muted)">GROUP</text>
+  <text x="666" y="56" font-size="9.5" letter-spacing="0.06em" fill="var(--muted)">ORDERED BY</text>
+  <line x1="506" y1="64" x2="808" y2="64" stroke="var(--rule-2)" stroke-width="1"/>
+
+  <text x="510" y="92"  font-size="10.5" fill="var(--accent)">run#capital_planning</text>
+  <text x="666" y="92"  font-size="10.5" fill="var(--muted)">2026-08-14T09:02Z</text>
+  <text x="510" y="120" font-size="10.5" fill="var(--accent)">run#capital_planning</text>
+  <text x="666" y="120" font-size="10.5" fill="var(--muted)">2026-08-13T14:38Z</text>
+  <text x="510" y="148" font-size="10.5" fill="var(--accent)">run#liquidity</text>
+  <text x="666" y="148" font-size="10.5" fill="var(--muted)">2026-08-13T11:20Z</text>
+
+  <line x1="506" y1="166" x2="808" y2="166" stroke="var(--rule)" stroke-width="1" stroke-dasharray="3 3"/>
+  <text x="510" y="188" font-size="10" fill="currentColor">"Newest 50 for this function"</text>
+  <text x="510" y="205" font-size="10" fill="currentColor">stops reading after 50.</text>
+  <text x="510" y="228" font-size="9.5" fill="var(--muted)">Cost of a page no longer depends</text>
+  <text x="510" y="242" font-size="9.5" fill="var(--muted)">on how many runs exist.</text>
+
+  <text x="510" y="288" font-size="10" fill="var(--muted)">Only records carrying the second key</text>
+  <text x="510" y="304" font-size="10" fill="var(--muted)">appear here — the rest cost nothing.</text>
+</svg>
+    </div>
+    <figcaption>
+      <b>One table, two ways in.</b> Records are grouped by <em>type</em> and identified within it, so fetching one record and listing all records of a type are each a single operation and neither scans the table.
+      <br><br>
+      Runs additionally carry a second key — function plus timestamp — which is what makes "the newest fifty runs" a direct range read instead of reading every run ever recorded. Only records that carry that second key appear in the index, so datasets, models and workflows cost nothing there.
+    </figcaption>
+  </figure>
+</section>
+
+<section id="decisions">
+  <h2><span class="n">6</span>Design decisions and trade-offs</h2>
+  <p class="sub">Each decision states the problem, the options, the choice, and what was given up.</p>
+
+  <div class="decision">
+    <h3>6.1 — Externalising state before changing the hosting</h3>
+    <dl>
+      <dt>Problem</dt><dd>The application could not run as more than one copy.</dd>
+      <dt>Options</dt><dd>Add sticky sessions at the load balancer so each user always returns to the same server; or move the state out of the process.</dd>
+      <dt class="chose">Chose</dt><dd>Move the state out. Sticky sessions would have hidden the problem rather than solved it — a server restart still loses that user's work, and one overloaded server cannot shed load to another.</dd>
+      <dt class="gaveup">Gave up</dt><dd>Reads that used to be instant memory lookups became network calls. That cost was real and had to be paid back — see 6.6.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>6.2 — One table, not one per record type</h3>
+    <dl>
+      <dt>Problem</dt><dd>Four kinds of record needed durable storage.</dd>
+      <dt class="chose">Chose</dt><dd>A single table, where each record's key is its type plus its id. Fewer things to provision, monitor and back up. The alternative — four tables — buys separation the application does not need, since nothing queries across types.</dd>
+      <dt class="gaveup">Gave up</dt><dd>It is less immediately obvious to someone browsing the console. A diagram and this document are the mitigation.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>6.3 — Stateless tokens instead of a shared session store</h3>
+    <dl>
+      <dt>Problem</dt><dd>Sessions lived in one server's memory, so a second server rejected tokens the first one issued. This was the last thing preventing horizontal scaling.</dd>
+      <dt>Options</dt><dd>Move sessions to a shared store (a database or a cache), or stop needing a session lookup at all.</dd>
+      <dt class="chose">Chose</dt>
+      <dd>
+        <p>The second. A Cognito token is <em>signed</em> and carries the user's identity, role, department and group memberships inside it. Any server verifies it mathematically against Cognito's public keys — no lookup, so nothing to share.</p>
+        <p>A shared session store is still a shared dependency: another thing to scale, another thing whose outage is an outage. Verification needs nothing but the token and a cached public key.</p>
+      </dd>
+      <dt class="gaveup">Gave up</dt>
+      <dd>
+        <p>A signed token cannot be un-signed. Signing a user out revokes their ability to obtain <em>new</em> tokens, but the one already in their browser stays valid until it expires. The mitigation is a one-hour lifetime, which makes the expiry window the revocation window.</p>
+        <p>A revocation denylist would close that gap and would also reintroduce exactly the shared lookup this design removed. If the requirement were immediate revocation — plausible for a privileged-access system — the denylist would be correct, and the cost accepted deliberately rather than by default.</p>
+      </dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>6.4 — Human approval as a durable state, not application code</h3>
+    <dl>
+      <dt>Problem</dt><dd>Model governance requires a person to review results before they are published — the champion/challenger gate. Implemented in application code, the process must stay alive while it waits, which could be hours or days. A restart mid-wait strands the run, requiring a repair routine to detect and clean up the wreckage afterwards.</dd>
+      <dt class="chose">Chose</dt>
+      <dd>
+        <p>Step Functions, where "wait for a human" is a first-class state. The execution parks and holds until the reviewer's answer arrives, surviving restarts and deployments.</p>
+        <p>The approval gate is a <em>control</em>. A control implemented as a convention that a repair routine cleans up after is difficult to evidence to an examiner. A control implemented as a state machine has an execution history showing who approved what and when.</p>
+      </dd>
+      <dt class="gaveup">Gave up</dt><dd>Orchestration logic now lives in two places conceptually — the canvas the analyst draws, and the state machine it compiles into. Managed by generating the second from the first.</dd>
+    </dl>
+  </div>
+
+  <figure>
+    <div class="figbox">
+<svg viewBox="0 0 820 280" role="img" aria-label="The playbook state machine: a Solve step with three retries falls to an explicit Failed state; on success the execution reaches an Approval Gate which holds for up to twenty-four hours waiting for a reviewer, timing out to an Approval Expired state; on approval it proceeds to Publish.">
+  <defs>
+    <marker id="gh-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+    </marker>
+    <marker id="gh-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--trap)"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="20" font-size="9.5" letter-spacing="0.08em" fill="var(--muted)">THE PLAYBOOK STATE MACHINE — the wait belongs to the machine, not to a process</text>
+
+  <!-- solve -->
+  <rect x="24" y="46" width="180" height="62" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="114" y="72" text-anchor="middle" font-size="12" fill="var(--accent)">Solve</text>
+  <text x="114" y="90" text-anchor="middle" font-size="9.5" fill="var(--muted)">retry 3× on transient error</text>
+
+  <line x1="204" y1="77" x2="266" y2="77" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#gh-a)"/>
+
+  <!-- gate -->
+  <rect x="272" y="34" width="228" height="86" rx="3" fill="none" stroke="var(--accent)" stroke-width="2"/>
+  <text x="386" y="60" text-anchor="middle" font-size="12" fill="var(--accent)">Approval gate</text>
+  <text x="386" y="80" text-anchor="middle" font-size="9.5" fill="var(--muted)">execution parks here — up to 24 h</text>
+  <text x="386" y="98" text-anchor="middle" font-size="9.5" fill="var(--muted)">survives restarts and deploys</text>
+  <text x="386" y="114" text-anchor="middle" font-size="9" fill="currentColor">a person reviews the results</text>
+
+  <line x1="500" y1="77" x2="562" y2="77" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#gh-a)"/>
+  <text x="531" y="69" text-anchor="middle" font-size="9" fill="var(--muted)">approved</text>
+
+  <!-- publish -->
+  <rect x="568" y="46" width="180" height="62" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="658" y="72" text-anchor="middle" font-size="12" fill="var(--accent)">Publish</text>
+  <text x="658" y="90" text-anchor="middle" font-size="9.5" fill="var(--muted)">records who approved it</text>
+
+  <!-- failure branches -->
+  <line x1="114" y1="108" x2="114" y2="176" stroke="var(--trap)" stroke-width="1.25" marker-end="url(#gh-t)"/>
+  <text x="122" y="146" font-size="9" fill="var(--muted)">retries exhausted</text>
+  <rect x="24" y="182" width="180" height="46" rx="3" fill="none" stroke="var(--trap)" stroke-width="1.25"/>
+  <text x="114" y="210" text-anchor="middle" font-size="11" fill="var(--trap)">Failed</text>
+
+  <line x1="386" y1="120" x2="386" y2="176" stroke="var(--trap)" stroke-width="1.25" marker-end="url(#gh-t)"/>
+  <text x="394" y="152" font-size="9" fill="var(--muted)">nobody approved in 24 h</text>
+  <rect x="272" y="182" width="228" height="46" rx="3" fill="none" stroke="var(--trap)" stroke-width="1.25"/>
+  <text x="386" y="210" text-anchor="middle" font-size="11" fill="var(--trap)">Approval expired</text>
+
+  <line x1="20" y1="256" x2="800" y2="256" stroke="var(--rule)" stroke-width="1"/>
+  <text x="20" y="272" font-size="10" fill="var(--muted)">Every path terminates explicitly. Nothing sits in limbo, so nothing needs a repair routine to find it later — and the execution history is the audit evidence.</text>
+</svg>
+    </div>
+    <figcaption>
+      <b>The approval gate.</b> The middle state holds the execution — for up to 24 hours — until a reviewer responds. Because the wait belongs to the state machine rather than to a running process, a deployment or a restart does not disturb it, and the execution history is the audit evidence. Every path terminates explicitly; nothing sits in limbo.
+    </figcaption>
+  </figure>
+
+  <div class="decision">
+    <h3>6.5 — Compile in the web tier, deploy from somewhere else</h3>
+    <dl>
+      <dt>Problem</dt><dd>Saving a workflow needs to produce a runnable state machine. The obvious implementation gives the web tier permission to create AWS resources.</dd>
+      <dt class="chose">Chose</dt>
+      <dd>
+        <p>Split it. Saving <em>compiles</em> the canvas and registers a versioned plan; a separate privileged process deploys pending plans.</p>
+        <p>The web tier is the internet-facing component. It should not hold permission to create infrastructure, because that permission is what an attacker who compromises it inherits. A broken diagram is still rejected immediately, while the analyst is looking at it — the user experience does not suffer for the security property.</p>
+      </dd>
+      <dt>Bonus</dt><dd>Every compiled version is retained rather than overwritten, with its hash and timestamp. That is the audit answer to "which calculation produced the number we filed?"</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>6.6 — Accepting a performance cost, then paying it back</h3>
+    <dl>
+      <dt>Problem</dt><dd>After 6.1, a page that previously did twenty instant memory lookups now made twenty network calls. Validating a canvas of eleven steps cost twenty-one round trips for three distinct records.</dd>
+      <dt class="chose">Chose</dt>
+      <dd>
+        <p>Remember records for the duration of a single request. Twenty-one round trips became two.</p>
+        <p>Scoped to one request deliberately: a longer-lived cache introduces staleness, where one server shows an old version of a model another server just updated. Scoped this way, the data is internally consistent for the operation and fresh on the next one.</p>
+      </dd>
+      <dt class="gaveup">Gave up</dt><dd>Within one long-running operation the data is a snapshot. For a workflow run that is arguably the property you want: the run should not observe a model changing underneath it halfway through.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>6.7 — Designing for the query, not the storage</h3>
+    <dl>
+      <dt>Problem</dt><dd>Listing an analyst's recent runs meant reading <em>every run ever recorded</em> and sorting them, because the records were organised by identifier — which sorts meaninglessly. Cost grew forever.</dd>
+      <dt class="chose">Chose</dt><dd>A secondary index organising the same records by function and time, so "the newest fifty" is a direct range read that stops after fifty. The cost of a page no longer depends on how many runs exist — ten runs or ten million, the same.</dd>
+      <dt class="gaveup">Gave up</dt><dd>Nothing, on the read path. But it fixed only half the problem: storage still grows without bound. Read cost and retention are separate questions and only the first is answered — see §7.4.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>6.8 — Keeping the record when the payload will not fit</h3>
+    <dl>
+      <dt>Problem</dt><dd>The database caps a single record at 400 KB. A run carries its full result set, so an unusually large run exceeds it — and the write fails <em>after</em> the computation has already succeeded.</dd>
+      <dt>Options</dt><dd>Fail the request; silently truncate; or store the result elsewhere and link to it.</dd>
+      <dt class="chose">Chose</dt><dd>Keep the run record, drop the row-level detail, and annotate it with how many rows were omitted. The user still receives their complete results; only the historical copy is trimmed. Failing would discard work that succeeded; silently truncating would produce a record that lies.</dd>
+      <dt class="gaveup">Gave up</dt><dd>Full history for outsized runs. Storing the payload in object storage is the right long-term answer and is the next step if large runs become common — this is a deliberate, documented interim.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>6.9 — Records are durable; so are the files</h3>
+    <dl>
+      <dt>Problem</dt><dd>Moving the records to a database left the <em>files</em> — uploaded datasets, model artifacts — on the local disk of whichever server received the upload. This is worse than an obvious failure: the record appears everywhere, so the dataset shows in every listing, and then reading it fails on every server except one.</dd>
+      <dt class="chose">Chose</dt><dd>Uploads write to object storage as well as local disk, and any server missing a file fetches it on demand and keeps a local copy. A cache rather than direct reads every time, because model files are read repeatedly during a run.</dd>
+      <dt>Detail</dt><dd>Model artifacts depend on companion files to load at all. Fetching the model without them fails with an error naming a missing <em>class</em>, not a missing <em>file</em> — a confusing way to discover the problem. The fetch brings the companions along.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>6.10 — Measuring an upgrade, and shipping it turned off</h3>
+    <dl>
+      <dt>Problem</dt><dd>The document search behind the AI agents used keyword matching. The obvious upgrade is semantic search using embeddings.</dd>
+      <dt>What happened</dt>
+      <dd>
+        <p>It was built, measured against a test set — and it <em>lost</em>. Keyword matching found the right document first every time; the semantic version managed three out of five.</p>
+        <p>Every document in the corpus describes deposit balance modelling, so every passage resembles every other and semantic similarity has almost nothing to separate. Meanwhile analysts search using the corpus's own vocabulary, which is precisely where keyword matching is strongest.</p>
+      </dd>
+      <dt class="chose">Chose</dt><dd>Ship it switched off, one setting away, with the condition for revisiting written down: a larger, more varied corpus. Which is exactly the regulatory-filings case, where many agencies across decades describe the same concepts in different words.</dd>
+      <dt>Caveat</dt><dd>Five queries, written by the same person who chose the expected answers. A defensible benchmark needs analyst-written queries with blind relevance labels. The measurement was enough to decline an upgrade, not enough to call the question settled.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>6.11 — Lambda now; containers when the constraints change</h3>
+    <dl>
+      <dt class="chose">Chose</dt><dd>Lambda for computation. Runs are short, bursty and event-driven, and it costs nothing when idle.</dd>
+      <dt>Revisit when</dt>
+      <dd>
+        <p>Any of these becomes true, and none is yet: a single run exceeds fifteen minutes (Lambda's hard limit); the container image exceeds ten gigabytes; a model needs more memory than Lambda provides, or a GPU; or cold-start latency stops being acceptable.</p>
+        <p>The migration is contained: Step Functions invokes container tasks with the same pattern it invokes Lambda, so the state machine design survives the change.</p>
+      </dd>
+    </dl>
+  </div>
+</section>
+
+<section id="regulator">
+  <h2><span class="n">7</span>Meeting a regulator's expectations</h2>
+  <p class="sub">The decisions above were made with these questions in mind.</p>
+
+  <h3>7.1 Can you reproduce a filed number?</h3>
+  <p>Every workflow version compiles to an immutable plan, retained with its hash and timestamp — never overwritten, and not deleted when the workflow is. Every run is recorded with its inputs, outputs, and the scenario context it ran under. Model artifacts are versioned in object storage.</p>
+
+  <h3>7.2 Who approved this, and can you prove it?</h3>
+  <p>The approval gate is a state machine state, not a convention. The execution history is the evidence, produced automatically rather than assembled after the fact. It also enforces a real timeout — an approval nobody grants within twenty-four hours fails explicitly, rather than a run sitting in limbo.</p>
+
+  <h3>7.3 What can each component do if compromised?</h3>
+  <p>Permissions are scoped to intent, not convenience. The compute worker can write results and read model files — not the document corpus, which lives in the same bucket under a different prefix. The internet-facing web tier holds no permission to create infrastructure at all. Access is by role, never by stored credentials.</p>
+
+  <h3>7.4 What is your retention policy?</h3>
+  <div class="note warn">
+    <p><strong>This is the open item, and it is a policy question rather than a technical one.</strong> Run history currently grows without bound. Two viable answers: automatic expiry after a defined period, or archival to cheaper storage with nothing ever deleted.</p>
+    <p>The right choice depends on whether a run is <em>evidence</em> — in which case archival is the only acceptable answer — or working scratch. Given these numbers feed regulatory filings, archival is the likely answer, and the versioned document bucket is the established pattern to follow.</p>
+    <p>Two related gaps, stated rather than hidden: the records database has no point-in-time backup enabled, and its deletion policy would remove it along with the stack. Both are appropriate for a lab and both must change before anything in it is treated as a record.</p>
+  </div>
+
+  <h3>7.5 Where does the data live?</h3>
+  <p>One region, deliberately. Nothing is replicated across regions, so there is no question about where a given record resides. Data residency requirements are met by choosing the region, not by configuring replication.</p>
+</section>
+
+<section id="status">
+  <h2><span class="n">8</span>Built versus designed</h2>
+  <p class="sub">Everything above the line has been deployed and verified against real AWS services. Everything below it is a drawing.</p>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Capability</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Account guardrails — MFA, budgets, audit logging</td><td><span class="pill free">built</span></td></tr>
+        <tr><td>AI model access via managed service</td><td><span class="pill free">built</span></td></tr>
+        <tr><td>Document storage, versioned</td><td><span class="pill free">built</span></td></tr>
+        <tr><td>Semantic document search</td><td><span class="pill watch">built · measured · off</span></td></tr>
+        <tr><td>Computation off the request path — queue + worker</td><td><span class="pill free">built</span></td></tr>
+        <tr><td>Multi-step runs with a durable approval gate</td><td><span class="pill free">built</span></td></tr>
+        <tr><td>Canvas compiled to a runnable state machine</td><td><span class="pill free">built</span></td></tr>
+        <tr><td>Application records in DynamoDB</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Time-ordered index for run history</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Uploaded files in S3, servers fetch on demand</td><td><span class="pill free">built</span></td></tr>
+        <tr><td>Identity with stateless tokens</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td><b>Web tier on containers behind a load balancer</b></td><td><span class="pill trap">designed</span></td></tr>
+        <tr><td><b>Static frontend on a CDN</b></td><td><span class="pill trap">designed</span></td></tr>
+        <tr><td>Retention policy for run history</td><td><span class="pill watch">open decision</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="order">
+  <h2><span class="n">9</span>Why this order</h2>
+  <p class="sub">The sequence was not arbitrary, and the reasoning is itself an answer to how to approach a migration.</p>
+
+  <p><b>Guardrails first.</b> Budgets, audit logging and least-privilege access before the first real API call — because retrofitting those is how cloud programmes acquire findings.</p>
+
+  <p><b>Then the things that make the application honest</b> — real model access, real document storage — each independently demonstrable.</p>
+
+  <p><b>Then computation off the request path</b>, because that removed a user-visible failure mode without touching how the application stored anything.</p>
+
+  <p><b>Then state</b>, in dependency order: records first, then the performance cost that created, then the files, then identity. Each step was verifiable before the next began.</p>
+
+  <p><b>Hosting last</b>, and deliberately so. Running the web tier on multiple servers before its state left the process would have produced servers that disagree with each other. The unglamorous half had to go first — and having finished it, the remaining work is configuration rather than redesign.</p>
+</section>
+
+<section id="cost">
+  <h2><span class="n">10</span>Cost</h2>
+
+  <p>The deployed footprint runs at effectively zero:</p>
+  <ul>
+    <li><b>DynamoDB</b> — on-demand billing, within the always-free allowance</li>
+    <li><b>Lambda, SQS, Step Functions</b> — within permanently-free tiers at this volume</li>
+    <li><b>S3</b> — pennies for the corpus and artifacts</li>
+    <li><b>Cognito</b> — free below fifty thousand monthly active users</li>
+    <li><b>ECR</b> — one image retained, which is what keeps it inside the free allowance</li>
+  </ul>
+
+  <p>The one deliberate trade: keeping a single container image means there is no previous image to roll back to. Recovery is rebuilding from a known-good source tree, which is acceptable because the image tag <em>is</em> a hash of that tree. Retaining two costs a few cents a month and buys instant rollback — a reasonable thing to change, and a decision rather than an oversight.</p>
+
+  <div class="note">
+    <p><strong>The pattern worth naming:</strong> every service here bills on use, not on standing capacity. That was a selection criterion, not a happy accident.</p>
+  </div>
+</section>
+
+<section id="questions">
+  <h2><span class="n">11</span>Questions I expect</h2>
+
+  <details>
+    <summary>"Walk me through a system you designed."</summary>
+    <p>Lead with the diagnosis, not the diagram. This system could not run on more than one server, and the reason was not how it was deployed — it was that the application held its state in memory. That distinction determined everything else: it meant the fix was a data-design change, and it meant hosting had to come last rather than first.</p>
+  </details>
+
+  <details>
+    <summary>"How would you make this highly available?"</summary>
+    <p>Be specific about what was actually blocking it. Four record types moved to a managed database, uploaded files moved to object storage, and sessions became signed tokens that need no shared lookup.</p>
+    <p>Then be honest about what that cost — reads became network calls, which needed a per-request cache to pay back — and what remains: the web tier still runs as a single process, and that step is now configuration rather than redesign.</p>
+  </details>
+
+  <details>
+    <summary>"How do you handle a long-running human approval?"</summary>
+    <p>A durable state machine, not application code. Explain why: code that waits in-process needs a repair routine to clean up after restarts, and a control that needs cleaning up after is hard to evidence to an examiner.</p>
+  </details>
+
+  <details>
+    <summary>"How would you build search over thirty years of regulatory filings?"</summary>
+    <p>The interesting part is not similarity search — it is ingestion and trust: splitting documents along meaningful boundaries, attaching metadata that can be filtered, citing sources so an answer can be audited, and choosing a vector store whose cost model matches an access pattern that is bursty and small.</p>
+    <p>Mention the measurement that said keyword search won on <em>this</em> corpus, and why a heterogeneous filings corpus is the case where that flips.</p>
+  </details>
+
+  <details>
+    <summary>"When would you not use an AI model?"</summary>
+    <p>For the numerical optimisation at the core of this platform. It is a deterministic calculation with a correct answer, it must be reproducible for a regulator, and a language model is worse at it in every dimension that matters. The agents explain results and help build pipelines; they do not compute the numbers.</p>
+  </details>
+
+  <details>
+    <summary>"What would you do differently?"</summary>
+    <p>Two things. The retention policy should have been decided before run history was stored rather than after — it is a policy question that constrains the data model, and answering it late risks a migration.</p>
+    <p>And the semantic search work should have started with the evaluation set rather than the implementation; building it first meant discovering it lost after the effort was spent, when a day defining the benchmark would have found the same answer sooner.</p>
+  </details>
+</section>
+
+<footer>
+  Companion documents: <a href="ARCHITECTURE.md">ARCHITECTURE.md</a> for AWS implementation detail — exact configuration, the service limits that shape the code, deployment order — and <a href="ORCHESTRATOR.md">ORCHESTRATOR.md</a> for workflow engine mechanics and the corporate-proxy data integrations.
+  <br><br>
+  Free-tier allowances and service pricing change; verify current figures in the AWS console before relying on any number here.
+</footer>
+
+</div>
+</body>
+</html>

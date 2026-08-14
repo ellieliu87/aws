@@ -4,7 +4,7 @@ What runs in AWS, why each piece is shaped the way it is, and what is still
 missing. Everything here is declared in `backend/infra/cdk/async_stack.py` as
 one CloudFormation stack, `CmaWorkbenchAsync`.
 
-> **Start with [SOLUTION-ARCHITECTURE.md](SOLUTION-ARCHITECTURE.md)** if you
+> **Start with [SOLUTION-ARCHITECTURE.html](SOLUTION-ARCHITECTURE.html)** if you
 > want the design decisions and their rationale in plain language. This
 > document is the implementation reference underneath it: exact configuration,
 > the limits that shape the code, and the operational detail.

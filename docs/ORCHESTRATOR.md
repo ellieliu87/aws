@@ -3,7 +3,7 @@
 > For the design rationale behind the workflow engine — why validation runs
 > before execution, why models execute in isolation, why compiling and
 > deploying are separated — see
-> [SOLUTION-ARCHITECTURE.md](SOLUTION-ARCHITECTURE.md) §4 and §6.5. This
+> [SOLUTION-ARCHITECTURE.html](SOLUTION-ARCHITECTURE.html) §4 and §6.5. This
 > document is the step-by-step mechanics and the proxy-environment runbook.
 
 This document covers two things:
