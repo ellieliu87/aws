@@ -187,6 +187,23 @@
     .decision dd { grid-column: 2; }
   }
 
+  /* glossary — plain-language definitions, available without leaving the page */
+  .glossary { margin: 0.9rem 0 0; }
+  .glossary dl {
+    margin: 0; display: grid; gap: 0.55rem 1.2rem;
+  }
+  .glossary dt {
+    font-weight: 600; color: var(--ink); font-size: 0.93rem; padding-top: 0.05rem;
+  }
+  .glossary dd {
+    margin: 0; font-size: 0.93rem; color: var(--ink-2); max-width: 64ch;
+  }
+  @media (min-width: 720px) {
+    .glossary dl { grid-template-columns: 12rem 1fr; }
+    .glossary dt { grid-column: 1; }
+    .glossary dd { grid-column: 2; }
+  }
+
   /* tables */
   .tablewrap {
     overflow-x: auto; border: 1px solid var(--rule);
@@ -297,6 +314,43 @@
     <li><span class="n">11</span><a href="#questions">Questions I expect</a></li>
   </ol>
 </nav>
+
+<details id="terms" style="margin-bottom:1rem;">
+  <summary>Terms used in this document</summary>
+  <div class="glossary">
+    <dl>
+      <dt>State machine</dt>
+      <dd>A workflow written down as data — a list of named steps and what comes after each one. AWS reads that definition and runs it, remembering where every execution has got to. Called a state machine because a running execution sits in exactly one step at a time and moves between them along defined transitions.</dd>
+
+      <dt>Step Functions</dt>
+      <dd>The AWS service that stores and runs state machines. It is what makes "wait for a person to approve this" survive a restart: the waiting belongs to the service, not to any running process.</dd>
+
+      <dt>Compile / deploy</dt>
+      <dd><b>Compiling</b> turns the analyst's canvas into a state machine definition. It is pure computation — data in, data out, no AWS involved. <b>Deploying</b> is the call that turns that definition into a real, runnable thing in the AWS account. They need very different permissions, which is the point of §6.5.</dd>
+
+      <dt>Lambda</dt>
+      <dd>Runs a piece of code on demand without a server to maintain. You are billed per invocation, so idle costs nothing. Its constraint is a hard fifteen-minute ceiling per run.</dd>
+
+      <dt>Fargate</dt>
+      <dd>Runs a long-lived container without a server to maintain. Suited to something that must stay up and answer requests, where Lambda suits short bursts of work. This is where the web tier is designed to run — see §6.11 for when it becomes necessary.</dd>
+
+      <dt>Replica</dt>
+      <dd>One of several identical copies of the application running at the same time, so that one failing does not take the service down. Making more than one copy possible is what most of this document is about.</dd>
+
+      <dt>Queue / dead-letter queue</dt>
+      <dd>A queue holds work to be done later so the website does not have to wait for it. A dead-letter queue is where a message goes after it has failed several times — so failures are kept for inspection rather than silently discarded.</dd>
+
+      <dt>Token</dt>
+      <dd>The thing your browser sends with every request to prove who you are. The distinction that matters here: a token can be a <em>reference</em> the server must look up, or a <em>signed document</em> carrying the facts inside it. §6.3 is about moving from the first to the second.</dd>
+
+      <dt>Role</dt>
+      <dd>An identity a piece of software assumes to get permission to do something, instead of holding a stored username and password. "Passing a role" — attaching one to a resource you are creating — is a powerful permission, because whoever can pass roles can potentially attach one more privileged than they hold.</dd>
+
+      <dt>Cold start</dt>
+      <dd>The extra delay on the first request after a period of inactivity, while the environment is prepared. The price of paying nothing while idle.</dd>
+    </dl>
+  </div>
+</details>
 
 <section id="what">
   <h2><span class="n">1</span>What the system does</h2>
@@ -750,7 +804,7 @@
       <dt>Problem</dt><dd>Model governance requires a person to review results before they are published — the champion/challenger gate. Implemented in application code, the process must stay alive while it waits, which could be hours or days. A restart mid-wait strands the run, requiring a repair routine to detect and clean up the wreckage afterwards.</dd>
       <dt class="chose">Chose</dt>
       <dd>
-        <p>Step Functions, where "wait for a human" is a first-class state. The execution parks and holds until the reviewer's answer arrives, surviving restarts and deployments.</p>
+        <p>Move the sequence out of application code and into a <b>state machine</b> — a workflow written down as data, which AWS runs on your behalf, remembering where each execution has got to. "Wait for a human" becomes one of its steps, so the execution parks and holds until the reviewer answers, surviving restarts and deployments.</p>
         <p>The approval gate is a <em>control</em>. A control implemented as a convention that a repair routine cleans up after is difficult to evidence to an examiner. A control implemented as a state machine has an execution history showing who approved what and when.</p>
       </dd>
       <dt class="gaveup">Gave up</dt><dd>Orchestration logic now lives in two places conceptually — the canvas the analyst draws, and the state machine it compiles into. Managed by generating the second from the first.</dd>
@@ -816,13 +870,24 @@
   <div class="decision">
     <h3>6.5 — Compile in the web tier, deploy from somewhere else</h3>
     <dl>
-      <dt>Problem</dt><dd>Saving a workflow needs to produce a runnable state machine. The obvious implementation gives the web tier permission to create AWS resources.</dd>
+      <dt>Problem</dt>
+      <dd>
+        <p>When an analyst saves a pipeline, the drawing has to become something AWS can actually run — a state machine. Getting there is two separate operations:</p>
+        <p><b>Compiling</b> translates the canvas into a state machine definition. The two are the same shape already — named boxes and arrows on one side, named steps and what-comes-next on the other — so this is translation, not interpretation. It is pure computation: data in, data out, no AWS call anywhere.</p>
+        <p><b>Deploying</b> is the call that turns that definition into a real, runnable thing in the account. It needs permission to create a state machine, and permission to attach an execution role to it.</p>
+        <p>The obvious implementation does both in the web tier, which hands the internet-facing server both of those permissions.</p>
+      </dd>
       <dt class="chose">Chose</dt>
       <dd>
-        <p>Split it. Saving <em>compiles</em> the canvas and registers a versioned plan; a separate privileged process deploys pending plans.</p>
-        <p>The web tier is the internet-facing component. It should not hold permission to create infrastructure, because that permission is what an attacker who compromises it inherits. A broken diagram is still rejected immediately, while the analyst is looking at it — the user experience does not suffer for the security property.</p>
+        <p>Split them along that seam. Saving compiles and registers a versioned plan; a separate privileged process, running under its own identity, deploys pending plans.</p>
+        <p>The web tier should not hold permission to create infrastructure, because that permission is what an attacker who compromises it inherits — and attaching roles is the sharpest edge of it, since whoever can attach roles can potentially attach one more privileged than they hold.</p>
+        <p>Nothing is lost on the analyst's side: a broken diagram is still rejected in under a second, while they are looking at it. Compiling is the half that produces the user-facing value, and it is the half that needs no permissions at all.</p>
       </dd>
-      <dt>Bonus</dt><dd>Every compiled version is retained rather than overwritten, with its hash and timestamp. That is the audit answer to "which calculation produced the number we filed?"</dd>
+      <dt>Bonus</dt>
+      <dd>
+        <p>Every compiled version is retained rather than overwritten, with its hash and timestamp. That is the audit answer to "which calculation produced the number we filed?"</p>
+        <p>And because each saved pipeline compiles to its own state machine rather than being fed through one generic interpreter, <b>the execution graph AWS shows you is the analyst's diagram</b>. When a run fails, the console highlights the same box they drew. The generic alternative would have moved the interpreter from application code into AWS and lost that.</p>
+      </dd>
     </dl>
   </div>
 
