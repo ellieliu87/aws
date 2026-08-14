@@ -191,6 +191,35 @@
     .decision dd { grid-column: 2; }
   }
 
+  /* build log — a dated record of what broke, grouped by phase */
+  .logphase {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--accent); font-weight: 600;
+    margin: 2.2rem 0 0.2rem; padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--rule-2);
+  }
+  .logentry {
+    display: grid; grid-template-columns: 2.2rem 1fr; gap: 0 1rem;
+    padding: 1rem 0; border-top: 1px solid var(--rule);
+  }
+  .logphase + .logentry { border-top: none; }
+  .logentry .n {
+    font-family: ui-monospace, Consolas, monospace; font-size: 0.8rem;
+    color: var(--muted); padding-top: 0.3rem; font-variant-numeric: tabular-nums;
+  }
+  .logentry h4 { margin: 0 0 0.35rem; }
+  .logentry p { margin: 0 0 0.5rem; font-size: 0.93rem; max-width: 66ch; }
+  .logentry p:last-child { margin-bottom: 0; }
+  .tag {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.66rem; letter-spacing: 0.09em; text-transform: uppercase;
+    font-weight: 600; margin-right: 0.5em;
+  }
+  .tag.broke  { color: var(--trap); }
+  .tag.fix    { color: var(--free); }
+  .tag.lesson { color: var(--accent); }
+
   /* glossary — plain-language definitions, available without leaving the page */
   .glossary { margin: 0.9rem 0 0; }
   .glossary dl {
@@ -316,6 +345,7 @@
     <li><span class="n">9</span><a href="#order">Why this order</a></li>
     <li><span class="n">10</span><a href="#cost">Cost</a></li>
     <li><span class="n">11</span><a href="#questions">Questions I expect</a></li>
+    <li><span class="n">12</span><a href="#log">What went wrong along the way</a></li>
   </ol>
 </nav>
 
@@ -1135,6 +1165,258 @@
     <p>Two things. The retention policy should have been decided before run history was stored rather than after — it is a policy question that constrains the data model, and answering it late risks a migration.</p>
     <p>And the semantic search work should have started with the evaluation set rather than the implementation; building it first meant discovering it lost after the effort was spent, when a day defining the benchmark would have found the same answer sooner.</p>
   </details>
+</section>
+
+<section id="log">
+  <h2><span class="n">12</span>What went wrong along the way</h2>
+  <p class="sub">Section 6 says what was chosen. This says what it cost to find out — the failures, in the order they happened, with what each one taught.</p>
+
+  <div class="note">
+    <p><strong>Why this is in the document.</strong> A design that only records its successes is a design nobody can learn from, and several decisions in §6 are only defensible once you know what was tried first. Two entries below are corrections to claims made earlier on this page.</p>
+  </div>
+
+  <p class="logphase">Setting up the account</p>
+
+  <div class="logentry">
+    <div class="n">01</div>
+    <div>
+      <h4>Guardrails before the first API call</h4>
+      <p>An administrator identity with multi-factor authentication, the root account locked away, two budget alerts, and audit logging on — all before writing a line of integration code.</p>
+      <p><span class="tag lesson">Lesson</span>Access to billing information is a separate switch that only the root account can flip. An administrator without it gets refused on budgets despite holding full permissions everywhere else. Cloud governance is not one dial.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">02</div>
+    <div>
+      <h4>A comma that would have silently disabled everything</h4>
+      <p><span class="tag broke">Broke</span>Two settings landed on one line of a configuration file, so the value of the first became the whole rest of the line. The check against it failed quietly, and the application would have carried on using the old provider while appearing configured for the new one.</p>
+      <p><span class="tag lesson">Lesson</span>The nastiest class of configuration bug: no error, no crash, just the wrong system answering. It argues for a startup check that the setting which was <em>resolved</em> matches the one that was <em>requested</em>.</p>
+    </div>
+  </div>
+
+  <p class="logphase">Getting the AI models working</p>
+
+  <div class="logentry">
+    <div class="n">03</div>
+    <div>
+      <h4>The seam already existed</h4>
+      <p>Adding a third AI provider meant widening a function that already mapped a requested model name onto whatever the environment could serve — not introducing a new abstraction.</p>
+      <p><span class="tag lesson">Lesson</span>Widening an existing seam beats inventing one. The four places that call a model all had the same shape, so the change landed in one file.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">04</div>
+    <div>
+      <h4>Access denied — four independent gates, one culprit</h4>
+      <p><span class="tag broke">Broke</span>The model was refused for the account, with an error that did not say why.</p>
+      <p><span class="tag fix">Fix</span>A single command separates the four gates that all have to be open: permissions, account entitlement, regional availability, and the vendor's own terms. Three read fine; only the vendor agreement was missing.</p>
+      <p><span class="tag lesson">Lesson</span>Model access is account governance, not application code. No amount of engineering downstream fixes a missing agreement — and knowing <em>which</em> of four gates is shut is the difference between a five-minute fix and a day.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">05</div>
+    <div>
+      <h4>The constraint produced the better design</h4>
+      <p>Being unable to use the preferred model meant dropping that vendor's dedicated client — which only speaks to that vendor — in favour of the provider-neutral interface that handles every model the same way.</p>
+      <p><span class="tag lesson">Lesson</span>Switching models is now a one-line configuration change rather than a migration, and the originally-preferred model needs no code at all when it is granted. The vendor-specific client would have locked that in.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">06</div>
+    <div>
+      <h4>A limit that varies by model, read from the error</h4>
+      <p><span class="tag broke">Broke</span>A request exceeded one model's output ceiling — a default that was fine for the model originally targeted and too high for its replacement.</p>
+      <p><span class="tag fix">Fix</span>Rather than maintain a table of per-model limits that goes stale every time a model ships, read the ceiling out of the rejection message, reduce, and retry once. Self-tuning for models that do not exist yet.</p>
+    </div>
+  </div>
+
+  <p class="logphase">Document search for the agents</p>
+
+  <div class="logentry">
+    <div class="n">07</div>
+    <div>
+      <h4>A new account is rate-limited harder than a mature one</h4>
+      <p><span class="tag broke">Broke</span>Building the index hit throttling at eight concurrent requests, after the default retries were exhausted.</p>
+      <p><span class="tag fix">Fix</span>Switch the client to the retry mode that slows itself down based on observed throttling, rather than retrying a fixed number of times and giving up.</p>
+      <p><span class="tag lesson">Lesson</span>The fallback path earned its keep here: search dropped back to keyword ranking and kept answering instead of failing.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">08</div>
+    <div>
+      <h4>Over half the corpus was the same text twice</h4>
+      <p>Removing duplicates cut the corpus by more than half — shared caveats and identical passages repeated verbatim across documents were filling the top results with the same paragraph several times over.</p>
+      <p><span class="tag lesson">Lesson</span>The best improvement in the whole phase had nothing to do with the technology being evaluated. It improved <em>both</em> ranking methods and halved the ongoing cost. Look at the data before optimising the algorithm.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">09</div>
+    <div>
+      <h4>Measured the upgrade — and shipped it switched off</h4>
+      <p>Semantic search lost to keyword matching on this corpus, so it went in behind a setting that defaults to off. See §6.10 for why, and for the honest limits of that measurement.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">10</div>
+    <div>
+      <h4>Versioning, not durability, was the reason for object storage</h4>
+      <p>Re-uploading a revised methodology document retained its predecessor. That is what answers "which version was in force when this number was published" — the question a regulator actually asks.</p>
+      <p><span class="tag lesson">Lesson</span>The storage layout also explained the duplication in entry 08 outright: uploaded copies and original copies were byte-identical. Every document was in the corpus twice, and the file listing said so plainly once it existed.</p>
+    </div>
+  </div>
+
+  <p class="logphase">Blocked — and what that taught</p>
+
+  <div class="logentry">
+    <div class="n">11</div>
+    <div>
+      <h4>Establish the blast radius before deciding what to do</h4>
+      <p><span class="tag broke">Broke</span>Two services refused every call with a subscription error. Not a permissions problem, and not a code problem — no code had been written yet.</p>
+      <p><span class="tag fix">Fix</span>Probing the <em>whole</em> service surface first made the decision obvious: everything needed for the next phase answered normally, so that phase went ahead untouched and no speculative integration was written for a service that could not be called.</p>
+      <p><span class="tag lesson">Lesson</span>"This service is blocked" and "the account is blocked" imply completely different plans. Ten minutes of probing separated them.</p>
+    </div>
+  </div>
+
+  <p class="logphase">Getting work off the request path</p>
+
+  <div class="logentry">
+    <div class="n">12</div>
+    <div>
+      <h4>A gate that actually holds</h4>
+      <p>Verified against live infrastructure rather than assumed: work queued and returned immediately, the worker ran it and stored the result, and an execution parked at the approval gate was still parked ten seconds later — then released when its token was answered.</p>
+      <p><span class="tag lesson">Lesson</span>That parked execution is the entire reason this is a state machine and not a loop in the application. It survives restarts and deploys, and it is inspectable while it waits. A blocked thread in a web server is neither.</p>
+      <p><span class="tag broke">Broke</span>Permission changes take time to propagate. The function rejected a role it could not yet see, and creation needed three attempts behind a retry. Better built in than discovered in a pipeline.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">13</div>
+    <div>
+      <h4>The same infrastructure, described instead of scripted</h4>
+      <p>A 539-line provisioning script became roughly 130 lines of infrastructure-as-code. Everything cut was bookkeeping: create-versus-update branching, retry loops for permission propagation, wait-for-ready polling, and hand-written policies the tool derives from the wiring.</p>
+      <p><span class="tag lesson">Lesson</span>The real payoff is the preview. Changing the worker's memory printed exactly what would change before anything was touched. The script had no way to answer "what would this do?" — and that question is the difference between a routine change and a risky one.</p>
+    </div>
+  </div>
+
+  <p class="logphase">Making the drawn canvas actually runnable</p>
+
+  <div class="logentry">
+    <div class="n">14</div>
+    <div>
+      <h4>A correction to an earlier claim on this page</h4>
+      <p><span class="tag fix">Fix</span>An earlier version of this document said the backend re-interpreted the analyst's canvas. It never did — the canvas was stored as data nothing read. The real gap was two unconnected representations of the same ordering, one in the browser and one in the engine.</p>
+      <p><span class="tag lesson">Lesson</span>Keeping the compiler a pure function paid immediately: the ordering, the cycle check and the name-collision handling were all testable with no credentials at all, and the result could be validated by AWS without creating anything.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">15</div>
+    <div>
+      <h4>A version has to mean "what this does changed"</h4>
+      <p><span class="tag broke">Broke</span>The first implementation versioned the whole definition — and the workflow's display name lives inside it. So renaming a workflow minted a new version of a calculation that had not changed.</p>
+      <p><span class="tag fix">Fix</span>Version only the executable content. In an audit trail, a version that changes for cosmetic reasons is worse than no version, because it destroys the meaning of the ones that matter.</p>
+      <p><span class="tag lesson">Lesson</span>Deleting infrastructure is asynchronous. A deleted state machine kept appearing in listings for up to a minute, so the cleanup routine reported something it had just removed. Found only by running it twice in quick succession — and on its first run it caught a genuine orphan, which is exactly what it is for.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">16</div>
+    <div>
+      <h4>Real models, in an image built by AWS</h4>
+      <p>The evidence decided this rather than a preference: most bundled models load with almost nothing, but two carry heavyweight scientific-computing dependencies. The resulting image is far past the size a plain function allows, so a container it had to be.</p>
+      <p><span class="tag broke">Broke</span>Reused containers cross-contaminated. Every model folder ships a companion file under the same name; the language caches the first one imported and the platform reuses that cache, so the first model to load won and every other one failed with a mismatch.</p>
+      <p><span class="tag broke">Broke</span>Raising the worker's time limit broke the deployment, because the queue refuses a configuration where a message becomes visible again before the work could possibly have finished. The code had a comment stating that exact rule — which is precisely why it got broken. It is now derived from the timeout rather than written down beside it.</p>
+      <p><span class="tag lesson">Lesson</span>Verify against a known-good baseline, not merely for the absence of errors. The same model produced identical numbers to six decimal places in the cloud and on a laptop — which is the check that matters when the output is a regulatory figure.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">17</div>
+    <div>
+      <h4>A correct result, discarded on the way out</h4>
+      <p><span class="tag broke">Broke</span>The state machine threw away a correct answer because it was told to read a field that only one of the two response shapes contains. The computation succeeded, the workflow failed, and the two facts looked unrelated.</p>
+      <p><span class="tag lesson">Lesson</span>Column order is load-bearing and silently so. Several of these models take their inputs positionally, so a wrongly-ordered table produces confidently wrong numbers rather than an error. Relying on the order a caller happens to send would have worked by luck.</p>
+    </div>
+  </div>
+
+  <p class="logphase">Moving the state out of the process</p>
+
+  <div class="logentry">
+    <div class="n">18</div>
+    <div>
+      <h4>The only test that mattered</h4>
+      <p>Create a workflow through the API, discard every application module, rebuild the application from scratch, and ask for it again. It is there — with its graph, across an update, and staying deleted after a delete. That is the problem in §2 actually gone rather than argued about.</p>
+      <p><span class="tag lesson">Lesson</span>The test initially "failed" on its own fallback check, because removing an environment variable does not unset it when the application reloads its configuration file. Setting it empty is what "unset" has to mean there. A test that lies about its own setup is worse than no test.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">19</div>
+    <div>
+      <h4>The bug this pattern hides</h4>
+      <p><span class="tag broke">Broke</span>A dictionary hands back its own object, so modifying what you fetched <em>was</em> the write. An accessor hands back a copy, so the identical line of code silently persists nothing. Three places depended on the old behaviour, and none of them failed loudly.</p>
+      <p><span class="tag lesson">Lesson</span>Moving storage behind an accessor changes the <em>semantics</em>, not just the mechanism. Fetch-modify-store is the pattern to search for before starting, and it is invisible in a change that otherwise looks like a rename.</p>
+      <p><span class="tag lesson">Lesson</span>The migration surfaced an unrelated bug that had been there all along: an unknown model id was being reported as a failed calculation rather than as "not found". Rewriting a call site is when you finally read it.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">20</div>
+    <div>
+      <h4>A cache that disagreed with the thing it cached</h4>
+      <p><span class="tag broke">Broke</span>The per-request cache first remembered values as handed in. But the database's number handling is not perfectly round-trip faithful, so a read straight after a write disagreed with the same read one request later.</p>
+      <p><span class="tag fix">Fix</span>Remember what a fresh read <em>would</em> return, not what was passed in.</p>
+      <p><span class="tag lesson">Lesson</span>A cache that is merely fast is easy. A cache that is indistinguishable from the thing it fronts is the one worth shipping — and the test for it is equality against a cold read, not a hit-rate number.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">21</div>
+    <div>
+      <h4>Two size limits that are easy to confuse</h4>
+      <p><span class="tag broke">Broke</span>A large result exceeded the maximum size of a single record — and the limit counts field <em>names</em> too, so a table of results is mostly repeated column labels. A four-thousand-row test case measured more than twice the limit and was rejected outright.</p>
+      <p><span class="tag lesson">Lesson</span>One limit applies per record and is enforced when writing; a different one applies per page of results and is enforced when reading. Conflating them leads to fixing the wrong thing.</p>
+      <p><span class="tag lesson">Lesson</span>A test asserting that an operation took more than zero milliseconds failed about one run in three, because this machine's clock only ticks every sixteen milliseconds and fast operations measure exactly zero. The assertion was wrong about the environment, not the code — and an intermittent test is a claim you cannot cite.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">22</div>
+    <div>
+      <h4>Ship the code before the infrastructure — but only if it survives the gap</h4>
+      <p>The index-backed listing raises a specific, recognisable error when the index does not exist yet, and the endpoint falls back to the old behaviour. So deploying the code ahead of the infrastructure degrades to yesterday's performance instead of failing. That path was verified against the real database <em>while the index genuinely did not exist</em>.</p>
+      <p><span class="tag lesson">Lesson</span>Always preview an infrastructure change and read it for <em>replacement</em>, not just content. This table is configured to be deleted along with its stack, so a change the platform treats as a replace would take every record with it. The preview builds a real change set, which is what makes that answerable before committing.</p>
+    </div>
+  </div>
+
+  <p class="logphase">Files, then identity</p>
+
+  <div class="logentry">
+    <div class="n">23</div>
+    <div>
+      <h4>Worse than an obvious failure</h4>
+      <p>Moving the records to a database left the files behind on one machine. That is not a clean break: the record resolves everywhere, so an uploaded dataset appears in every listing, and then reading it fails on every server except the one that received it.</p>
+      <p><span class="tag broke">Broke</span>Fetching a model without its companion files fails with an error naming a missing <em>class</em>, not a missing <em>file</em> — a confusing way to discover what is actually wrong. The fetch now brings them along.</p>
+      <p><span class="tag lesson">Lesson</span>This work exposed a fault that already existed: the startup routine that stages bundled data skips anything already registered. With a shared database, only the first server runs it — and the others were therefore skipping the file copy too. The fix for the new problem covered the old one.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">24</div>
+    <div>
+      <h4>A bug only the real thing could show</h4>
+      <p><span class="tag broke">Broke</span>Tokens minted by the live identity service were rejected as "not yet valid". The service's clock and this machine's clock differ by a fraction of a second, and the check had no tolerance for that.</p>
+      <p><span class="tag fix">Fix</span>Sixty seconds of allowance in both directions — the standard remedy, and now tested from both sides of that boundary.</p>
+      <p><span class="tag lesson">Lesson</span>The offline test could not have caught this, because it created and verified tokens using the same clock. Only a real deployment has two clocks. Some classes of bug are structurally invisible to a test suite, and knowing which ones is the argument for verifying against the real thing before calling something done.</p>
+    </div>
+  </div>
 </section>
 
 <footer>
