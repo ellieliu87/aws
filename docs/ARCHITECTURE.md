@@ -266,9 +266,14 @@ you would rather have instant rollback.
 | Prefix | Contents | Written by |
 |---|---|---|
 | `jobs/` | async solve results | worker |
-| `models/` | model artifacts + `_classes.py` sidecars | `workflow_artifacts.py` |
+| `models/` | model artifacts + `_classes.py` sidecars | `workflow_artifacts.py`, `blob_store.py` |
+| `datasets/` | uploaded dataset files | `blob_store.py` |
 | `builds/` | worker image source zip | `build_worker_image.py` |
 | corpus | knowledge-base documents | `corpus_store.py` |
+
+`blob_store` writes model artifacts under the same `models/` layout the Lambda
+worker already reads, so an uploaded artifact is reachable by the worker
+without a second copy under a different name.
 
 Versioning matters more than durability here: it is the audit trail for which
 version of a methodology was in force when a number was published.
@@ -327,11 +332,13 @@ replacement is visible before you commit to it.
 
 ## Known gaps
 
-**Records are durable; bytes are not.** Dataset uploads and model artifacts
-still land on the local disk of whichever node served the request. The record
-resolves everywhere, but `_resolve_path` only reads on that one node.
-`corpus_store.py` already solves this shape for documents — that is the pattern
-to follow.
+**Local disk is now a cache, not the record.** Uploads write through to S3
+(`services/blob_store.py`), and the two resolvers — `datasets._resolve_path`
+and `models_registry.resolve_artifact` — pull on a local miss, so a node that
+never received an upload can still read it. Model pulls bring the `_*.py`
+sidecars along, because a pickle that cannot import its classes is no more
+useful than a missing one. What remains local-only: skills uploaded to
+`agent/skills_user/`, and the RAG index under `data/rag_index/`.
 
 **No backup on the state table.** `point_in_time_recovery_enabled=False` and
 `removal_policy=DESTROY`. Fine for a lab; must change before anything in that

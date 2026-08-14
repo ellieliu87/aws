@@ -100,6 +100,32 @@ def remove_model(model_id: str) -> None:
     entity_store.delete(_MODEL_ENTITY, model_id)
 
 
+def resolve_artifact(artifact_path: str) -> Path:
+    """Local path for a model artifact, pulled from S3 if this node lacks it.
+
+    The counterpart to `datasets._resolve_path`, and the reason the four sites
+    that used to build `ARTIFACT_ROOT / …` by hand now go through one function:
+    a node that did not receive the upload has to be able to get the bytes.
+
+    Note the S3 prefix is the same `models/` layout the Lambda worker reads
+    (services/workflow_artifacts.py), so an uploaded artifact is reachable by
+    the worker without a second copy under a different name.
+    """
+    from services import blob_store
+
+    local = ARTIFACT_ROOT / artifact_path
+    if local.exists():
+        return local
+
+    blob_store.ensure_local(blob_store.MODEL_PREFIX, artifact_path, local)
+    # The artifact alone is not enough. `model_runner` puts the artifact's
+    # directory on sys.path and unpickles; without the `_*.py` sidecars that
+    # fails with a ModuleNotFoundError naming a class, not a file.
+    rel_dir = str(Path(artifact_path).parent).replace("\\", "/")
+    blob_store.ensure_siblings(blob_store.MODEL_PREFIX, rel_dir, local.parent)
+    return local
+
+
 # ── pack-registered seed ingest ────────────────────────────────────────────
 def _ingest_pack_models() -> None:
     """Pull model attachments registered by domain packs into the store.
@@ -140,6 +166,20 @@ def _ingest_pack_models() -> None:
                 target = func_dir / sibling.name
                 if not target.exists() or target.read_bytes() != sibling.read_bytes():
                     target.write_bytes(sibling.read_bytes())
+            # Seed copies go to S3 as well, for the same reason as datasets:
+            # with a shared table only the first replica runs this ingest, so
+            # the others depend on `resolve_artifact` pulling. The `_*.py`
+            # sidecars travel too — a pickle that cannot import its classes is
+            # no more useful than a missing one.
+            from services import blob_store
+
+            blob_store.put_file(blob_store.MODEL_PREFIX, rel, dest)
+            for sibling in func_dir.glob("_*.py"):
+                blob_store.put_file(
+                    blob_store.MODEL_PREFIX,
+                    f"{s['function_id']}/{sibling.name}",
+                    sibling,
+                )
             introspection = None
             if introspect_artifact is not None:
                 try:
@@ -333,6 +373,9 @@ async def delete_model(model_id: str, _: str = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Model not found")
     remove_model(model_id)
     if m.artifact_path:
+        from services import blob_store
+
+        blob_store.delete(blob_store.MODEL_PREFIX, m.artifact_path)
         try:
             (ARTIFACT_ROOT / m.artifact_path).unlink(missing_ok=True)
         except OSError:
@@ -403,6 +446,10 @@ async def upload_model(
     abs_path = ARTIFACT_ROOT / rel
     abs_path.write_bytes(contents)
 
+    from services import blob_store
+
+    blob_store.put(blob_store.MODEL_PREFIX, rel, contents)
+
     # Best-effort introspection of the uploaded artifact
     from agent.model_introspect import introspect_artifact
     introspection = introspect_artifact(abs_path, ext)
@@ -457,7 +504,7 @@ async def reintrospect_model(model_id: str, _: str = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Model not found")
     if m.source_kind != "upload" or not m.artifact_path or not m.file_format:
         raise HTTPException(status_code=400, detail="Only uploaded artifacts can be re-introspected")
-    abs_path = ARTIFACT_ROOT / m.artifact_path
+    abs_path = resolve_artifact(m.artifact_path)
     if not abs_path.exists():
         raise HTTPException(status_code=404, detail="Artifact file is missing on disk")
     from agent.model_introspect import introspect_artifact
@@ -755,6 +802,9 @@ async def register_from_artifactory(req: FromArtifactoryRequest, _: str = Depend
     try:
         with abs_path.open("wb") as fh:
             pickle.dump(callable_obj, fh)
+        from services import blob_store
+
+        blob_store.put_file(blob_store.MODEL_PREFIX, rel, abs_path)
     except Exception as e:
         raise HTTPException(
             status_code=500,

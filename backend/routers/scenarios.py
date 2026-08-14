@@ -282,15 +282,16 @@ def _apply_uploaded_model(m, scenario_df: pd.DataFrame) -> tuple[list[dict[str, 
     output to the orchestrator's row-per-step format."""
     from pathlib import Path
     from services.model_runner import predict as sandbox_predict
-    from routers.models_registry import ARTIFACT_ROOT
+    from routers.models_registry import resolve_artifact
 
     # Build the absolute artifact path. Pack-shipped models use
     # `attach_model` and store an absolute path; uploaded ones store a
-    # path relative to ARTIFACT_ROOT.
+    # path relative to ARTIFACT_ROOT — and for those, `resolve_artifact`
+    # pulls the bytes from S3 if this node never received the upload.
     artifact_str = str(m.artifact_path)
     abs_path = Path(artifact_str)
     if not abs_path.is_absolute():
-        abs_path = ARTIFACT_ROOT / artifact_str
+        abs_path = resolve_artifact(artifact_str)
     if not abs_path.exists():
         raise HTTPException(status_code=404, detail=f"Model artifact not found at {abs_path}")
 

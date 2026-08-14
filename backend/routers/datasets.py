@@ -122,6 +122,13 @@ def _ingest_pack_datasets() -> None:
             dest = DATA_ROOT / rel
             if not dest.exists():
                 dest.write_bytes(src.read_bytes())
+            # Push the seed copy too. With a shared table only the first
+            # replica runs this ingest at all — the rest see the records
+            # already present and skip — so S3 is how those nodes get the
+            # bytes, via the pull in `_resolve_path`.
+            from services import blob_store
+
+            blob_store.put_file(blob_store.DATASET_PREFIX, rel, dest)
 
             df = _read_dataframe(dest, ext)
             role = s.get("dataset_role") or "input"
@@ -238,9 +245,21 @@ def _synthesize_sample(columns: list[DatasetColumn], n: int = 10) -> list[dict[s
 
 
 def _resolve_path(d: Dataset) -> Path:
+    """Local path for a dataset's file, pulled from S3 if this node lacks it.
+
+    Every reader goes through here — previews, the agent tools, plots,
+    transforms, model training — so this one function is what makes an upload
+    readable on a node that did not receive it. Without a bucket configured it
+    is exactly the old expression.
+    """
     if not d.file_path:
         raise HTTPException(status_code=400, detail="Dataset has no underlying file")
-    return DATA_ROOT / d.file_path
+
+    from services import blob_store
+
+    return blob_store.ensure_local(
+        blob_store.DATASET_PREFIX, d.file_path, DATA_ROOT / d.file_path
+    )
 
 
 # Pack-registered datasets are ingested by the startup hook in main.py
@@ -275,9 +294,13 @@ async def delete_dataset(dataset_id: str, _: str = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Dataset not found")
     remove_dataset(dataset_id)
     if d.file_path:
-        p = DATA_ROOT / d.file_path
+        from services import blob_store
+
+        # S3 first: it is the copy other replicas would resolve, so leaving it
+        # behind would resurrect a deleted dataset's bytes on the next pull.
+        blob_store.delete(blob_store.DATASET_PREFIX, d.file_path)
         try:
-            p.unlink(missing_ok=True)
+            (DATA_ROOT / d.file_path).unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -313,6 +336,12 @@ async def upload_dataset(
     except Exception as e:
         abs_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"Could not parse file: {e}")
+
+    # Only after it parses. Uploading first would put unreadable files in the
+    # durable copy, where the next node to pull one would inherit the problem.
+    from services import blob_store
+
+    blob_store.put(blob_store.DATASET_PREFIX, rel_path, contents)
 
     columns = _columns_from_df(df)
     final_name = name or file.filename.rsplit(".", 1)[0]

@@ -57,6 +57,8 @@ cma/
 │   │   │                            memo (falls back to dicts when unset)
 │   │   ├── async_jobs.py          ← SQS enqueue for long solves
 │   │   ├── corpus_store.py        ← S3 as source of record for documents
+│   │   ├── blob_store.py          ← S3 for uploaded datasets + artifacts
+│   │   │                            (local disk becomes a cache)
 │   │   ├── workflow_compiler.py   ← canvas → Step Functions definition
 │   │   ├── workflow_plans.py      ← compiled-plan registry (audit history)
 │   │   ├── workflow_deploy.py     ← ships plans as state machines
@@ -535,10 +537,11 @@ The Settings page (sidebar) has four tabs:
   runs, and analytics-definition runs. The pack-bundled datasets and
   models re-stage on startup from `sample_data/` and `sample_models/`,
   so those reappear automatically.
-- **Records are durable; uploaded bytes are not.** A dataset file or
-  model artifact lands on the local disk of whichever node served the
-  request, so on more than one node the record resolves everywhere but
-  only that node can read the file.
+- **Uploaded bytes follow the records** when `CMA_CORPUS_BUCKET` is set:
+  dataset files and model artifacts write through to S3, and any node
+  pulls on a local miss. Without a bucket they stay on local disk, which
+  is fine for one node. Still local-only either way: uploaded agent
+  skills and the RAG index.
 - **Data Services live mode is opt-in.** Outside the corporate proxy,
   Data Services renders static fallback cards — the app stays usable.
   See [Data Services integrations](#data-services-integrations-proxy-env)
