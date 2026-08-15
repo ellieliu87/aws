@@ -543,8 +543,10 @@ The Settings page (sidebar) has four tabs:
   DynamoDB table — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   Without it they fall back to in-process dicts and reset on restart,
   which is the default for local development.
-  Still in-process either way: auth tokens, scenarios, plots, playbook
-  runs, and analytics-definition runs. The pack-bundled datasets and
+  Also durable: charts, Python tools, dashboard layouts, warehouse
+  connections, and analytic definitions. Still in-process either way:
+  playbooks and their runs, plus scenarios (which are re-derived from
+  packs at startup, so every node agrees anyway). The pack-bundled datasets and
   models re-stage on startup from `sample_data/` and `sample_models/`,
   so those reappear automatically.
 - **Uploaded bytes follow the records** when `CMA_CORPUS_BUCKET` is set:

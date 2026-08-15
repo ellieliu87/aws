@@ -366,7 +366,7 @@
       <dd>Runs a piece of code on demand without a server to maintain. You are billed per invocation, so idle costs nothing. Its constraint is a hard fifteen-minute ceiling per run.</dd>
 
       <dt>Fargate</dt>
-      <dd>Runs a long-lived container without a server to maintain. Suited to something that must stay up and answer requests, where Lambda suits short bursts of work. This is where the web tier is designed to run — see §6.11 for when it becomes necessary.</dd>
+      <dd>Runs a long-lived container without a server to maintain. Suited to something that must stay up and answer requests, where Lambda suits short bursts of work. This is where the web tier is designed to run — see §6.12 for when it becomes necessary.</dd>
 
       <dt>Replica</dt>
       <dd>One of several identical copies of the application running at the same time, so that one failing does not take the service down. Making more than one copy possible is what most of this document is about.</dd>
@@ -620,7 +620,7 @@
         <line x1="584" y1="150" x2="646" y2="112" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#bh-a)"/>
         <rect x="652" y="86" width="164" height="50" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
         <text x="734" y="106" text-anchor="middle" font-size="11" fill="var(--accent)">DynamoDB</text>
-        <text x="734" y="122" text-anchor="middle" font-size="9.5" fill="var(--muted)">4 registries + gsi1</text>
+        <text x="734" y="122" text-anchor="middle" font-size="9.5" fill="var(--muted)">10 record types + gsi1</text>
 
         <line x1="584" y1="172" x2="646" y2="172" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#bh-a)"/>
         <rect x="652" y="148" width="164" height="50" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
@@ -796,7 +796,7 @@
   <p class="sub">Each decision states the problem, the options considered, what was chosen, how it was actually built, and what was given up.</p>
 
   <div class="note">
-    <p><strong>Three of these needed no AWS service at all.</strong> 6.6 is a language feature, 6.8 is twenty lines of application logic, and 6.5 is deliberately <em>less</em> AWS than the obvious implementation. Reaching for a service is a choice like any other, and the <b>How</b> row says plainly when the answer was to not reach for one.</p>
+    <p><strong>Three of these needed no AWS service at all.</strong> 6.6 is a language feature, 6.9 is twenty lines of application logic, and 6.5 is deliberately <em>less</em> AWS than the obvious implementation. Reaching for a service is a choice like any other, and the <b>How</b> row says plainly when the answer was to not reach for one.</p>
   </div>
 
   <div class="decision">
@@ -828,7 +828,12 @@
   <div class="decision">
     <h3>6.3 — Stateless tokens instead of a shared session store</h3>
     <dl>
-      <dt>Problem</dt><dd>Sessions lived in one server's memory, so a second server rejected tokens the first one issued. This was the last thing preventing horizontal scaling.</dd>
+      <dt>Problem</dt>
+      <dd>
+        <p>Sessions lived in one server's memory, so a second server rejected tokens the first one issued.</p>
+        <p><b>An earlier version of this document called this "the last thing preventing horizontal scaling". That was wrong</b>, and the correction is instructive: six further registries still held analyst-created work in memory — charts, Python tools, dashboard layouts, playbooks, analytic definitions, warehouse connections. Auth was simply the one that would have broken <em>every</em> request rather than a feature.</p>
+        <p>The lesson is about how to audit this class of problem. "Where does state live?" has to be answered by enumeration, not recollection — one search for module-level dictionaries found all six in about a minute, after I had twice asserted otherwise.</p>
+      </dd>
       <dt>Options</dt><dd>Move sessions to a shared store (a database or a cache), or stop needing a session lookup at all.</dd>
       <dt class="chose">Chose</dt>
       <dd>
@@ -986,7 +991,18 @@
   </div>
 
   <div class="decision">
-    <h3>6.8 — Keeping the record when the payload will not fit</h3>
+    <h3>6.8 — Protecting the records from the deployment that manages them</h3>
+    <dl>
+      <dt>Problem</dt><dd>The records database was configured to be deleted along with the stack that creates it. That is a sensible default for a lab and the wrong one the moment the database holds an audit trail — and it is not only an explicit teardown that triggers it: any change the platform decides is a <em>replacement</em> destroys and recreates, taking the contents.</dd>
+      <dt class="chose">Chose</dt><dd>Retain the database independently of the stack, and enable point-in-time recovery — 35 days of second-granularity restore, the only defence against a bad write rather than a lost resource.</dd>
+      <dt class="how">How</dt><dd>Two lines of infrastructure-as-code, deployed and then confirmed by querying the live database rather than trusting the deployment output. The same change also covers the replacement case, not just deliberate teardown.</dd>
+      <dt class="gaveup">Gave up</dt><dd>A teardown now leaves an orphaned database to remove by hand. That is the correct direction to fail: recovering from an unwanted leftover is tedious, recovering from a deleted audit trail is impossible.</dd>
+      <dt>Note</dt><dd>This sat outstanding for longer than it should have. Everything built on top of that database assumed it mattered; the configuration said otherwise, and the gap between those two was the actual risk.</dd>
+    </dl>
+  </div>
+
+  <div class="decision">
+    <h3>6.9 — Keeping the record when the payload will not fit</h3>
     <dl>
       <dt>Problem</dt><dd>The database caps a single record at 400 KB. A run carries its full result set, so an unusually large run exceeds it — and the write fails <em>after</em> the computation has already succeeded.</dd>
       <dt>Options</dt><dd>Fail the request; silently truncate; or store the result elsewhere and link to it.</dd>
@@ -998,7 +1014,7 @@
   </div>
 
   <div class="decision">
-    <h3>6.9 — Records are durable; so are the files</h3>
+    <h3>6.10 — Records are durable; so are the files</h3>
     <dl>
       <dt>Problem</dt><dd>Moving the records to a database left the <em>files</em> — uploaded datasets, model artifacts — on the local disk of whichever server received the upload. This is worse than an obvious failure: the record appears everywhere, so the dataset shows in every listing, and then reading it fails on every server except one.</dd>
       <dt class="chose">Chose</dt><dd>Uploads write to object storage as well as local disk, and any server missing a file fetches it on demand and keeps a local copy. A cache rather than direct reads every time, because model files are read repeatedly during a run.</dd>
@@ -1012,7 +1028,7 @@
   </div>
 
   <div class="decision">
-    <h3>6.10 — Measuring an upgrade, and shipping it turned off</h3>
+    <h3>6.11 — Measuring an upgrade, and shipping it turned off</h3>
     <dl>
       <dt>Problem</dt><dd>The document search behind the AI agents used keyword matching. The obvious upgrade is semantic search using embeddings.</dd>
       <dt>What happened</dt>
@@ -1028,7 +1044,7 @@
   </div>
 
   <div class="decision">
-    <h3>6.11 — Lambda now; containers when the constraints change</h3>
+    <h3>6.12 — Lambda now; containers when the constraints change</h3>
     <dl>
       <dt class="chose">Chose</dt><dd>Lambda for computation. Runs are short, bursty and event-driven, and it costs nothing when idle.</dd>
       <dt class="how">How</dt>
@@ -1062,7 +1078,7 @@
   <div class="note warn">
     <p><strong>This is the open item, and it is a policy question rather than a technical one.</strong> Run history currently grows without bound. Two viable answers: automatic expiry after a defined period, or archival to cheaper storage with nothing ever deleted.</p>
     <p>The right choice depends on whether a run is <em>evidence</em> — in which case archival is the only acceptable answer — or working scratch. Given these numbers feed regulatory filings, archival is the likely answer, and the versioned document bucket is the established pattern to follow.</p>
-    <p>Two related gaps, stated rather than hidden: the records database has no point-in-time backup enabled, and its deletion policy would remove it along with the stack. Both are appropriate for a lab and both must change before anything in it is treated as a record.</p>
+    <p><b>Two related gaps have since been closed.</b> The records database now has point-in-time recovery enabled — 35 days of second-granularity restore — and its removal policy is RETAIN rather than DESTROY, so neither a stack teardown nor a change the platform treats as a replacement takes the records with it. The cost of RETAIN is an orphaned table to delete by hand, which is the correct direction to fail: recovering from an unwanted leftover is tedious, recovering from a deleted audit trail is impossible.</p>
   </div>
 
   <h3>7.5 Where does the data live?</h3>
@@ -1084,12 +1100,15 @@
         <tr><td>Computation off the request path — queue + worker</td><td><span class="pill free">built</span></td></tr>
         <tr><td>Multi-step runs with a durable approval gate</td><td><span class="pill free">built</span></td></tr>
         <tr><td>Canvas compiled to a runnable state machine</td><td><span class="pill free">built</span></td></tr>
-        <tr><td>Application records in DynamoDB</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Core records in DynamoDB — datasets, models, workflows, runs</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Analyst-created records — charts, tools, layouts, connections, analytic definitions</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Backup and deletion protection on the records database</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Time-ordered index for run history</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Uploaded files in S3, servers fetch on demand</td><td><span class="pill free">built</span></td></tr>
         <tr><td>Identity with stateless tokens</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td><b>Web tier on containers behind a load balancer</b></td><td><span class="pill trap">designed</span></td></tr>
         <tr><td><b>Static frontend on a CDN</b></td><td><span class="pill trap">designed</span></td></tr>
+        <tr><td>Playbook state out of process memory</td><td><span class="pill watch">needs design</span></td></tr>
         <tr><td>Retention policy for run history</td><td><span class="pill watch">open decision</span></td></tr>
       </tbody>
     </table>
@@ -1140,7 +1159,8 @@
 
   <details>
     <summary>"How would you make this highly available?"</summary>
-    <p>Be specific about what was actually blocking it. Four record types moved to a managed database, uploaded files moved to object storage, and sessions became signed tokens that need no shared lookup.</p>
+    <p>Be specific about what was actually blocking it. Ten record types moved to a managed database, uploaded files moved to object storage, and sessions became signed tokens that need no shared lookup.</p>
+    <p>Then say what the audit itself taught, because it is the more useful half: I twice claimed the state migration was finished before it was. Enumerating the module-level dictionaries — rather than recalling them — found six registries of analyst-created work still in process memory. On a question this consequential, the answer has to come from a search, not from memory.</p>
     <p>Then be honest about what that cost — reads became network calls, which needed a per-request cache to pay back — and what remains: the web tier still runs as a single process, and that step is now configuration rather than redesign.</p>
   </details>
 
@@ -1259,7 +1279,7 @@
     <div class="n">09</div>
     <div>
       <h4>Measured the upgrade — and shipped it switched off</h4>
-      <p>Semantic search lost to keyword matching on this corpus, so it went in behind a setting that defaults to off. See §6.10 for why, and for the honest limits of that measurement.</p>
+      <p>Semantic search lost to keyword matching on this corpus, so it went in behind a setting that defaults to off. See §6.11 for why, and for the honest limits of that measurement.</p>
     </div>
   </div>
 
@@ -1415,6 +1435,57 @@
       <p><span class="tag broke">Broke</span>Tokens minted by the live identity service were rejected as "not yet valid". The service's clock and this machine's clock differ by a fraction of a second, and the check had no tolerance for that.</p>
       <p><span class="tag fix">Fix</span>Sixty seconds of allowance in both directions — the standard remedy, and now tested from both sides of that boundary.</p>
       <p><span class="tag lesson">Lesson</span>The offline test could not have caught this, because it created and verified tokens using the same clock. Only a real deployment has two clocks. Some classes of bug are structurally invisible to a test suite, and knowing which ones is the argument for verifying against the real thing before calling something done.</p>
+    </div>
+  </div>
+  <p class="logphase">Finishing the state migration</p>
+
+  <div class="logentry">
+    <div class="n">25</div>
+    <div>
+      <h4>The claim I had already made twice, and had to withdraw</h4>
+      <p><span class="tag broke">Broke</span>Identity was described — here and in the commit history — as the last thing blocking multiple servers. Asked what to build next, I checked instead of recalling, and found six more registries holding analyst-created work in memory: charts, Python tools, dashboard layouts, playbooks, analytic definitions, warehouse connections.</p>
+      <p><span class="tag lesson">Lesson</span>One search for module-level dictionaries answered in a minute what I had twice asserted from memory. "Where does state live?" is an enumeration question. Anything less is a guess wearing a confident sentence.</p>
+      <p><span class="tag lesson">Lesson</span>The failure modes differ in a way worth naming. Auth would have broken <em>every</em> request — roughly half of them with two servers. These six break a <em>feature</em>: you build a chart, refresh, land on the other server, and it is gone. Less total, and considerably more confusing to diagnose.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">26</div>
+    <div>
+      <h4>Protecting the database before putting more into it</h4>
+      <p>Point-in-time recovery on, and the records database retained independently of the stack that creates it. Confirmed by querying the live database, not by reading the deployment output.</p>
+      <p><span class="tag lesson">Lesson</span>This had been flagged three times and deferred three times, while everything built on top of that database assumed it mattered. The configuration said otherwise. The gap between what a system assumes and what it is configured for is where this kind of loss actually happens — and it was two lines.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">27</div>
+    <div>
+      <h4>The same bug, nine more times</h4>
+      <p>Four registries moved — charts, layouts, connections, tools — and the difficulty was where it was last time: nine places that read a record, changed a field, and used to be finished, because the object they held <em>was</em> the registry's.</p>
+      <p><span class="tag fix">Fix</span>One of them was a helper that handed callers the registry itself so they could mutate through it. It now returns a save function instead, which makes the write impossible to forget rather than merely documented.</p>
+      <p><span class="tag broke">Broke</span>A test written for the mutation sites I had planned for caught one I had not: testing a warehouse connection set its status and timestamp and persisted neither. Writing the test for the general pattern, rather than for the specific sites, is what found it.</p>
+      <p><span class="tag lesson">Lesson</span>A registry that already persisted to a local file looked done and was not. Durable and shared are different properties, and a file on one machine's disk has only the first.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">28</div>
+    <div>
+      <h4>Two dicts, two different answers</h4>
+      <p>Analytic definitions are a handful of authored records and took the plain treatment. Their runs are append-only, unbounded, and each carries a full result table — so they took what the other run history took: a size guard and a time-ordered index.</p>
+      <p><span class="tag lesson">Lesson</span>Checking the schema rather than assuming symmetry is what decided that. Two registries in the same file needed opposite answers, and the difference was visible only in what their records <em>contain</em>.</p>
+      <p><span class="tag lesson">Lesson</span>Where the note about a dropped payload goes matters. It went in the human-readable narrative field, not the error field — a completed run annotated in <code>error</code> reads as a failed one, and a record that misleads is worse than a record that is merely incomplete.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">29</div>
+    <div>
+      <h4>Verifying the thing that had never been verified</h4>
+      <p>The new record types had only been exercised against the in-memory fallback. Two things were genuinely untested against the real database: how these particular records serialise, and a <em>second</em> kind of record writing into the shared index — until now only run history used it.</p>
+      <p><span class="tag lesson">Lesson</span>"Two partitions in one index do not collide" is obviously true right up until it is not. It cost one throwaway test to stop assuming, and the same test confirmed the existing partition was untouched.</p>
+      <p><span class="tag lesson">Lesson</span>Three times in this stretch a test was wrong about the schema while the code was right. That is the healthier direction for errors to run, but it is also a signal: a test written from memory of an interface tests the memory, not the interface.</p>
     </div>
   </div>
 </section>
