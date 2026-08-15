@@ -16,7 +16,7 @@ from typing import Any
 
 from routers.datasets import load_dataset
 from routers.models_registry import load_model
-from routers.scenarios import _SCENARIOS
+from routers.scenarios import load_scenario
 from routers.transforms import _TRANSFORMS
 
 
@@ -31,7 +31,7 @@ def _label_for_node(n: dict[str, Any]) -> str:
         d = load_dataset(ref_id)
         return d.name if d else ref_id or "this dataset"
     if kind == "scenario":
-        s = _SCENARIOS.get(ref_id)
+        s = load_scenario(ref_id)
         return s.name if s else ref_id or "this scenario"
     if kind == "transform":
         t = _TRANSFORMS.get(ref_id)
@@ -250,7 +250,7 @@ def _validate_workflow_payload(
                     })
 
         elif kind == "scenario":
-            s = _SCENARIOS.get(ref_id)
+            s = load_scenario(ref_id)
             if not s:
                 issues.append({
                     "severity": "error",
@@ -312,7 +312,7 @@ def _validate_workflow_payload(
                 continue
             available: set[str] = set()
             if src.get("kind") == "scenario":
-                sc = _SCENARIOS.get(src["ref_id"])
+                sc = load_scenario(src["ref_id"])
                 if sc:
                     available |= {v.lower() for v in sc.variables}
             elif src.get("kind") == "dataset":

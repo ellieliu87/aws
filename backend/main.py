@@ -1,12 +1,35 @@
 """CMA Workbench - Capital Markets & Analytics self-service platform - FastAPI backend."""
 # Load backend/.env into the process environment BEFORE any other imports so
 # that downstream modules (cof.orchestrator, etc.) see OPENAI_API_KEY at import time.
+import os
 from pathlib import Path
+
+# Snapshot what the real environment already held. `load_dotenv` merges the
+# file into `os.environ`, after which the two sources are indistinguishable —
+# and services/secrets.py needs to tell them apart: an exported variable beats
+# a remote one, a variable that came from the file does not. Cheap to take,
+# impossible to reconstruct afterwards.
+_PRESET_ENV = set(os.environ)
+
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).parent / ".env")
 except ImportError:
     pass
+
+# Then Parameter Store, in the same window and for the same reason: this is
+# the last moment before `cof.orchestrator` is imported and reads the key. A
+# no-op unless CMA_SECRETS_PREFIX is set, so nothing changes for a developer
+# running from .env alone. See services/secrets.py for why SSM and not
+# Secrets Manager, and for the precedence rule.
+try:
+    from services.secrets import load_into_env as _load_secrets
+    _loaded = _load_secrets(_PRESET_ENV)
+    if _loaded:
+        # Names, never values — this line ends up in a log somewhere.
+        print(f"[startup] secrets: loaded {', '.join(sorted(_loaded))} from Parameter Store")
+except Exception as e:
+    print(f"[startup] secrets: Parameter Store lookup skipped: {e}")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -144,14 +167,14 @@ async def _ingest_pack_assets():
     except Exception as e:
         print(f"[startup] plot pack ingest failed: {e}")
     # Push CCAR + Outlook cards from the Data Services aggregator into
-    # the legacy `_SCENARIOS` + `BUILTIN_DATA` so the Workflow tab's
+    # `_BUILTIN_SCENARIOS` + `BUILTIN_DATA` so the Workflow tab's
     # Scenarios palette mirrors what's on the Data tab → Data Services
     # section. Deferred to here so the data_services config has been
     # read and any pack-attached datasets the loaders peek at exist.
     try:
         from services.data_services import materialize_into_scenarios_registry
         n = materialize_into_scenarios_registry(None)
-        print(f"[startup] data_services: materialized {n} scenario(s) into _SCENARIOS")
+        print(f"[startup] data_services: materialized {n} built-in scenario(s)")
     except Exception as e:
         print(f"[startup] data_services scenario materialization failed: {e}")
     # MCP server registration already runs at module import (see top of

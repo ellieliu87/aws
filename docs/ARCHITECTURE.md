@@ -59,6 +59,8 @@ holds its own truth.
    ECR ◄── CodeBuild ◄── S3 builds/worker-image-src.zip
      └── image consumed by the container worker
 
+   SSM Parameter Store ──► FastAPI at boot (OPENAI_API_KEY, SecureString)
+
    SolvesDlq depth ─────────┐
    worker errors/throttles ─┼─► CloudWatch alarms ─► SNS Alerts ─► email
    Playbook failed/expired ─┘
@@ -70,7 +72,7 @@ developer's machine or a box someone provisioned. That is worth stating
 plainly, because the premise of everything below is that a *second replica*
 must see the same truth as the first, and nothing here creates that second
 replica. What the stack does is remove every reason one couldn't exist. Choosing
-the hosting is **step 5 of the plan below**.
+the hosting is **step 2 of the plan below**.
 
 ---
 
@@ -96,25 +98,25 @@ behind an environment variable. This is the ledger of where that has got to.
 | ✅ | a failed solve rots silently in the DLQ | five alarms to one topic, to an inbox | **CloudWatch + SNS** | [being told](#cloudwatch--being-told-rather-than-looking) |
 | ✅ | Lambda logs kept forever, outside CloudFormation | 14-day retention, owned by the stack | **CloudWatch Logs** | [log retention](#log-retention) |
 | ✅ | nothing watching spend on a free-tier design | 80% actual / 100% forecast to email | **AWS Budgets** | [the budget](#the-budget) |
+| ✅ | `OPENAI_API_KEY` in plaintext in `backend/.env` | KMS-encrypted, pulled into the environment at boot | **SSM Parameter Store** | [the key that is not in the file](#ssm-parameter-store--the-key-that-is-not-in-the-file) |
+| ✅ | runs and job results accumulated forever | 90-day run TTL, prefix-scoped object lifecycle | **DynamoDB TTL + S3 lifecycle** | [what expires](#what-expires) |
+| ✅ | `_SCENARIOS`, one dict holding derived *and* analyst data | built-ins cached, `scn-…` records in the table | **DynamoDB** | [scenarios, and the mixed registry](#scenarios-and-the-mixed-registry) |
 
 ### Planned, in the order worth doing them
 
-Ordered by *what unblocks what*, not by size. Steps 1–3 are independent and can
-be taken in any order or skipped; 4 onward build on each other.
+Ordered by *what unblocks what*, not by size. Steps 1–2 build on each other;
+3 and 4 are independent of them.
 
 | # | Step | Service | Why now, or why not yet |
 |---|---|---|---|
-| 1 | Get `OPENAI_API_KEY` out of `backend/.env` | **SSM Parameter Store** (SecureString) | The only live exposure left. Independent of everything else, and small. |
-| 2 | Bound the growth of runs and job results | **DynamoDB TTL** + **S3 lifecycle** | Blocked on one decision, not on code: is a run a record or scratch? |
-| 3 | Move `_SCENARIOS` off a module dict | **DynamoDB** | The last registry holding analyst-created records in memory: `POST /scenarios/from-dataset` writes there, so those are lost on restart. |
-| 4 | Move `skills_user/` and `data/rag_index/` off local disk | **S3** (+ a managed vector store when the index outgrows a file) | These are what still tie a request to a particular machine. Must land *before* step 5, or a second replica answers differently from the first. |
-| 5 | Actually run the API in AWS, more than once | **ECS Fargate + ALB**, or **App Runner** | The step the whole migration has been for. Also retires step 1's remaining half: a task role means secrets arrive as an identity, not a file. |
-| 6 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. |
-| 7 | Serve the built frontend from a CDN | **S3 + CloudFront** | `vite build` output has no home today. Wants step 5 first, so there is a stable API origin to point at. |
-| 8 | Deepen observability once there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
+| 1 | Move `skills_user/` and `data/rag_index/` off local disk | **S3** (+ a managed vector store when the index outgrows a file) | These are what still tie a request to a particular machine. Must land *before* step 2, or a second replica answers differently from the first. |
+| 2 | Actually run the API in AWS, more than once | **ECS Fargate + ALB**, or **App Runner** | The step the whole migration has been for. Also finishes the secrets work: a task role means credentials arrive as an identity, not as anything on the host. |
+| 3 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. |
+| 4 | Serve the built frontend from a CDN | **S3 + CloudFront** | `vite build` output has no home today. Wants step 2 first, so there is a stable API origin to point at. |
+| 5 | Deepen observability once there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
 
-Steps 1–7 are written up in full, with the same numbers, in
-[Known gaps](#known-gaps) at the end; step 8's reasoning is in
+Steps 1–4 are written up in full, with the same numbers, in
+[Known gaps](#known-gaps) at the end; step 5's reasoning is in
 [deliberately absent](#deliberately-absent).
 
 ---
@@ -128,6 +130,7 @@ pk = "workflow"   sk = "sw-abc123"
 pk = "dataset"    sk = "ds-abc123"
 pk = "model"      sk = "mdl-abc123"
 pk = "run"        sk = "run-abc123"
+pk = "scenario"   sk = "scn-abc123"
 ```
 
 Fetching one item and listing all of a type are each a single call, and neither
@@ -150,6 +153,96 @@ is the correct direction to fail. PITR gives 35 days of second-granularity
 restore, bills on stored bytes (cents at this volume), and is the only defence
 against a *bad write*: versioning protects the documents in S3, and until this
 was turned on, nothing protected these records.
+
+### Scenarios, and the mixed registry
+
+`_SCENARIOS` was one dict holding two different kinds of thing, and the mixture
+was the whole problem.
+
+Built-in scenarios are **derived**: `services/data_services.py` recomputes the
+CCAR and Outlook set from packs on every startup, so every replica arrives at
+the same answer without asking anyone. Those really are a cache, and they stay
+one — `routers/scenarios.py:_BUILTIN_SCENARIOS`, a module dict, deliberately.
+
+Scenarios from `POST /scenarios/from-dataset` are **not derived from
+anything**. An analyst points at their own dataset and gets an `scn-…` record
+that exists nowhere else in the system. Sharing a dict with the built-ins, those
+died with the process and were invisible to a second replica — the same
+data-loss shape the rest of this migration exists to fix, just smaller and
+noticed later. They are now table items like everything else.
+
+The codebase had been saying this out loud for a while: `delete_scenario`
+refuses when `source_kind == "builtin"`, a special case that only needed to
+exist because two kinds of thing shared one home. The endpoint's behaviour is
+unchanged — still a 403, still keyed on `source_kind` rather than on which store
+answered, because which store answered is not the frontend's business.
+
+`load_scenario` and `all_scenarios` merge the two. Built-ins are checked first
+on purpose: they are the overwhelming majority of lookups and a dict hit costs
+nothing, so a network read only happens for an id that could only be
+analyst-created.
+
+**`_TRANSFORMS` (`routers/transforms.py`) genuinely is a cache** and is
+deliberately still a dict: seeded from pack attachments at startup, with no
+write endpoints at all, so there is nothing in it a restart could lose.
+
+### What expires
+
+gsi1 below made *reading* the newest N runs cheap regardless of how many exist.
+It did nothing about the fact that the number only ever goes up. Two mechanisms
+bound that, and both rest on the same judgement:
+
+> **A run is scratch, not a record.** Everything a published number was derived
+> from — the dataset, the model, the saved workflow, the compiled plan versions
+> in S3 — is kept indefinitely, so a result stays reproducible long after the
+> run row that first reported it is gone. What expires is the transcript, not
+> the evidence.
+
+**DynamoDB TTL**, on the `expires_at` attribute. `store_run` stamps each run
+with now + `CMA_RUN_TTL_DAYS` (default 90; `0` keeps runs forever, which is the
+right setting the day the run history itself has to answer *what did we file,
+and when*). The attribute is written and stripped by `entity_store`, so it never
+reaches a caller's model, and only items carrying it are ever touched — datasets,
+models and workflows are exempt by construction, exactly as they are absent from
+the sparse index. The GSI entry goes when its base item does, so the history page
+can never show a run the table no longer holds. TTL deletes are not billed as
+writes, which is the whole reason to prefer this to a scheduled sweeper.
+
+Two properties worth stating plainly. Deletion is asynchronous and best-effort —
+DynamoDB promises *within a few days of expiry*, not on the second — so this
+bounds growth and is **not** an access control. And it applies only to runs
+written from here on; items already in the table carry no expiry and are never
+swept.
+
+**S3 lifecycle**, applied by `infra/apply_lifecycle.py`:
+
+| Prefix | Rule |
+|---|---|
+| `jobs/` | current versions expire at 30 days, noncurrent at 1 |
+| `datasets/` | noncurrent versions expire at 180 days |
+| `builds/` | noncurrent versions expire at 90 days |
+| `models/` | **nothing** |
+| bucket-wide | incomplete multipart uploads aborted at 7 days; orphaned delete markers removed |
+
+`models/` is the exception and the reason every expiry rule is prefix-scoped:
+its noncurrent versions *are* the audit trail described under
+[S3](#s3--one-bucket-four-prefixes). Expiring them would quietly convert "we can
+show which artifact produced this number" into "we can show it for a year", and
+a claim that decays on a timer is worse than one never made.
+
+Note the `jobs/` rule has two halves. On a versioned bucket an expiry alone only
+writes a delete marker and the bytes stay, billed, forever — the single most
+common way a lifecycle rule does nothing at all.
+
+**Why a script and not CDK.** The bucket is not created by the stack;
+`CMA_CORPUS_BUCKET` names one that already existed, and the stack imports it
+with `Bucket.from_bucket_name`, which yields a reference rather than a resource.
+CDK cannot attach a lifecycle configuration to something it does not own, and
+the alternatives are a custom-resource Lambda and role for one API call, or
+adopting the bucket into the stack and putting the document corpus one
+`RemovalPolicy` mistake away from deletion. The script prints the existing
+configuration before replacing it, because `PutBucketLifecycleConfiguration`
+replaces wholesale rather than merging.
 
 ### gsi1 — the time-ordered index
 
@@ -217,6 +310,67 @@ Measured: validating an 11-node canvas went from 21 backend reads to 2.
 workflow run will not observe a model another request updates midway. For a run
 that is arguably the property you want. It is not a general-purpose cache and
 must not grow into one.
+
+---
+
+## SSM Parameter Store — the key that is not in the file
+
+`main.py` loads `backend/.env` before any other import specifically so that
+`OPENAI_API_KEY` is set by the time `cof.orchestrator` is imported. That works,
+and it was also the one real exposure left in this design: a plaintext provider
+key in a file beside the code, copied onto every machine that runs the backend,
+one `git add -A` away from a repository.
+
+Set `CMA_SECRETS_PREFIX` and `services/secrets.py` pulls the credentials from
+Parameter Store instead, in the same pre-import window and for the same reason.
+The last path segment becomes the variable name, so the mapping is legible in
+the console without reading any code:
+
+```
+/cma/workbench/OPENAI_API_KEY   ->  OPENAI_API_KEY
+/cma/workbench/OPENAI_BASE_URL  ->  OPENAI_BASE_URL
+```
+
+Nothing downstream changes: the `openai` SDK still auto-discovers the key from
+the environment exactly as it does today.
+
+**Parameter Store, not Secrets Manager.** SecureString is KMS-encrypted and
+free at any volume this app will reach. Secrets Manager's $0.40/secret/month
+buys rotation machinery, which is worth paying for credentials that *can* be
+rotated automatically. A provider API key is not one of those — rotating it
+means logging into the provider's console.
+
+**Precedence** decides which copy wins when there are two. A variable already
+exported in the real process environment is never overwritten: that is a
+developer or a container runtime being explicit, and it must beat a remote value
+they may not know about. Everything else loses to Parameter Store, `.env`
+included, because the point is that the file stops being the source of truth.
+`main.py` snapshots `os.environ` *before* `load_dotenv` runs to keep the two
+distinguishable, which is impossible to reconstruct afterwards.
+
+A lookup failure is logged, not fatal. An unreachable Parameter Store or a
+missing permission leaves the app starting on whatever `.env` provided and
+complaining loudly — the same shape as every other AWS seam here.
+
+**The parameter is created out of band, and has to be.** CloudFormation cannot
+create a SecureString: `AWS::SSM::Parameter` supports `String` and `StringList`
+only, because a template is a plaintext document that ends up in the console, in
+change sets, and in anyone's `cdk diff`. Declaring the secret in CDK would write
+the key into precisely the places this exists to keep it out of. So
+`infra/put_secret.py` does it, once, and deliberately does not edit
+`backend/.env` afterwards — deleting the only copy of a key before anyone has
+confirmed the parameter reads back is a bad afternoon. It prints the line to
+remove instead.
+
+**What this does not yet fix.** Reading the parameter needs AWS credentials of
+its own, so on a laptop it trades a plaintext key for an AWS profile. The half
+that finishes the job is step 2 of the plan: once the API runs as an ECS task or
+an App Runner service, the task role *is* the credential and no secret material
+exists on the host at all.
+
+Note the non-secrets — `CMA_STATE_TABLE`, the queue URL, the ARNs — do not
+belong here. `infra/sync_env.py` already distributes those from stack outputs,
+and moving them would be a lateral move that buys nothing.
 
 ---
 
@@ -407,6 +561,11 @@ limit of that claim — it records *what* the artifact was, never who read or
 replaced it. Object-level access is a CloudTrail data-event question, and this
 account has no trail; see the deliberately-absent list below.
 
+Versioning also means a delete reclaims nothing and an overwrite keeps both
+copies, which is what [what expires](#what-expires) is about. `models/` is
+exempt from every expiry rule, because its noncurrent versions are the trail
+this paragraph is claiming exists.
+
 ---
 
 ## CloudWatch — being told, rather than looking
@@ -552,6 +711,18 @@ subscriber) and `CMA_MONTHLY_BUDGET_USD` (defaults to `5`). After the first
 deploy with an email set, confirm the SNS subscription — until you do, the
 alarms fire into nothing.
 
+Two things live outside the stack, for reasons given in their own sections, and
+each is idempotent and runs about once:
+
+```bash
+python -m infra.put_secret OPENAI_API_KEY   # dry run; --write to apply
+python -m infra.apply_lifecycle             # dry run; --write to apply
+```
+
+`put_secret` needs `CMA_SECRETS_PREFIX` set — CloudFormation cannot create a
+SecureString. `apply_lifecycle` prints the bucket's existing configuration
+first, because it replaces rather than merges.
+
 ---
 
 ## Known gaps
@@ -559,52 +730,7 @@ alarms fire into nothing.
 The detail behind [Planned](#planned-in-the-order-worth-doing-them); the
 numbers match.
 
-**1 · Secrets live in a file.** `main.py` loads `backend/.env` before any other
-import specifically so `OPENAI_API_KEY` is set by the time `cof.orchestrator`
-is imported, and `config/data_services.example.env` points at corporate
-integrations that will want credentials of their own. A plaintext provider key
-in a file beside the code is the one real exposure left in this design. The fix
-is SSM Parameter Store **SecureString** — free, KMS-encrypted — rather than
-Secrets Manager, whose rotation machinery is worth $0.40/secret/month only for
-credentials that can actually be rotated automatically. Note the *non*-secrets
-(`CMA_STATE_TABLE`, the queue URL, the ARNs) do not need this:
-`infra/sync_env.py` already distributes stack outputs, and moving them into
-Parameter Store is a lateral move until the API itself runs in AWS.
-
-**2 · Run storage is unbounded.** gsi1 fixed the read cost; nothing bounds
-growth. Either a TTL attribute or an archive-to-S3 path is still needed, and
-which one depends on whether a run is a record or scratch. The same question is
-open one layer down in S3: `jobs/` results and noncurrent object versions
-accumulate with no lifecycle rule, and versioning means deletes do not actually
-reclaim anything. Both are a few lines of CDK once the question is answered —
-which is why this is a decision waiting on a person, not work waiting on a
-sprint.
-
-**3 · `_SCENARIOS` is still a module dict, and it is not a cache.**
-`playbooks._RUNS` and `analytics_defs._RUNS` have both moved to the table; the
-playbook one needed a design rather than a rename, because a background task
-mutates its run in place as it progresses and polling reads the mutation — that
-became a write-back per transition.
-
-What is left (`routers/scenarios.py`) is a *mixed* registry, and the mix is the
-problem. Built-in scenarios are re-derived from packs at startup, so every
-replica computes the same ones — those really are a cache. But
-`POST /scenarios/from-dataset` mints a `scn-…` record from an analyst's dataset
-and puts it in the same dict, and that one is not derived from anything. It
-dies with the process and is invisible to a second replica. The delete
-endpoint already knows the difference — it refuses on
-`source_kind == "builtin"` — which is the codebase saying out loud that these
-are two kinds of thing sharing one home.
-
-So this is the same data-loss shape the whole migration exists to fix, just
-smaller and later-noticed. It ranks third only because steps 1 and 2 are
-smaller still, not because it is optional.
-
-**`_TRANSFORMS` (`routers/transforms.py`) genuinely is a cache** and is
-deliberately not on the list: it is seeded from pack attachments at startup and
-has no write endpoints at all, so there is nothing in it a restart could lose.
-
-**4 · Local disk is now a cache, not the record — but not everywhere.** Uploads
+**1 · Local disk is now a cache, not the record — but not everywhere.** Uploads
 write through to S3 (`services/blob_store.py`), and the two resolvers —
 `datasets._resolve_path` and `models_registry.resolve_artifact` — pull on a
 local miss, so a node that never received an upload can still read it. Model
@@ -618,11 +744,11 @@ so the choice is between shipping the built index to S3 and having every replica
 pull it, or moving to a store that is shared by construction. The first is
 cheaper and probably right until the corpus grows.
 
-These two are why step 5 waits on step 4. A second replica that cannot see the
+These two are why step 2 waits on step 1. A second replica that cannot see the
 first one's skills or index does not fail — it answers *differently*, which is
 harder to notice and worse to debug.
 
-**5 · Nothing runs the API in AWS.** Covered under the component map: no ALB,
+**2 · Nothing runs the API in AWS.** Covered under the component map: no ALB,
 no CloudFront, no App Runner, no EC2. Every reason a second replica couldn't
 exist has now been removed — shared state, shared identity, shared files — and
 none of that is worth anything until a second replica does exist. Fargate behind
@@ -630,13 +756,13 @@ an ALB is the conventional answer; App Runner is less to operate if the
 single-container shape holds. Note this is a *different* Fargate question from
 [On Fargate](#on-fargate) above, which is about the solver, not the web tier.
 
-**6 · Auth is stateless when a pool is configured**, and a module dict
+**3 · Auth is stateless when a pool is configured**, and a module dict
 otherwise — see the Cognito section above. The mock path is still the default,
 so the in-process token store is what runs locally. Two things remain even with
 a pool: `USER_PASSWORD_AUTH` means the password still passes through this
 service, and MFA is off. Both are deliberate for a lab and both are wrong for
 anything else.
 
-**7 · The frontend has no home.** `vite build` produces a bundle that nothing
+**4 · The frontend has no home.** `vite build` produces a bundle that nothing
 deploys. S3 with CloudFront in front of it is the obvious shape, and it wants a
-stable API origin — step 5 — to point at first.
+stable API origin — step 2 — to point at first.

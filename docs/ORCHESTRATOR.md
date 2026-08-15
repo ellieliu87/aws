@@ -291,7 +291,7 @@ CMA_ONELAKE_OUTLOOK_TABLE=outlook_scenarios
 
 The first two are consumed by
 [`materialize_into_scenarios_registry`](../backend/services/data_services.py)
-at startup → `_SCENARIOS` + `BUILTIN_DATA` get populated → the
+at startup → `_BUILTIN_SCENARIOS` + `BUILTIN_DATA` get populated → the
 Workflow tab's Scenarios palette + the Run-controls scenario dropdown
 + the Data tab's Data Services CCAR / Outlook sections all light up
 with live values. The integration-status badges flip to

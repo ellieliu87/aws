@@ -53,7 +53,7 @@ from routers.datasets import (
     _synthesize_sample,
     load_dataset,
 )
-from routers.scenarios import _SCENARIOS
+from routers.scenarios import load_scenario
 
 router = APIRouter()
 
@@ -275,7 +275,7 @@ def _summarize_dataset(dataset_id: str) -> str | None:
 
 
 def _summarize_scenario(scenario_id: str) -> str | None:
-    s = _SCENARIOS.get(scenario_id)
+    s = load_scenario(scenario_id)
     if not s:
         return None
     return (

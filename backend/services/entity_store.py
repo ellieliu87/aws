@@ -82,8 +82,26 @@ INDEX_NAME = "gsi1"
 _GSI_PK = "gsi1pk"
 _GSI_SK = "gsi1sk"
 
-# Attributes that belong to the storage layer, not the caller's model.
-_KEY_ATTRS = ("pk", "sk", _GSI_PK, _GSI_SK)
+# ── expiry ────────────────────────────────────────────────────────────────
+# The attribute DynamoDB's TTL watches, declared on the table in
+# infra/cdk/async_stack.py. A Number holding a Unix epoch in *seconds* — the
+# format is not negotiable, and a millisecond timestamp here would parse as a
+# date tens of thousands of years out and simply never expire, silently.
+#
+# Deletion is asynchronous and best-effort: DynamoDB promises "generally within
+# a few days of expiry", not on the second. So this bounds growth; it is not an
+# access control and must never be used as one. Expired-but-not-yet-deleted
+# items still come back from a read.
+#
+# The in-memory fallback deliberately does not emulate expiry. Matching a
+# process-lifetime dict against a multi-day sweep would be theatre, and local
+# development has no growth problem to solve.
+_TTL_ATTR = "expires_at"
+
+# Attributes that belong to the storage layer, not the caller's model. Stripped
+# on the way out so a caller round-tripping an item never has to know they
+# exist — which is what lets `AnalyticsRun(**record)` stay a plain constructor.
+_KEY_ATTRS = ("pk", "sk", _GSI_PK, _GSI_SK, _TTL_ATTR)
 
 
 def _strip(record: dict) -> dict:
@@ -181,15 +199,24 @@ def put(
     item_id: str,
     item: dict,
     index: tuple[str, str] | None = None,
+    ttl: int | None = None,
 ) -> dict:
     """Write an item. `index` is an optional (gsi1pk, gsi1sk) pair.
 
     Passing `index` puts the item in the secondary index; omitting it keeps
     the item out, which is what every entity except runs wants.
+
+    `ttl` is a Unix epoch in seconds after which DynamoDB may delete the item.
+    Omitting it means the item is kept until something deletes it explicitly,
+    which is what every entity except runs wants too. Both are the storage
+    layer's business rather than the caller's model, so neither comes back out
+    of `get`.
     """
     record = dict(item)
     if index is not None:
         record[_GSI_PK], record[_GSI_SK] = index
+    if ttl is not None:
+        record[_TTL_ATTR] = int(ttl)
 
     if not enabled():
         # The fallback keeps the index attributes so `query_index` has

@@ -154,6 +154,25 @@ class AsyncSolveStack(Stack):
                 dynamodb.PointInTimeRecoverySpecification(
                     point_in_time_recovery_enabled=True)
             ),
+            # Runs are the one entity that grows without bound, and gsi1 below
+            # fixed the *read* cost without bounding the growth itself. This is
+            # the other half: `routers/scenarios.py:store_run` stamps each run
+            # with an expiry, and DynamoDB sweeps them.
+            #
+            # The judgement behind it, recorded because the attribute alone
+            # does not show it: an analytics run is scratch, not a record. The
+            # inputs it was built from - the dataset, the model, the saved
+            # workflow, the compiled plan in S3 - are all kept, so a number can
+            # still be reproduced after its run row is gone. What expires is
+            # the transcript, not the evidence.
+            #
+            # Only items carrying the attribute are ever touched, so datasets,
+            # models and workflows are unaffected by construction, exactly as
+            # they are unaffected by the sparse index.
+            #
+            # Deletion costs nothing - TTL deletes are not billed as writes -
+            # which is the whole reason to prefer it to a scheduled sweeper.
+            time_to_live_attribute="expires_at",
         )
 
         # Runs are the one entity that grows without bound - one item per

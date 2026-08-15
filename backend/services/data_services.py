@@ -67,7 +67,7 @@ class ServiceCard:
     #                   entity_kind=transform and `get_transform_recipe`
     #                   reads the actual recipe.
     #   scenario_id   — CCAR / Outlook cards point at a Scenario in
-    #                   `_SCENARIOS` so the Preview button can pull
+    #                   `_BUILTIN_SCENARIOS` so the Preview button can pull
     #                   `/api/analytics/scenarios/{id}/preview`.
     transform_id: str | None = None
     scenario_id: str | None = None
@@ -457,7 +457,7 @@ def list_ccar(year_filter: str | None = None) -> tuple[list[str], dict[str, list
 
 
 # ── Materialize into the legacy scenario registry ──────────────────────────
-# The Workflow tab's Scenarios palette pulls from `routers/scenarios.py:_SCENARIOS`,
+# The Workflow tab's Scenarios palette pulls from `routers/scenarios.py`,
 # and the orchestrator runs scenarios through `BUILTIN_DATA`'s wide-format
 # paths. To keep the Workflow palette in sync with the Data tab's Data
 # Services section, we push every CCAR (across all years) + Outlook card
@@ -512,7 +512,7 @@ def _synthetic_paths(severity: str, n_months: int) -> dict[str, list[float]]:
 
 
 def materialize_into_scenarios_registry(function_id: str | None = None) -> int:
-    """Push CCAR (every year) + Outlook cards into `_SCENARIOS` + `BUILTIN_DATA`.
+    """Push CCAR (every year) + Outlook cards into `_BUILTIN_SCENARIOS` + `BUILTIN_DATA`.
 
     Idempotent — calling twice for the same function is a no-op for ids
     already present. Returns the number of new scenarios added so the
@@ -520,7 +520,11 @@ def materialize_into_scenarios_registry(function_id: str | None = None) -> int:
     """
     from datetime import datetime
     from models.schemas import Scenario
-    from routers.scenarios import _SCENARIOS, BUILTIN_DATA
+    # `_BUILTIN_SCENARIOS`, explicitly: everything this function produces is
+    # recomputed from packs and the CCAR/Outlook cards on every startup, so it
+    # belongs in the derived cache and not in the durable table beside the
+    # analyst's own scenarios. See the comment on the registry itself.
+    from routers.scenarios import _BUILTIN_SCENARIOS, BUILTIN_DATA
 
     now = datetime.utcnow().isoformat() + "Z"
     horizon = 27
@@ -544,7 +548,7 @@ def materialize_into_scenarios_registry(function_id: str | None = None) -> int:
 
         for card in ccar_cards:
             sid = card.id  # e.g. "ccar-bhcb-2026"
-            if sid in _SCENARIOS:
+            if sid in _BUILTIN_SCENARIOS:
                 continue
             severity = sev_by_code.get(card.title, "base")
             paths = _synthetic_paths(severity, horizon)
@@ -556,7 +560,7 @@ def materialize_into_scenarios_registry(function_id: str | None = None) -> int:
                 "horizon_months": horizon,
                 "paths": paths,
             }
-            _SCENARIOS[sid] = Scenario(
+            _BUILTIN_SCENARIOS[sid] = Scenario(
                 id=sid,
                 function_id=function_id,
                 name=f"{card.title} {year}",
@@ -573,7 +577,7 @@ def materialize_into_scenarios_registry(function_id: str | None = None) -> int:
     outlook_cards, _ = list_outlook()
     for card in outlook_cards:
         sid = card.id  # e.g. "outlook-ir"
-        if sid in _SCENARIOS:
+        if sid in _BUILTIN_SCENARIOS:
             continue
         paths = _synthetic_paths("outlook", horizon)
         BUILTIN_DATA[sid] = {
@@ -584,7 +588,7 @@ def materialize_into_scenarios_registry(function_id: str | None = None) -> int:
             "horizon_months": horizon,
             "paths": paths,
         }
-        _SCENARIOS[sid] = Scenario(
+        _BUILTIN_SCENARIOS[sid] = Scenario(
             id=sid,
             function_id=function_id,
             name=card.title,

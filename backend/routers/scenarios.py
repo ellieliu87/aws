@@ -16,6 +16,8 @@ synthesize a plausible response curve so the UI works end-to-end.
 """
 import json
 import logging
+import os
+import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -49,12 +51,71 @@ router = APIRouter()
 
 log = logging.getLogger("cma.scenarios")
 
-_SCENARIOS: dict[str, Scenario] = {}
-# Saved workflows and analytics runs moved to services/entity_store.py in
-# Phase 5 — see `_load_workflow` / `_store_workflow` and the run accessors
-# below. `_SCENARIOS` is the last one here, and the awkward one: most of its
-# entries are built at startup from packs and data services rather than
-# created by a user, so it is a cache of derived state, not user data.
+# ── scenario persistence ───────────────────────────────────────────────────
+# There used to be one `_SCENARIOS` dict here holding two different kinds of
+# thing, and the mixture was the whole problem.
+#
+# Built-in scenarios are *derived*. `services/data_services.py` recomputes them
+# from packs and the CCAR/Outlook cards on every startup, so every replica
+# arrives at the same set without talking to anything. Those are a cache, and a
+# cache is exactly the right home for them.
+#
+# Scenarios minted by `POST /scenarios/from-dataset` are not derived from
+# anything. An analyst points at their own dataset and gets an `scn-…` record
+# that exists nowhere else. In one dict with the built-ins those died with the
+# process and were invisible to a second replica — the same data-loss shape the
+# rest of this migration exists to fix, just smaller and noticed later.
+#
+# The codebase was already saying so out loud: `delete_scenario` refuses when
+# `source_kind == "builtin"`, which is a special case that only exists because
+# two kinds of thing shared one home. So they no longer do. Built-ins stay in
+# the dict below; analyst-created ones go in the table, beside datasets, models
+# and workflows.
+#
+# `load_scenario` / `all_scenarios` are what callers use, and they merge the
+# two. Built-ins are checked first deliberately: they are the overwhelming
+# majority of lookups and a dict hit costs nothing, so the network read only
+# happens for ids that can only be analyst-created.
+_SCENARIO_ENTITY = "scenario"
+
+_BUILTIN_SCENARIOS: dict[str, Scenario] = {}
+
+
+def load_scenario(scenario_id: str) -> Scenario | None:
+    from services import entity_store
+
+    builtin = _BUILTIN_SCENARIOS.get(scenario_id)
+    if builtin is not None:
+        return builtin
+    record = entity_store.get(_SCENARIO_ENTITY, scenario_id)
+    return Scenario(**record) if record else None
+
+
+def store_scenario(scenario: Scenario) -> Scenario:
+    from services import entity_store
+
+    entity_store.put(_SCENARIO_ENTITY, scenario.id, scenario.model_dump())
+    return scenario
+
+
+def remove_scenario(scenario_id: str) -> None:
+    from services import entity_store
+
+    entity_store.delete(_SCENARIO_ENTITY, scenario_id)
+
+
+def all_scenarios() -> list[Scenario]:
+    from services import entity_store
+
+    out: list[Scenario] = list(_BUILTIN_SCENARIOS.values())
+    for record in entity_store.list_all(_SCENARIO_ENTITY):
+        try:
+            out.append(Scenario(**record))
+        except Exception as e:
+            # One stored item that no longer matches the schema must not take
+            # the whole palette down with it.
+            log.warning("skipping unreadable scenario %s: %s", record.get("id"), e)
+    return out
 
 
 # ── run persistence ────────────────────────────────────────────────────────
@@ -72,6 +133,21 @@ _RUN_ENTITY = "run"
 # Decimal encoding being wider than the JSON we measure.
 _MAX_RUN_BYTES = 380 * 1024
 
+# How long a run stays on the history page before DynamoDB sweeps it.
+#
+# gsi1 made reading the newest N cheap regardless of how many exist; it did
+# nothing about the fact that the number only ever goes up. This is the
+# decision that bounds it, and it is a judgement rather than a tuning knob: a
+# run is scratch, not a record. Everything a number was derived from — the
+# dataset, the model, the saved workflow, the compiled plan versions in S3 —
+# is kept indefinitely, so a result stays reproducible long after the run row
+# that first reported it has gone.
+#
+# Set `CMA_RUN_TTL_DAYS=0` to keep runs forever, which is the right setting
+# the day someone has to answer "what exactly did we file, and when" from the
+# run history itself rather than from its inputs.
+_RUN_TTL_DAYS_DEFAULT = 90
+
 # Page size for the run history. The cap exists because the index makes a
 # large page genuinely expensive again — a page of runs carries their series.
 RUNS_PAGE_DEFAULT = 200
@@ -80,6 +156,28 @@ RUNS_PAGE_MAX = 500
 
 def _run_index_pk(function_id: str) -> str:
     return f"{_RUN_ENTITY}#{function_id}"
+
+
+def _run_ttl() -> int | None:
+    """Epoch seconds at which a run written now becomes eligible for deletion.
+
+    Returns None when the TTL is disabled, which is also what an unreadable
+    setting falls back to: getting this wrong in the permissive direction
+    leaves runs lying around, and getting it wrong in the other direction
+    deletes them. Only one of those is recoverable.
+    """
+    raw = os.getenv("CMA_RUN_TTL_DAYS", "").strip()
+    try:
+        days = int(raw) if raw else _RUN_TTL_DAYS_DEFAULT
+    except ValueError:
+        log.warning("CMA_RUN_TTL_DAYS=%r is not a number — keeping runs forever", raw)
+        return None
+    if days <= 0:
+        return None
+    # From now rather than from `run.created_at`: the two are the same value in
+    # every current caller, and parsing the stored string to rediscover it
+    # would add a failure mode for no gain.
+    return int(time.time()) + days * 86400
 
 
 def load_run(run_id: str) -> AnalyticsRun | None:
@@ -116,8 +214,15 @@ def store_run(run: AnalyticsRun) -> AnalyticsRun:
     # without walking every run ever recorded. `created_at` is an ISO-8601
     # UTC string, which sorts lexicographically in timestamp order — the
     # property the whole index depends on.
+    #
+    # `ttl` is the other half of that: the index made reads cheap, this keeps
+    # the collection finite. Note it applies to the index entry too — a GSI
+    # item goes when its base item does, so the history page never shows a run
+    # the table no longer holds.
     entity_store.put(
-        _RUN_ENTITY, run.id, payload, index=(_run_index_pk(run.function_id), run.created_at)
+        _RUN_ENTITY, run.id, payload,
+        index=(_run_index_pk(run.function_id), run.created_at),
+        ttl=_run_ttl(),
     )
     return run
 
@@ -151,7 +256,7 @@ BUILTIN_DATA: dict[str, dict[str, Any]] = {}
 # ── Helpers ────────────────────────────────────────────────────────────────
 def _scenario_dataframe(scenario_id: str) -> pd.DataFrame:
     """Return a (horizon_months × variables) wide-format DataFrame for the scenario."""
-    sc = _SCENARIOS.get(scenario_id)
+    sc = load_scenario(scenario_id)
     if not sc:
         raise HTTPException(status_code=404, detail="Scenario not found")
     if sc.source_kind == "builtin":
@@ -446,7 +551,7 @@ async def list_scenarios(
     function_id: str | None = Query(default=None),
     _: str = Depends(get_current_user),
 ):
-    items = list(_SCENARIOS.values())
+    items = all_scenarios()
     # Built-ins (function_id None) are always returned; plus function-scoped ones
     items = [
         s for s in items
@@ -458,7 +563,7 @@ async def list_scenarios(
 
 @router.get("/scenarios/{scenario_id}", response_model=Scenario)
 async def get_scenario(scenario_id: str, _: str = Depends(get_current_user)):
-    s = _SCENARIOS.get(scenario_id)
+    s = load_scenario(scenario_id)
     if not s:
         raise HTTPException(status_code=404, detail="Scenario not found")
     return s
@@ -469,7 +574,7 @@ async def preview_scenario(
     scenario_id: str,
     _: str = Depends(get_current_user),
 ):
-    s = _SCENARIOS.get(scenario_id)
+    s = load_scenario(scenario_id)
     if not s:
         raise HTTPException(status_code=404, detail="Scenario not found")
     df = _scenario_dataframe(scenario_id)
@@ -504,18 +609,23 @@ async def scenario_from_dataset(req: ScenarioCreateFromDataset, _: str = Depends
         horizon_months=d.row_count,
         created_at=now,
     )
-    _SCENARIOS[sid] = sc
+    # The record this endpoint mints is the analyst's own — derived from their
+    # dataset and from nothing a restart can recompute. It goes in the table.
+    store_scenario(sc)
     return sc
 
 
 @router.delete("/scenarios/{scenario_id}", status_code=204)
 async def delete_scenario(scenario_id: str, _: str = Depends(get_current_user)):
-    s = _SCENARIOS.get(scenario_id)
+    s = load_scenario(scenario_id)
     if not s:
         raise HTTPException(status_code=404, detail="Scenario not found")
+    # Still a 403 rather than a 404, and still checked on `source_kind` rather
+    # than on which store answered: the response the frontend gets should not
+    # change because of where the record happens to live.
     if s.source_kind == "builtin":
         raise HTTPException(status_code=403, detail="Built-in scenarios cannot be deleted")
-    del _SCENARIOS[scenario_id]
+    remove_scenario(scenario_id)
 
 
 # ── Run routes ─────────────────────────────────────────────────────────────
@@ -596,7 +706,7 @@ def _input_dataframe(scenario_id: str | None, dataset_id: str | None, horizon: i
             df = df[df["month"] <= horizon]
         else:
             df = df.head(horizon)
-        s = _SCENARIOS.get(scenario_id)
+        s = load_scenario(scenario_id)
         return df, "scenario", (s.name if s else scenario_id)
     if dataset_id:
         d = load_dataset(dataset_id)
@@ -1008,8 +1118,13 @@ def _apply_run_context(
 
     # ── Overlay macro paths from the matched scenario ──────────────────
     if scenario_name:
+        # Built-ins only. The overlay reads `BUILTIN_DATA`, so a match on
+        # anything else was always a no-op — and searching the whole registry
+        # meant an analyst-created scenario that happened to share a name could
+        # be found first and silently suppress the overlay. Narrowing the
+        # search fixes that and keeps a per-node transform off the network.
         match = next(
-            (s for s in _SCENARIOS.values() if s.name == scenario_name),
+            (s for s in _BUILTIN_SCENARIOS.values() if s.name == scenario_name),
             None,
         )
         if match and match.id in BUILTIN_DATA:
