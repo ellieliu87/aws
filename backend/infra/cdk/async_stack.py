@@ -26,6 +26,15 @@ from aws_cdk import (
     RemovalPolicy,
 )
 from aws_cdk import (
+    aws_budgets as budgets,
+)
+from aws_cdk import (
+    aws_cloudwatch as cloudwatch,
+)
+from aws_cdk import (
+    aws_cloudwatch_actions as cw_actions,
+)
+from aws_cdk import (
     aws_codebuild as codebuild,
 )
 from aws_cdk import (
@@ -42,6 +51,15 @@ from aws_cdk import (
 )
 from aws_cdk import (
     aws_lambda as lambda_,
+)
+from aws_cdk import (
+    aws_logs as logs,
+)
+from aws_cdk import (
+    aws_sns as sns,
+)
+from aws_cdk import (
+    aws_sns_subscriptions as subscriptions,
 )
 from aws_cdk import (
     aws_sqs as sqs,
@@ -61,6 +79,8 @@ WORKER_DIR = str(Path(__file__).resolve().parent / "worker")
 class AsyncSolveStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, *,
                  result_bucket: str, worker_image_tag: str | None = None,
+                 alarm_email: str | None = None,
+                 monthly_budget_usd: float | None = None,
                  **kwargs) -> None:
         """`worker_image_tag` selects the container worker.
 
@@ -70,6 +90,12 @@ class AsyncSolveStack(Stack):
         this stack creates. So the order is deploy (zip) -> build image ->
         deploy again with the tag. Encoding that as a parameter beats a deploy
         that fails until someone reads the runbook.
+
+        `alarm_email` is where the alarms and the budget report to. Left as
+        None the alarms are still created and still fire — they just have
+        nobody to tell, which is a subscription away from being fixed in the
+        console. The budget is skipped entirely in that case, because a budget
+        with no subscriber is decoration.
         """
         super().__init__(scope, construct_id, **kwargs)
 
@@ -287,6 +313,22 @@ class AsyncSolveStack(Stack):
         image_repo.grant_pull_push(builder)
 
         # -- worker -------------------------------------------------------
+        # Left to itself, Lambda creates /aws/lambda/<function> on the first
+        # invoke with retention set to "never expire" - outside CloudFormation,
+        # so `cdk destroy` leaves it behind and it accrues forever. Declaring
+        # the group here fixes both: two weeks is longer than any debugging
+        # session and short enough that the logs never become a line item.
+        #
+        # An explicit group rather than the `log_retention` prop, which is
+        # deprecated and works by deploying a custom-resource Lambda whose only
+        # job is to call PutRetentionPolicy - a second function and role to
+        # maintain for a property the function itself can carry.
+        worker_logs = logs.LogGroup(
+            self, "SolverLogs",
+            retention=logs.RetentionDays.TWO_WEEKS,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
         common_env = {"RESULT_BUCKET": result_bucket, "RESULT_PREFIX": "jobs/",
                       "MODEL_PREFIX": "models/"}
         if worker_image_tag:
@@ -300,6 +342,7 @@ class AsyncSolveStack(Stack):
                 # though it was fine for the zip worker.
                 memory_size=2048,
                 environment=common_env,
+                log_group=worker_logs,
                 description="CMA Workbench solver (container: real model artifacts)",
             )
         else:
@@ -311,6 +354,7 @@ class AsyncSolveStack(Stack):
                 timeout=worker_timeout,
                 memory_size=512,
                 environment=common_env,
+                log_group=worker_logs,
                 description="CMA Workbench async solver (zip: goal-seek only)",
             )
 
@@ -401,6 +445,123 @@ class AsyncSolveStack(Stack):
             comment="CMA Workbench playbook: solve, human approval, publish",
         )
 
+        # -- alerting -------------------------------------------------------
+        # Two of this stack's states are designed to be reached and were, until
+        # now, silent when reached: a solve that fails three times lands in
+        # SolvesDlq, and an approval nobody answers times out after 24 hours.
+        # Both then sit there - the dead letter for 14 days, the failed
+        # execution in the console - waiting for somebody to think to look.
+        #
+        # Alarms rather than a dashboard: a dashboard has to be visited, and
+        # nobody visits a lab dashboard. The whole point is to be told.
+        alerts = sns.Topic(self, "Alerts", display_name="CMA Workbench alerts")
+        if alarm_email:
+            alerts.add_subscription(subscriptions.EmailSubscription(alarm_email))
+
+        def watch(scope_id: str, metric: cloudwatch.Metric, description: str,
+                  threshold: float = 0) -> cloudwatch.Alarm:
+            """Alarm on any occurrence, and notify.
+
+            NOT_BREACHING for missing data is the important part: none of these
+            metrics is emitted when nothing goes wrong, so the healthy state is
+            no data at all. The default (MISSING) would leave every alarm
+            parked in INSUFFICIENT_DATA, which reads like a broken alarm and
+            trains people to ignore the set.
+            """
+            alarm = cloudwatch.Alarm(
+                self, scope_id,
+                metric=metric,
+                threshold=threshold,
+                evaluation_periods=1,
+                comparison_operator=(
+                    cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD),
+                treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+                alarm_description=description,
+            )
+            alarm.add_alarm_action(cw_actions.SnsAction(alerts))
+            return alarm
+
+        # The highest-value one in the stack: a message here means a solve was
+        # attempted three times and failed three times, and the analyst who
+        # asked for it is still waiting.
+        watch(
+            "DlqNotEmpty",
+            dead_letters.metric_approximate_number_of_messages_visible(
+                period=Duration.minutes(5), statistic="Maximum"),
+            "A solve failed 3 times and is parked in the dead-letter queue.",
+        )
+        watch(
+            "WorkerErrors",
+            worker.metric_errors(period=Duration.minutes(5), statistic="Sum"),
+            "The solver Lambda raised. Precedes anything reaching the DLQ, so "
+            "it fires first and with the traceback still in the log group.",
+        )
+        watch(
+            "WorkerThrottles",
+            worker.metric_throttles(period=Duration.minutes(5), statistic="Sum"),
+            "The solver hit the account concurrency limit - a different "
+            "problem from a failure, and invisible in the error metric.",
+        )
+        watch(
+            "PlaybookFailures",
+            machine.metric_failed(period=Duration.minutes(5), statistic="Sum"),
+            "A playbook execution reached the Failed state.",
+        )
+        # Separated from failures on purpose: a timed-out execution is not a
+        # broken system, it is a reviewer who never answered. Different cause,
+        # different fix, so it should be a different message.
+        watch(
+            "PlaybookApprovalsExpired",
+            machine.metric_timed_out(period=Duration.minutes(5), statistic="Sum"),
+            "A playbook execution timed out - most likely the 24-hour approval "
+            "gate expired with no reviewer.",
+        )
+
+        # -- cost guard -----------------------------------------------------
+        # This stack is designed around the free tier throughout - one ECR
+        # image, on-demand DynamoDB, scale-to-zero Lambda - and every one of
+        # those decisions is a bet that usage stays small. A budget is what
+        # tells you when a bet stopped paying, and it costs nothing.
+        #
+        # Subscribed by email directly rather than through the topic above:
+        # routing a budget through SNS needs a topic policy granting
+        # budgets.amazonaws.com publish rights, and Budgets is a global service
+        # that notifies from us-east-1 while this stack follows the app's
+        # region. Two lines of subscriber beat a cross-region topic.
+        if monthly_budget_usd and alarm_email:
+            budgets.CfnBudget(
+                self, "MonthlyBudget",
+                budget=budgets.CfnBudget.BudgetDataProperty(
+                    budget_type="COST",
+                    time_unit="MONTHLY",
+                    budget_limit=budgets.CfnBudget.SpendProperty(
+                        amount=monthly_budget_usd, unit="USD"),
+                ),
+                notifications_with_subscribers=[
+                    # Already spent it.
+                    budgets.CfnBudget.NotificationWithSubscribersProperty(
+                        notification=budgets.CfnBudget.NotificationProperty(
+                            notification_type="ACTUAL",
+                            comparison_operator="GREATER_THAN",
+                            threshold=80, threshold_type="PERCENTAGE",
+                        ),
+                        subscribers=[budgets.CfnBudget.SubscriberProperty(
+                            subscription_type="EMAIL", address=alarm_email)],
+                    ),
+                    # On track to spend it - the useful one, because it arrives
+                    # while the month can still be changed.
+                    budgets.CfnBudget.NotificationWithSubscribersProperty(
+                        notification=budgets.CfnBudget.NotificationProperty(
+                            notification_type="FORECASTED",
+                            comparison_operator="GREATER_THAN",
+                            threshold=100, threshold_type="PERCENTAGE",
+                        ),
+                        subscribers=[budgets.CfnBudget.SubscriberProperty(
+                            subscription_type="EMAIL", address=alarm_email)],
+                    ),
+                ],
+            )
+
         # -- outputs ------------------------------------------------------
         # These are how backend/.env gets its values; nothing is hardcoded.
         CfnOutput(self, "QueueUrl", value=queue.queue_url,
@@ -428,6 +589,11 @@ class AsyncSolveStack(Stack):
                   description="ECR repo for the container worker")
         CfnOutput(self, "WorkerImageBuildProject", value=builder.project_name,
                   description="CodeBuild project that builds the worker image")
+        CfnOutput(self, "AlertsTopicArn", value=alerts.topic_arn,
+                  description="Alarms publish here; subscribe by hand if "
+                              "CMA_ALARM_EMAIL was unset at deploy time")
+        CfnOutput(self, "WorkerLogGroup", value=worker_logs.log_group_name,
+                  description="Solver logs, retained 14 days")
         CfnOutput(self, "WorkerFlavour",
                   value=f"container:{worker_image_tag}" if worker_image_tag else "zip",
                   description="Which worker this deploy wired up")
