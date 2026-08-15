@@ -110,11 +110,23 @@ class AsyncSolveStack(Stack):
             sort_key=dynamodb.Attribute(name="sk",
                                         type=dynamodb.AttributeType.STRING),
             billing=dynamodb.Billing.on_demand(),
-            # A lab table; real deployments would keep this and enable PITR.
-            removal_policy=RemovalPolicy.DESTROY,
+            # RETAIN, not DESTROY. This table now holds the analyst's datasets,
+            # models, saved workflows and run history - the evidence trail for
+            # numbers that get filed. A `cdk destroy`, or any change
+            # CloudFormation decides is a replacement, would take all of it.
+            #
+            # The cost of RETAIN is an orphaned table if the stack is torn down,
+            # which has to be deleted by hand. That is the correct direction to
+            # fail: recovering from an unwanted leftover is tedious, recovering
+            # from a deleted audit trail is impossible.
+            removal_policy=RemovalPolicy.RETAIN,
+            # Point-in-time recovery gives 35 days of second-granularity restore.
+            # It bills on stored bytes, which at this volume is cents, and it is
+            # the only defence against a bad write - versioning protects the
+            # documents in S3, but nothing protected these records.
             point_in_time_recovery_specification=(
                 dynamodb.PointInTimeRecoverySpecification(
-                    point_in_time_recovery_enabled=False)
+                    point_in_time_recovery_enabled=True)
             ),
         )
 

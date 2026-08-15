@@ -614,7 +614,7 @@ class Transform(BaseModel):
     name: str
     description: str | None = None
     # Upstream — which configured Data Sources this transform reads from.
-    # IDs reference entries in `_DATA_SOURCES` (datasources router).
+    # IDs reference entries in the datasources registry.
     input_data_source_ids: list[str] = Field(default_factory=list)
     # Downstream — the Dataset id this transform materializes to.
     output_dataset_id: str | None = None

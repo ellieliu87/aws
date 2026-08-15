@@ -24,15 +24,38 @@ router = APIRouter()
 # function_id -> bundle dict (the JSON shape exported by the frontend's
 # Export button). We store as plain dicts so the schema can evolve client-
 # side without requiring backend migrations.
-_LAYOUTS: dict[str, dict[str, Any]] = {}
+# ── layout persistence ─────────────────────────────────────────────────────
+# Keyed by function_id rather than a generated id: there is one default
+# layout per function, so the function *is* the identity.
+_LAYOUT_ENTITY = "layout"
+
+
+def load_layout(function_id: str) -> dict[str, Any] | None:
+    from services import entity_store
+
+    return entity_store.get(_LAYOUT_ENTITY, function_id)
+
+
+def store_layout(function_id: str, bundle: dict[str, Any]) -> None:
+    from services import entity_store
+
+    # `id` is what list_all reads back as the key, so it has to be present.
+    entity_store.put(_LAYOUT_ENTITY, function_id, {**bundle, "id": function_id})
+
+
+def remove_layout(function_id: str) -> None:
+    from services import entity_store
+
+    entity_store.delete(_LAYOUT_ENTITY, function_id)
 
 
 @router.get("/{function_id}", response_model=OverviewLayout)
 async def get_default_layout(function_id: str, _: str = Depends(get_current_user)):
     """Return the saved default layout for a function. 404 if none saved."""
-    bundle = _LAYOUTS.get(function_id)
+    bundle = load_layout(function_id)
     if not bundle:
         raise HTTPException(status_code=404, detail="No default layout saved for this function.")
+    bundle.pop("id", None)
     return OverviewLayout(function_id=function_id, **bundle)
 
 
@@ -50,13 +73,12 @@ async def save_default_layout(
         "saved_by": user,
         "saved_at": body.saved_at,
     }
-    _LAYOUTS[function_id] = bundle
+    store_layout(function_id, bundle)
     return OverviewLayout(function_id=function_id, **bundle)
 
 
 @router.delete("/{function_id}")
 async def delete_default_layout(function_id: str, _: str = Depends(get_current_user)):
     """Clear the default layout for a function."""
-    if function_id in _LAYOUTS:
-        del _LAYOUTS[function_id]
+    remove_layout(function_id)
     return {"ok": True}

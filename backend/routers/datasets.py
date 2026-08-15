@@ -31,7 +31,7 @@ from models.schemas import (
 )
 from packs import is_pack_visible
 from routers.auth import get_current_user, get_current_user_groups
-from routers.datasources import SAMPLE_TABLES, _DATA_SOURCES
+from routers.datasources import SAMPLE_TABLES, load_source
 
 router = APIRouter()
 
@@ -368,9 +368,9 @@ async def upload_dataset(
 
 @router.post("/from-table", response_model=Dataset, status_code=201)
 async def bind_from_table(req: DatasetCreateFromTable, _: str = Depends(get_current_user)):
-    if req.data_source_id not in _DATA_SOURCES:
+    src = load_source(req.data_source_id)
+    if not src:
         raise HTTPException(status_code=404, detail="Data source not found")
-    src = _DATA_SOURCES[req.data_source_id]
 
     # Normalize the binding shape per source type. The Bind Table modal
     # ships three flavors:

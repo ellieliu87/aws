@@ -121,8 +121,8 @@ def _is_macro_tile(entity_id: str | None) -> bool:
     if not entity_id:
         return False
     try:
-        from routers.plots import _PLOTS
-        p = _PLOTS.get(entity_id)
+        from routers.plots import load_plot
+        p = load_plot(entity_id)
         if not p:
             return False
         haystack_parts: list[str] = [p.name or ""]

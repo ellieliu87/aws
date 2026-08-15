@@ -17,24 +17,67 @@ router = APIRouter()
 log = logging.getLogger("cma.plots")
 
 
-_PLOTS: dict[str, PlotConfig] = {}
+# ── plot persistence ───────────────────────────────────────────────────────
+# Tiles are analyst-created, so before this they were the clearest example of
+# work that vanished on the other replica: you build a chart, refresh, and the
+# load balancer sends you to a server that never saw it.
+#
+# Note the two mutating endpoints below (`pin`, `filters`) and the agent's
+# tuning tools: they read a tile, change a field, and used to be done, because
+# the object they held *was* the registry's. Now it is a copy, so each one
+# writes back explicitly.
+_PLOT_ENTITY = "plot"
+
+
+def load_plot(plot_id: str) -> PlotConfig | None:
+    from services import entity_store
+
+    record = entity_store.get(_PLOT_ENTITY, plot_id)
+    return PlotConfig(**record) if record else None
+
+
+def store_plot(p: PlotConfig) -> PlotConfig:
+    from services import entity_store
+
+    entity_store.put(_PLOT_ENTITY, p.id, p.model_dump())
+    return p
+
+
+def all_plots() -> list[PlotConfig]:
+    from services import entity_store
+
+    out: list[PlotConfig] = []
+    for record in entity_store.list_all(_PLOT_ENTITY):
+        try:
+            out.append(PlotConfig(**record))
+        except Exception as e:
+            log.warning("skipping unreadable plot %s: %s", record.get("id"), e)
+    return out
+
+
+def remove_plot(plot_id: str) -> None:
+    from services import entity_store
+
+    entity_store.delete(_PLOT_ENTITY, plot_id)
 
 
 def _ingest_pack_plots() -> None:
-    """Materialize every pack-attached plot into `_PLOTS`. Called at
+    """Materialize every pack-attached plot into the store. Called at
     startup so pack-shipped demo dashboards land in the Reporting tab as
     if a user had built them. Existing entries with the same id are left
     alone so a user-edited tile isn't clobbered on a future re-ingest."""
     from packs import plot_attachments
+
+    existing = {p.id for p in all_plots()}
     for att in plot_attachments():
         plot_id = att["plot_id"]
-        if plot_id in _PLOTS:
+        if plot_id in existing:
             continue
         cfg = dict(att.get("config") or {})
         cfg["id"] = plot_id
         cfg.setdefault("function_id", att["function_id"])
         try:
-            _PLOTS[plot_id] = PlotConfig(**cfg)
+            store_plot(PlotConfig(**cfg))
         except Exception as e:
             # Don't kill startup over a bad pack tile — log and skip.
             import logging
@@ -208,7 +251,7 @@ async def list_plots(
     pinned: bool | None = Query(default=None),
     _: str = Depends(get_current_user),
 ):
-    items = list(_PLOTS.values())
+    items = all_plots()
     if function_id:
         items = [p for p in items if p.function_id == function_id]
     if pinned is not None:
@@ -220,23 +263,24 @@ async def list_plots(
 async def create_plot(req: PlotConfigCreate, _: str = Depends(get_current_user)):
     pid = f"plot-{uuid.uuid4().hex[:10]}"
     p = PlotConfig(id=pid, **req.model_dump())
-    _PLOTS[pid] = p
+    store_plot(p)
     return p
 
 
 @router.delete("/{plot_id}", status_code=204)
 async def delete_plot(plot_id: str, _: str = Depends(get_current_user)):
-    if plot_id not in _PLOTS:
+    if not load_plot(plot_id):
         raise HTTPException(status_code=404, detail="Plot not found")
-    del _PLOTS[plot_id]
+    remove_plot(plot_id)
 
 
 @router.post("/{plot_id}/pin", response_model=PlotConfig)
 async def toggle_pin(plot_id: str, _: str = Depends(get_current_user)):
-    p = _PLOTS.get(plot_id)
+    p = load_plot(plot_id)
     if not p:
         raise HTTPException(status_code=404, detail="Plot not found")
     p.pinned_to_overview = not p.pinned_to_overview
+    store_plot(p)
     return p
 
 
@@ -253,7 +297,7 @@ async def update_filters(
       { "append": {"field": "...", ...} }     — add one
       { "clear": true }                       — wipe all
     """
-    p = _PLOTS.get(plot_id)
+    p = load_plot(plot_id)
     if not p:
         raise HTTPException(status_code=404, detail="Plot not found")
     if payload.get("clear"):
@@ -262,6 +306,7 @@ async def update_filters(
         p.filters = list(p.filters) + [payload["append"]]
     elif "filters" in payload:
         p.filters = list(payload["filters"] or [])
+    store_plot(p)
     return p
 
 
@@ -289,7 +334,7 @@ async def get_fields(
 
 @router.get("/{plot_id}/preview")
 async def preview_plot(plot_id: str, _: str = Depends(get_current_user)):
-    p = _PLOTS.get(plot_id)
+    p = load_plot(plot_id)
     if not p:
         raise HTTPException(status_code=404, detail="Plot not found")
 

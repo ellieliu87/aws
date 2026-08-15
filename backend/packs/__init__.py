@@ -231,7 +231,7 @@ class PackContext:
         Args:
           function_id:           which function this transform appears under.
           transform_id:          stable id (e.g. "tr-deposits-scenario-service").
-          input_data_source_ids: ids of `_DATA_SOURCES` entries this reads from
+          input_data_source_ids: ids of registered data sources this reads from
                                  (e.g. ["ds-onelake-finance"]). Shown on the card.
           output_dataset_id:     dataset id this transform materializes to.
           recipe_python:         read-only Python source — what the recipe does.

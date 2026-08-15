@@ -120,30 +120,70 @@ SAMPLE_TABLES: dict[str, dict[str, list[tuple[str, str]]]] = {
 }
 
 
-_DATA_SOURCES: dict[str, DataSource] = {}
+# ── data source persistence ────────────────────────────────────────────────
+# This registry already survived restarts, via a JSON file on local disk. That
+# is one node's disk, so a source registered on one replica was invisible to
+# the others — durable but not shared. The file is now read once, to carry
+# forward anything registered before this change, and the store owns it after.
+_SOURCE_ENTITY = "datasource"
+
+
+def load_source(source_id: str) -> DataSource | None:
+    from services import entity_store
+
+    record = entity_store.get(_SOURCE_ENTITY, source_id)
+    return DataSource(**record) if record else None
+
+
+def store_source(src: DataSource) -> DataSource:
+    from services import entity_store
+
+    entity_store.put(_SOURCE_ENTITY, src.id, src.model_dump())
+    return src
+
+
+def all_sources() -> list[DataSource]:
+    from services import entity_store
+
+    out: list[DataSource] = []
+    for record in entity_store.list_all(_SOURCE_ENTITY):
+        try:
+            out.append(DataSource(**record))
+        except Exception:
+            continue
+    return out
+
+
+def remove_source(source_id: str) -> None:
+    from services import entity_store
+
+    entity_store.delete(_SOURCE_ENTITY, source_id)
 
 DATASOURCES_STORE = Path(__file__).resolve().parent.parent / "data" / "datasources.json"
 
 
 def _save() -> None:
-    """Persist all data sources to disk so custom registrations survive restarts."""
-    try:
-        DATASOURCES_STORE.parent.mkdir(parents=True, exist_ok=True)
-        DATASOURCES_STORE.write_text(
-            json.dumps([s.model_dump() for s in _DATA_SOURCES.values()], indent=2)
-        )
-    except Exception:
-        pass
+    """Retained as a no-op seam.
+
+    Sources are written through `store_source` now; the JSON file was the old
+    per-node record and keeping a second copy in sync would just be a way for
+    the two to disagree. Call sites are left in place because they mark the
+    points where a write happens.
+    """
+    return
 
 
 def _seed() -> None:
     # Restore any previously saved sources first (covers custom OneLake extractors
     # and any other sources registered at runtime).
+    existing = {s.id for s in all_sources()}
     if DATASOURCES_STORE.exists():
         try:
             for r in json.loads(DATASOURCES_STORE.read_text()):
                 src = DataSource(**r)
-                _DATA_SOURCES[src.id] = src
+                if src.id not in existing:
+                    store_source(src)
+                    existing.add(src.id)
         except Exception:
             pass
 
@@ -191,8 +231,8 @@ def _seed() -> None:
         ),
     ]
     for s in seeds:
-        if s.id not in _DATA_SOURCES:
-            _DATA_SOURCES[s.id] = s
+        if s.id not in existing:
+            store_source(s)
 
 
 _seed()
@@ -200,7 +240,7 @@ _seed()
 
 @router.get("", response_model=list[DataSource])
 async def list_sources(_: str = Depends(get_current_user)):
-    return list(_DATA_SOURCES.values())
+    return all_sources()
 
 
 @router.post("", response_model=DataSource, status_code=201)
@@ -214,31 +254,32 @@ async def create_source(req: DataSourceCreate, _: str = Depends(get_current_user
         description=req.description,
         config=req.config,
     )
-    _DATA_SOURCES[sid] = src
+    store_source(src)
     return src
 
 
 @router.delete("/{source_id}", status_code=204)
 async def delete_source(source_id: str, _: str = Depends(get_current_user)):
-    if source_id not in _DATA_SOURCES:
+    if not load_source(source_id):
         raise HTTPException(status_code=404, detail="Data source not found")
-    del _DATA_SOURCES[source_id]
+    remove_source(source_id)
 
 
 @router.post("/{source_id}/test")
 async def test_connection(source_id: str, _: str = Depends(get_current_user)):
-    src = _DATA_SOURCES.get(source_id)
+    src = load_source(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="Data source not found")
     # Mock test: flip to connected
     src.status = "connected"
     src.last_synced = datetime.utcnow().isoformat() + "Z"
+    store_source(src)
     return {"ok": True, "status": src.status, "tested_at": src.last_synced}
 
 
 @router.get("/{source_id}/tables")
 async def list_tables(source_id: str, _: str = Depends(get_current_user)):
-    if source_id not in _DATA_SOURCES:
+    if not load_source(source_id):
         raise HTTPException(status_code=404, detail="Data source not found")
     tables = SAMPLE_TABLES.get(source_id, {})
     return {
@@ -270,5 +311,5 @@ async def upload_file(
         last_synced=datetime.utcnow().isoformat() + "Z",
         config={"filename": file.filename, "size_bytes": len(contents), "content_type": file.content_type},
     )
-    _DATA_SOURCES[sid] = src
+    store_source(src)
     return src

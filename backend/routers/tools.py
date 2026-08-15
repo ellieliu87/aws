@@ -34,7 +34,43 @@ from routers.auth import get_current_user, get_current_user_groups
 router = APIRouter()
 
 
-_TOOLS: dict[str, PythonTool] = {}
+# ── tool persistence ───────────────────────────────────────────────────────
+# Analyst-written Python tools. Three endpoints below mutate a tool in place
+# (`update`, `toggle`, `test` writing back its last result), so each one now
+# writes back explicitly — a loaded tool is a copy, not the registry's object.
+_TOOL_ENTITY = "pytool"
+
+
+def load_tool(tool_id: str) -> PythonTool | None:
+    from services import entity_store
+
+    record = entity_store.get(_TOOL_ENTITY, tool_id)
+    return PythonTool(**record) if record else None
+
+
+def store_tool(t: PythonTool) -> PythonTool:
+    from services import entity_store
+
+    entity_store.put(_TOOL_ENTITY, t.id, t.model_dump())
+    return t
+
+
+def all_tools() -> list[PythonTool]:
+    from services import entity_store
+
+    out: list[PythonTool] = []
+    for record in entity_store.list_all(_TOOL_ENTITY):
+        try:
+            out.append(PythonTool(**record))
+        except Exception:
+            continue
+    return out
+
+
+def remove_tool(tool_id: str) -> None:
+    from services import entity_store
+
+    entity_store.delete(_TOOL_ENTITY, tool_id)
 
 DEFAULT_SOURCE = '''def my_tool(symbol: str, lookback_days: int = 30):
     """Example tool — replace with your own logic.
@@ -50,7 +86,7 @@ DEFAULT_SOURCE = '''def my_tool(symbol: str, lookback_days: int = 30):
 
 
 def _seed():
-    if _TOOLS:
+    if all_tools():
         return
     builtin_seeds = [
         PythonTool(
@@ -332,7 +368,7 @@ def _seed():
         ),
     ]
     for t in builtin_seeds:
-        _TOOLS[t.id] = t
+        store_tool(t)
 
     # Pull in pack-registered tools (each domain pack registers its tools at
     # startup via PackContext.register_python_tool; the seeds end up in
@@ -341,13 +377,15 @@ def _seed():
 
 
 def _ingest_pack_seeds() -> None:
-    """Idempotent — pack-registered tools land in `_TOOLS` keyed by id.
+    """Idempotent — pack-registered tools land in the store keyed by id.
     Safe to call again after `discover_and_register()` runs."""
     from packs import python_tool_seeds
+
+    existing = {t.id for t in all_tools()}
     for s in python_tool_seeds():
-        if s["id"] in _TOOLS:
+        if s["id"] in existing:
             continue
-        _TOOLS[s["id"]] = PythonTool(**s)
+        store_tool(PythonTool(**s))
 
 
 
@@ -551,12 +589,12 @@ async def draft_tool(req: ToolDraftRequest, _: str = Depends(get_current_user)):
 async def list_tools(groups: list[str] = Depends(get_current_user_groups)):
     """Pack-scoped tools are filtered by the user's groups; universal
     (`builtin` / `user`) tools are always returned."""
-    return [t for t in _TOOLS.values() if is_pack_visible(t.pack_id, groups)]
+    return [t for t in all_tools() if is_pack_visible(t.pack_id, groups)]
 
 
 @router.get("/{tool_id}", response_model=PythonTool)
 async def get_tool(tool_id: str, _: str = Depends(get_current_user)):
-    t = _TOOLS.get(tool_id)
+    t = load_tool(tool_id)
     if not t:
         raise HTTPException(status_code=404, detail="Tool not found")
     return t
@@ -569,13 +607,13 @@ async def create_tool(req: PythonToolCreate, _: str = Depends(get_current_user))
         raise HTTPException(status_code=400, detail=err)
     tid = f"tool-{uuid.uuid4().hex[:8]}"
     t = PythonTool(id=tid, enabled=True, **req.model_dump())
-    _TOOLS[tid] = t
+    store_tool(t)
     return t
 
 
 @router.patch("/{tool_id}", response_model=PythonTool)
 async def update_tool(tool_id: str, req: PythonToolUpdate, _: str = Depends(get_current_user)):
-    t = _TOOLS.get(tool_id)
+    t = load_tool(tool_id)
     if not t:
         raise HTTPException(status_code=404, detail="Tool not found")
     update = req.model_dump(exclude_unset=True)
@@ -587,30 +625,33 @@ async def update_tool(tool_id: str, req: PythonToolUpdate, _: str = Depends(get_
             raise HTTPException(status_code=400, detail=err)
     for k, v in update.items():
         setattr(t, k, v)
+    store_tool(t)
     return t
 
 
 @router.delete("/{tool_id}", status_code=204)
 async def delete_tool(tool_id: str, _: str = Depends(get_current_user)):
-    if tool_id not in _TOOLS:
+    if not load_tool(tool_id):
         raise HTTPException(status_code=404, detail="Tool not found")
-    del _TOOLS[tool_id]
+    remove_tool(tool_id)
 
 
 @router.patch("/{tool_id}/toggle", response_model=PythonTool)
 async def toggle_tool(tool_id: str, _: str = Depends(get_current_user)):
-    t = _TOOLS.get(tool_id)
+    t = load_tool(tool_id)
     if not t:
         raise HTTPException(status_code=404, detail="Tool not found")
     t.enabled = not t.enabled
+    store_tool(t)
     return t
 
 
 @router.post("/{tool_id}/test", response_model=ToolTestResponse)
 async def test_tool(tool_id: str, req: ToolTestRequest, _: str = Depends(get_current_user)):
-    t = _TOOLS.get(tool_id)
+    t = load_tool(tool_id)
     if not t:
         raise HTTPException(status_code=404, detail="Tool not found")
     res = _run_tool(t.python_source, t.function_name, req.args)
     t.last_test_result = res.model_dump()
+    store_tool(t)
     return res

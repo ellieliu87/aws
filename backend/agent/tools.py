@@ -25,7 +25,7 @@ from routers.datasets import (
     load_dataset,
 )
 from routers.models_registry import load_model
-from routers.plots import _PLOTS, _apply_filters
+from routers.plots import _apply_filters, load_plot, store_plot
 from routers.scenarios import _SCENARIOS, load_run
 from services.workspace_data import get_workspace
 
@@ -692,7 +692,7 @@ def _t_get_tile(args: dict) -> str:
     fields are available before mutating axes / chart type."""
     tid = args.get("tile_id", "") or _ctx_tile_id()
     if tid:
-        p = _PLOTS.get(tid)
+        p = load_plot(tid)
         if p:
             return p.model_dump_json(indent=2)
     # Fall through to analytic_def when context says so
@@ -715,7 +715,7 @@ def _t_get_tile_preview(args: dict) -> str:
     Python function."""
     tid = args.get("tile_id", "") or _ctx_tile_id()
     if tid:
-        p = _PLOTS.get(tid)
+        p = load_plot(tid)
         if p:
             df = _tile_dataframe(p)
             if df is None or df.empty:
@@ -763,17 +763,22 @@ def _t_get_tile_preview(args: dict) -> str:
 
 def _t_apply_tile_filter(args: dict) -> str:
     tid = args.get("tile_id", "") or _ctx_tile_id()
-    p = _PLOTS.get(tid)
+    p = load_plot(tid)
     if not p:
         return json.dumps({"error": f"Tile `{tid}` not found"})
     f = {"field": args.get("field"), "op": args.get("op"), "value": args.get("value")}
     p.filters = list(p.filters) + [f]
+    store_plot(p)
     return json.dumps({"ok": True, "filters": p.filters})
 
 
 # ── Plot-tuner mutation tools (work on tile OR analytic_def) ─────────────
 def _resolve_target(args: dict):
-    """Return (kind, obj, owner_dict) for whichever registry holds the target.
+    """Return (kind, obj, save) for whichever registry holds the target.
+
+    `save` persists whatever the caller mutated. It used to be the registry
+    dict, because mutating the object it held *was* the write; now the object
+    is a copy, so the write has to be an explicit call.
     Falls back to the active request context's bound entity when the model
     omits target_kind / target_id — so the analyst's "Tune" click is
     sufficient state and the model never has to echo the id back."""
@@ -785,10 +790,12 @@ def _resolve_target(args: dict):
             kind = kind or ck
             tid = tid or ce
     if kind == "tile":
-        return ("tile", _PLOTS.get(tid), _PLOTS)
+        p = load_plot(tid)
+        return ("tile", p, (lambda: store_plot(p)) if p else None)
     if kind == "analytic_def":
         from routers.analytics_defs import _DEFS as _ADEFS
-        return ("analytic_def", _ADEFS.get(tid), _ADEFS)
+        d = _ADEFS.get(tid)
+        return ("analytic_def", d, (lambda: None) if d else None)
     return (kind, None, None)
 
 
@@ -813,21 +820,23 @@ def _ensure_style(obj):
 
 
 def _t_apply_filter(args: dict) -> str:
-    kind, obj, _ = _resolve_target(args)
+    kind, obj, save = _resolve_target(args)
     if obj is None:
         return json.dumps({"error": f"{kind} `{args.get('target_id')}` not found"})
     new_filter = {"field": args.get("field"), "op": args.get("op"), "value": args.get("value")}
     if kind == "tile":
         obj.filters = list(obj.filters) + [new_filter]
+        save()
         return json.dumps({"ok": True, "kind": kind, "filters": obj.filters})
     if kind == "analytic_def" and obj.kind == "aggregate" and obj.aggregate_spec:
         obj.aggregate_spec.filters = list(obj.aggregate_spec.filters) + [new_filter]
+        save()
         return json.dumps({"ok": True, "kind": kind, "filters": obj.aggregate_spec.filters})
     return json.dumps({"error": f"Filters not supported on {kind}/{obj.kind}"})
 
 
 def _t_set_sort(args: dict) -> str:
-    kind, obj, _ = _resolve_target(args)
+    kind, obj, save = _resolve_target(args)
     if obj is None:
         return json.dumps({"error": f"{kind} `{args.get('target_id')}` not found"})
     field = args.get("field", "") or None
@@ -842,11 +851,12 @@ def _t_set_sort(args: dict) -> str:
     style = _ensure_style(obj)
     style.sort_field = field
     style.sort_desc = desc
+    save()
     return json.dumps({"ok": True, "kind": kind, "sort_field": field, "sort_desc": desc})
 
 
 def _t_set_chart_type(args: dict) -> str:
-    kind, obj, _ = _resolve_target(args)
+    kind, obj, save = _resolve_target(args)
     if obj is None:
         return json.dumps({"error": f"{kind} `{args.get('target_id')}` not found"})
     new_type = args.get("chart_type", "")
@@ -859,15 +869,17 @@ def _t_set_chart_type(args: dict) -> str:
             obj.chart_type = new_type if new_type in (
                 "line", "bar", "area", "pie", "scatter", "stacked_bar"
             ) else obj.chart_type
+        save()
         return json.dumps({"ok": True, "kind": kind, "chart_type": obj.chart_type, "tile_type": obj.tile_type})
     if kind == "analytic_def" and obj.output:
         obj.output.chart_type = new_type
+        save()
         return json.dumps({"ok": True, "kind": kind, "chart_type": obj.output.chart_type})
     return json.dumps({"error": f"Cannot set chart_type on {kind}"})
 
 
 def _t_set_axes(args: dict) -> str:
-    kind, obj, _ = _resolve_target(args)
+    kind, obj, save = _resolve_target(args)
     if obj is None:
         return json.dumps({"error": f"{kind} `{args.get('target_id')}` not found"})
     x = args.get("x_field", "")
@@ -895,11 +907,12 @@ def _t_set_axes(args: dict) -> str:
         style.x_axis_label = None
     if ys:
         style.y_axis_label = None
+    save()
     return json.dumps({"ok": True, "kind": kind, "x_field": new_x, "y_fields": new_ys})
 
 
 def _t_set_axis_labels(args: dict) -> str:
-    kind, obj, _ = _resolve_target(args)
+    kind, obj, save = _resolve_target(args)
     if obj is None:
         return json.dumps({"error": f"{kind} `{args.get('target_id')}` not found"})
     style = _ensure_style(obj)
@@ -910,12 +923,13 @@ def _t_set_axis_labels(args: dict) -> str:
     style.title = title if title else None
     style.x_axis_label = xl if xl else None
     style.y_axis_label = yl if yl else None
+    save()
     return json.dumps({"ok": True, "kind": kind, "title": style.title,
                        "x_axis_label": style.x_axis_label, "y_axis_label": style.y_axis_label})
 
 
 def _t_set_style(args: dict) -> str:
-    kind, obj, _ = _resolve_target(args)
+    kind, obj, save = _resolve_target(args)
     if obj is None:
         return json.dumps({"error": f"{kind} `{args.get('target_id')}` not found"})
     style = _ensure_style(obj)
@@ -933,6 +947,7 @@ def _t_set_style(args: dict) -> str:
         style.font_size = int(font_size)
     if legend in ("top", "bottom", "right", "left", "none"):
         style.legend_position = legend
+    save()
     return json.dumps({"ok": True, "kind": kind,
                        "palette": style.palette,
                        "font_size": style.font_size,

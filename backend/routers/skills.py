@@ -125,7 +125,7 @@ async def get_available_tools(_: str = Depends(get_current_user)):
     to a skill, not just the user-registered subset."""
     # Lazy import to avoid pulling agent.tools at module load time.
     from agent.tools import OPENAI_TOOLS
-    from routers.tools import _TOOLS as PYTHON_TOOLS
+    from routers.tools import all_tools
 
     intro = []
     for spec in OPENAI_TOOLS:
@@ -140,7 +140,7 @@ async def get_available_tools(_: str = Depends(get_current_user)):
         })
 
     py = []
-    for t in PYTHON_TOOLS.values():
+    for t in all_tools():
         py.append({
             "name": t.name,
             "description": t.description,

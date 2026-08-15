@@ -15,7 +15,7 @@ from cof.orchestrator import AsyncOrchestrator
 from models.schemas import WorkspaceData
 from routers.auth import get_current_user
 from routers.datasets import _read_dataframe, _resolve_path, load_dataset
-from routers.plots import _PLOTS, _aggregate, _apply_filters, _compute_kpi
+from routers.plots import _aggregate, _apply_filters, _compute_kpi, all_plots
 from routers.scenarios import load_run
 from services.workspace_data import get_workspace
 
@@ -190,7 +190,7 @@ def _format_pinned_digest(function_id: str) -> tuple[str, int]:
     rendered on the dashboard. The agent reads this from [Context] and
     quotes specific numbers. Cheap to compute (each dataset is read once,
     pandas is fine for the dashboard scale)."""
-    pinned = [p for p in _PLOTS.values() if p.function_id == function_id and p.pinned_to_overview]
+    pinned = [p for p in all_plots() if p.function_id == function_id and p.pinned_to_overview]
     pinned.sort(key=lambda p: (p.tile_type, p.name))
     if not pinned:
         return ("Pinned tiles: (none — the analyst hasn't pinned anything yet)", 0)
@@ -241,7 +241,7 @@ async def generate_insights(
     Note: `get_workspace()` only returns for the four built-in functions —
     user-created workspaces (Deposit CCAR Process, etc.) aren't in that
     registry. The insights endpoint doesn't actually need the legacy
-    WorkspaceData snapshot; the digest comes from `_PLOTS` (pinned tiles)
+    WorkspaceData snapshot; the digest comes from the plot store (pinned tiles)
     plus the analyst's text cards. Fall back to a synthetic name so a
     fresh workspace can still generate insights as soon as it has any
     pinned tile or note."""
