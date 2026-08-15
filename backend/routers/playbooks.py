@@ -20,12 +20,15 @@ no mock fallback.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import time
 import uuid
 from datetime import datetime
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from agent.skill_loader import list_skills
 from models.schemas import (
@@ -54,10 +57,193 @@ from routers.scenarios import _SCENARIOS
 
 router = APIRouter()
 
+log = logging.getLogger("cma.playbooks")
 
-_PLAYBOOKS: dict[str, Playbook] = {}
-_RUNS: dict[str, PlaybookRun] = {}
-_PUBLISHED: dict[str, PublishedReport] = {}
+
+# ── persistence ────────────────────────────────────────────────────────────
+# The last registry to move, and the one that needed a different design.
+#
+# A playbook run is executed by a fire-and-forget background task that mutates
+# the run as it goes, while the browser polls every 800ms to render progress.
+# In memory those were the *same object*, so progress appeared for free. Behind
+# a store they are not: the task holds a copy, and a poll — possibly served by
+# a different replica entirely — reads whatever was last written.
+#
+# So the task has to publish. Every state transition writes through, and the
+# live trace inside a phase is written on a short throttle. See
+# `publish_progress`.
+_PB_ENTITY = "playbook"
+_PBRUN_ENTITY = "pbrun"
+_PUBLISHED_ENTITY = "published"
+
+_MAX_RUN_BYTES = 380 * 1024
+RUNS_PAGE_DEFAULT = 200
+RUNS_PAGE_MAX = 500
+
+# How often an in-flight run is written while a phase is streaming. The client
+# polls at 800ms, so anything below that buys nothing a user could see; much
+# above it and the trace visibly stutters.
+PROGRESS_INTERVAL_S = 1.0
+_last_progress: dict[str, float] = {}
+
+
+def _run_index_pk(function_id: str) -> str:
+    return f"{_PBRUN_ENTITY}#{function_id}"
+
+
+# ── playbooks ──────────────────────────────────────────────────────────────
+def load_playbook(playbook_id: str) -> Playbook | None:
+    from services import entity_store
+
+    record = entity_store.get(_PB_ENTITY, playbook_id)
+    return Playbook(**record) if record else None
+
+
+def store_playbook(pb: Playbook) -> Playbook:
+    from services import entity_store
+
+    entity_store.put(_PB_ENTITY, pb.id, pb.model_dump())
+    return pb
+
+
+def all_playbooks() -> list[Playbook]:
+    from services import entity_store
+
+    out: list[Playbook] = []
+    for record in entity_store.list_all(_PB_ENTITY):
+        try:
+            out.append(Playbook(**record))
+        except Exception as e:
+            log.warning("skipping unreadable playbook %s: %s", record.get("id"), e)
+    return out
+
+
+def remove_playbook(playbook_id: str) -> None:
+    from services import entity_store
+
+    entity_store.delete(_PB_ENTITY, playbook_id)
+
+
+# ── runs ───────────────────────────────────────────────────────────────────
+def _trimmed_run_payload(run: PlaybookRun) -> dict:
+    """Shrink a run until it fits, giving up the least useful thing first.
+
+    A completed run carries every phase's output plus the full agent trace,
+    and a long multi-phase run can exceed the record size limit. The trace is
+    diagnostics; the outputs are the result. So detail payloads go first,
+    then the trace entirely, and only then are outputs truncated.
+    """
+    payload = run.model_dump()
+
+    def size(p: dict) -> int:
+        return len(json.dumps(p, default=str).encode("utf-8"))
+
+    if size(payload) <= _MAX_RUN_BYTES:
+        return payload
+
+    for step in (ph.get("trace") or [] for ph in payload.get("phases", [])):
+        for entry in step:
+            entry["detail"] = None
+            entry["truncated"] = True
+    if size(payload) <= _MAX_RUN_BYTES:
+        log.warning("run %s trimmed: trace details dropped", run.id)
+        return payload
+
+    for ph in payload.get("phases", []):
+        ph["trace"] = []
+    if size(payload) <= _MAX_RUN_BYTES:
+        log.warning("run %s trimmed: traces dropped", run.id)
+        return payload
+
+    for ph in payload.get("phases", []):
+        if ph.get("output"):
+            ph["output"] = (
+                ph["output"][:4000]
+                + "\n\n[output truncated to fit the record size limit]"
+            )
+    log.warning("run %s trimmed: phase outputs truncated", run.id)
+    return payload
+
+
+def load_pbrun(run_id: str) -> PlaybookRun | None:
+    from services import entity_store
+
+    record = entity_store.get(_PBRUN_ENTITY, run_id)
+    return PlaybookRun(**record) if record else None
+
+
+def store_pbrun(run: PlaybookRun) -> PlaybookRun:
+    from services import entity_store
+
+    payload = _trimmed_run_payload(run) if entity_store.enabled() else run.model_dump()
+    entity_store.put(
+        _PBRUN_ENTITY, run.id, payload,
+        index=(_run_index_pk(run.function_id), run.created_at),
+    )
+    return run
+
+
+def publish_progress(run: PlaybookRun, *, force: bool = False) -> None:
+    """Make an in-flight run's progress visible to whoever is polling.
+
+    `force` for state transitions, which must never be missed. Unforced calls
+    are throttled, because the alternative is a write per streamed agent step.
+    """
+    now = time.monotonic()
+    if not force and now - _last_progress.get(run.id, 0.0) < PROGRESS_INTERVAL_S:
+        return
+    _last_progress[run.id] = now
+    try:
+        store_pbrun(run)
+    except Exception as e:
+        # Progress reporting must never take down the run that is producing it.
+        log.warning("could not publish progress for %s: %s", run.id, e)
+
+
+def all_pbruns() -> list[PlaybookRun]:
+    from services import entity_store
+
+    out: list[PlaybookRun] = []
+    for record in entity_store.list_all(_PBRUN_ENTITY):
+        try:
+            out.append(PlaybookRun(**record))
+        except Exception as e:
+            log.warning("skipping unreadable playbook run %s: %s", record.get("id"), e)
+    return out
+
+
+def remove_pbrun(run_id: str) -> None:
+    from services import entity_store
+
+    _last_progress.pop(run_id, None)
+    entity_store.delete(_PBRUN_ENTITY, run_id)
+
+
+# ── published reports ──────────────────────────────────────────────────────
+def load_published(report_id: str) -> PublishedReport | None:
+    from services import entity_store
+
+    record = entity_store.get(_PUBLISHED_ENTITY, report_id)
+    return PublishedReport(**record) if record else None
+
+
+def store_published(rep: PublishedReport) -> PublishedReport:
+    from services import entity_store
+
+    entity_store.put(_PUBLISHED_ENTITY, rep.id, rep.model_dump())
+    return rep
+
+
+def all_published() -> list[PublishedReport]:
+    from services import entity_store
+
+    out: list[PublishedReport] = []
+    for record in entity_store.list_all(_PUBLISHED_ENTITY):
+        try:
+            out.append(PublishedReport(**record))
+        except Exception as e:
+            log.warning("skipping unreadable report %s: %s", record.get("id"), e)
+    return out
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -568,6 +754,8 @@ async def _execute_phase(
         )
     except StopIteration:
         pass
+    # A transition the poller must see: the phase card flips to "running".
+    publish_progress(run, force=True)
     extra_context, user_message = _build_phase_context(phase, run, playbook.function_id, playbook)
 
     # Late import to dodge any circular dependency
@@ -582,15 +770,21 @@ async def _execute_phase(
         completed = datetime.utcnow()
         pe.completed_at = completed.isoformat() + "Z"
         pe.duration_ms = (completed - started).total_seconds() * 1000
+        publish_progress(run, force=True)
         return
 
     def _on_step(step_dict: dict) -> None:
         """Live append: each tool call / output / message / handoff lands here
-        as the agent emits it, so polling sees the trace grow during the run."""
+        as the agent emits it, so polling sees the trace grow during the run.
+
+        The write is throttled rather than per-step: an agent can emit steps
+        far faster than anyone can read them, and the client polls at 800ms.
+        """
         try:
             pe.trace.append(TraceStep(**step_dict))
         except Exception:
             pass  # never let a malformed step break the phase
+        publish_progress(run)
 
     try:
         text, _final_trace = await _ORCH.chat_specialist_with_trace(
@@ -685,6 +879,9 @@ async def _execute_phase(
         completed = datetime.utcnow()
         pe.completed_at = completed.isoformat() + "Z"
         pe.duration_ms = (completed - started).total_seconds() * 1000
+        # Whatever the phase settled on — completed, failed, awaiting_gate —
+        # is a transition, so it is written unconditionally.
+        publish_progress(run, force=True)
 
 
 def _find_prior_structured(run: PlaybookRun, skill_name: str) -> dict | None:
@@ -786,6 +983,11 @@ async def _run_to_next_gate(run: PlaybookRun, playbook: Playbook) -> None:
         # check trips. An empty string would silently hide the card.
         run.final_report = report or "# (empty report)"
         run.status = status_lit  # type: ignore[assignment]
+        # Terminal. The client stops polling on this, so it must be written
+        # before the task returns — and the report must already be on the
+        # record, for the same reason it is assigned before the status.
+        publish_progress(run, force=True)
+        _last_progress.pop(run.id, None)
 
     try:
         while run.status == "running":
@@ -812,6 +1014,7 @@ async def _run_to_next_gate(run: PlaybookRun, playbook: Playbook) -> None:
             # in this same wave have already completed.
             if any(pe_by_id[pid].status == "awaiting_gate" for pid in ready):
                 run.status = "awaiting_gate"
+                publish_progress(run, force=True)
                 return
 
         # Nothing more is ready — either everything completed cleanly, or
@@ -820,6 +1023,7 @@ async def _run_to_next_gate(run: PlaybookRun, playbook: Playbook) -> None:
             _terminate("completed")
         elif any(pe_by_id[p.id].status == "awaiting_gate" for p in playbook.phases):
             run.status = "awaiting_gate"
+            publish_progress(run, force=True)
         else:
             # Mix of {idle, failed, rejected} — none ready, none at gate, not
             # all completed. Always land in a terminal state so the client's
@@ -1083,17 +1287,43 @@ async def list_available_skills(
 
 @router.get("/runs", response_model=list[PlaybookRun])
 async def list_runs(
+    response: Response,
     function_id: str | None = Query(default=None),
+    limit: int = Query(default=RUNS_PAGE_DEFAULT, ge=1, le=RUNS_PAGE_MAX),
+    cursor: str | None = Query(default=None),
     _: str = Depends(get_current_user),
 ):
-    items = list(_RUNS.values())
+    """Newest first, paged like the other two run endpoints."""
+    from services import entity_store
+
+    items: list[PlaybookRun] | None = None
     if function_id:
-        items = [r for r in items if r.function_id == function_id]
-    items.sort(key=lambda r: r.created_at, reverse=True)
+        try:
+            records, next_cursor = entity_store.query_index(
+                _run_index_pk(function_id), limit=limit, cursor=cursor,
+            )
+            items = []
+            for record in records:
+                try:
+                    items.append(PlaybookRun(**record))
+                except Exception as e:
+                    log.warning("skipping unreadable run %s: %s", record.get("id"), e)
+            if next_cursor:
+                response.headers["X-Next-Cursor"] = next_cursor
+        except entity_store.IndexUnavailable:
+            log.warning("playbook run index not deployed yet — full read")
+            items = None
+
+    if items is None:
+        items = all_pbruns()
+        if function_id:
+            items = [r for r in items if r.function_id == function_id]
+        items.sort(key=lambda r: r.created_at, reverse=True)
+        items = items[:limit]
     return items
 
 
-def _reconcile_stuck_run(run: PlaybookRun) -> None:
+def _reconcile_stuck_run(run: PlaybookRun) -> bool:
     """Watchdog: detect runs that claim to be running but have no actual
     work in flight, and force them to a terminal state.
 
@@ -1107,17 +1337,22 @@ def _reconcile_stuck_run(run: PlaybookRun) -> None:
     never renders, and polling continues forever. This reconciliation
     runs on every poll — it costs nothing when the run is healthy, and
     rescues genuinely stuck runs without the analyst having to delete
-    and restart."""
+    and restart.
+
+    Returns True when it changed something, so the caller can persist the
+    repair. That matters more than it looks: the run this is handed is a
+    copy loaded from the store, so a repair that is not written back is
+    recomputed on every single poll and never actually sticks."""
     if run.status != "running":
-        return
+        return False
     # If any phase is still actually doing work, the run is healthy.
     has_active = any(
         p.status in ("running", "awaiting_gate") for p in run.phases
     )
     if has_active:
-        return
+        return False
     # No phase is active but the run claims it's running — reconcile.
-    pb = _PLAYBOOKS.get(run.playbook_id)
+    pb = load_playbook(run.playbook_id)
     if not pb:
         # Playbook was deleted out from under the run. Best-effort: mark
         # failed with a stub report so the analyst sees something.
@@ -1154,14 +1389,16 @@ def _reconcile_stuck_run(run: PlaybookRun) -> None:
         )
     run.final_report = run.final_report or report or "# (empty report)"
     run.status = new_status  # type: ignore[assignment]
+    return True
 
 
 @router.get("/runs/{run_id}", response_model=PlaybookRun)
 async def get_run(run_id: str, _: str = Depends(get_current_user)):
-    r = _RUNS.get(run_id)
+    r = load_pbrun(run_id)
     if not r:
         raise HTTPException(status_code=404, detail="Run not found")
-    _reconcile_stuck_run(r)
+    if _reconcile_stuck_run(r):
+        store_pbrun(r)
     return r
 
 
@@ -1198,12 +1435,12 @@ async def submit_gate(
     req: GateDecisionRequest,
     _: str = Depends(get_current_user),
 ):
-    run = _RUNS.get(run_id)
+    run = load_pbrun(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     if run.status != "awaiting_gate":
         raise HTTPException(status_code=400, detail=f"Run is not awaiting a gate (status={run.status})")
-    pb = _PLAYBOOKS.get(run.playbook_id)
+    pb = load_playbook(run.playbook_id)
     if not pb:
         raise HTTPException(status_code=404, detail="Underlying playbook is gone")
 
@@ -1245,6 +1482,7 @@ async def submit_gate(
         run.completed_at = _now()
         run.final_report = _build_final_report(run, pb)
         run.status = "rejected"
+        store_pbrun(run)
         return run
 
     elif req.decision == "rerun":
@@ -1321,6 +1559,7 @@ async def submit_gate(
     # Are any other phases still awaiting a gate? If so, stay paused.
     if any(p.status == "awaiting_gate" for p in run.phases):
         run.status = "awaiting_gate"
+        store_pbrun(run)
         return run
 
     run.status = "running"
@@ -1331,15 +1570,19 @@ async def submit_gate(
         (i for i, p in enumerate(run.phases) if p.status != "idle"),
         default=0,
     )
+    # Persist the reset state before handing this object to the task. The task
+    # publishes from here on; if it were launched first, a poll landing in the
+    # gap would still show the run paused at the gate it just cleared.
+    store_pbrun(run)
     asyncio.create_task(_run_to_next_gate(run, pb))
     return run
 
 
 @router.delete("/runs/{run_id}", status_code=204)
 async def delete_run(run_id: str, _: str = Depends(get_current_user)):
-    if run_id not in _RUNS:
+    if not load_pbrun(run_id):
         raise HTTPException(status_code=404, detail="Run not found")
-    del _RUNS[run_id]
+    remove_pbrun(run_id)
 
 
 @router.post("/runs/{run_id}/publish", response_model=PublishedReport, status_code=201)
@@ -1348,12 +1591,12 @@ async def publish_run(
     req: PublishRequest,
     user: dict = Depends(get_user_record),
 ):
-    run = _RUNS.get(run_id)
+    run = load_pbrun(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     if run.status not in ("completed", "rejected"):
         raise HTTPException(status_code=400, detail="Can only publish completed or rejected runs")
-    pb = _PLAYBOOKS.get(run.playbook_id)
+    pb = load_playbook(run.playbook_id)
     if not pb:
         raise HTTPException(status_code=404, detail="Playbook is gone")
     body = run.final_report or _build_final_report(run, pb)
@@ -1370,7 +1613,7 @@ async def publish_run(
         published_by=user["username"],
         published_at=_now(),
     )
-    _PUBLISHED[pid] = rep
+    store_published(rep)
     return rep
 
 
@@ -1379,7 +1622,7 @@ async def list_published(
     function_id: str | None = Query(default=None),
     _: str = Depends(get_current_user),
 ):
-    items = list(_PUBLISHED.values())
+    items = all_published()
     if function_id:
         items = [p for p in items if p.function_id == function_id]
     items.sort(key=lambda p: p.published_at, reverse=True)
@@ -1388,9 +1631,11 @@ async def list_published(
 
 @router.delete("/published/{report_id}", status_code=204)
 async def delete_published(report_id: str, _: str = Depends(get_current_user)):
-    if report_id not in _PUBLISHED:
+    from services import entity_store
+
+    if not load_published(report_id):
         raise HTTPException(status_code=404, detail="Report not found")
-    del _PUBLISHED[report_id]
+    entity_store.delete(_PUBLISHED_ENTITY, report_id)
 
 
 # ── playbook CRUD (parameter routes registered last) ─────────────────────
@@ -1399,7 +1644,7 @@ async def list_playbooks(
     function_id: str | None = Query(default=None),
     _: str = Depends(get_current_user),
 ):
-    items = list(_PLAYBOOKS.values())
+    items = all_playbooks()
     if function_id:
         items = [p for p in items if p.function_id == function_id]
     items.sort(key=lambda p: p.updated_at or p.created_at, reverse=True)
@@ -1408,7 +1653,7 @@ async def list_playbooks(
 
 @router.get("/{playbook_id}", response_model=Playbook)
 async def get_playbook(playbook_id: str, _: str = Depends(get_current_user)):
-    p = _PLAYBOOKS.get(playbook_id)
+    p = load_playbook(playbook_id)
     if not p:
         raise HTTPException(status_code=404, detail="Playbook not found")
     return p
@@ -1423,7 +1668,7 @@ async def create_playbook(req: PlaybookCreate, _: str = Depends(get_current_user
     if pid:
         if not all(c.isalnum() or c in "-_" for c in pid):
             raise HTTPException(status_code=400, detail="invalid playbook id")
-        if pid in _PLAYBOOKS:
+        if load_playbook(pid):
             raise HTTPException(status_code=409, detail="playbook id already exists")
     else:
         pid = f"pbk-{uuid.uuid4().hex[:10]}"
@@ -1442,7 +1687,7 @@ async def create_playbook(req: PlaybookCreate, _: str = Depends(get_current_user
         phases=fixed_phases,
         created_at=_now(),
     )
-    _PLAYBOOKS[pid] = pb
+    store_playbook(pb)
     return pb
 
 
@@ -1452,7 +1697,7 @@ async def update_playbook(
     req: PlaybookUpdate,
     _: str = Depends(get_current_user),
 ):
-    p = _PLAYBOOKS.get(playbook_id)
+    p = load_playbook(playbook_id)
     if not p:
         raise HTTPException(status_code=404, detail="Playbook not found")
     if req.name is not None:
@@ -1469,20 +1714,21 @@ async def update_playbook(
             for i, ph in enumerate(req.phases)
         ]
     p.updated_at = _now()
+    store_playbook(p)
     return p
 
 
 @router.delete("/{playbook_id}", status_code=204)
 async def delete_playbook(playbook_id: str, _: str = Depends(get_current_user)):
-    if playbook_id not in _PLAYBOOKS:
+    if not load_playbook(playbook_id):
         raise HTTPException(status_code=404, detail="Playbook not found")
-    del _PLAYBOOKS[playbook_id]
+    remove_playbook(playbook_id)
 
 
 # ── runs ─────────────────────────────────────────────────────────────────
 @router.post("/{playbook_id}/run", response_model=PlaybookRun, status_code=201)
 async def start_run(playbook_id: str, _: str = Depends(get_current_user)):
-    pb = _PLAYBOOKS.get(playbook_id)
+    pb = load_playbook(playbook_id)
     if not pb:
         raise HTTPException(status_code=404, detail="Playbook not found")
     if not pb.phases:
@@ -1512,8 +1758,10 @@ async def start_run(playbook_id: str, _: str = Depends(get_current_user)):
         current_phase_idx=0,
         created_at=_now(),
     )
-    _RUNS[rid] = run
-    # Fire-and-forget: the task mutates _RUNS[rid] as it goes, polling sees it.
+    store_pbrun(run)
+    # Fire-and-forget. The task holds its own copy and publishes progress as
+    # it goes; the poller reads the store, so the two are connected by writes
+    # rather than by sharing an object.
     asyncio.create_task(_run_to_next_gate(run, pb))
     return run
 
