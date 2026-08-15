@@ -12,8 +12,14 @@ one CloudFormation stack, `CmaWorkbenchAsync`.
 All of it is **opt-in**. With none of the `CMA_*` environment variables set the
 app runs entirely in-process, exactly as it did before any of this existed.
 That is a deliberate property, not an accident of staging: a developer with no
-AWS account gets the same behaviour, and the fallback paths are exercised by
-the same code the deployed system uses.
+AWS account gets the same behaviour, the fallback paths are exercised by the
+same code the deployed system uses, and it is what makes the migration
+*incremental* — each service can be switched on by itself, and switched back
+off if it turns out to be the wrong call. Every variable is listed in
+`backend/.env.example`.
+
+**For where the migration has got to and what comes next, jump to
+[Migration status](#migration-status).**
 
 ---
 
@@ -52,7 +58,64 @@ holds its own truth.
 
    ECR ◄── CodeBuild ◄── S3 builds/worker-image-src.zip
      └── image consumed by the container worker
+
+   SolvesDlq depth ─────────┐
+   worker errors/throttles ─┼─► CloudWatch alarms ─► SNS Alerts ─► email
+   Playbook failed/expired ─┘
 ```
+
+**Where the API itself runs is not in this stack.** There is no ALB, no
+CloudFront, no App Runner, no EC2 — `backend/main.py` is started by hand, on a
+developer's machine or a box someone provisioned. That is worth stating
+plainly, because the premise of everything below is that a *second replica*
+must see the same truth as the first, and nothing here creates that second
+replica. What the stack does is remove every reason one couldn't exist. Choosing
+the hosting is **step 5 of the plan below**.
+
+---
+
+## Migration status
+
+The move to AWS is deliberately incremental — each step replaces one piece of
+in-process behaviour with a managed service, and every one of them stays opt-in
+behind an environment variable. This is the ledger of where that has got to.
+
+### Landed
+
+| # | Was | Now | Service | Where |
+|---|---|---|---|---|
+| ✅ | `_DATASETS` / `_MODELS` / `_SAVED_WORKFLOWS` / `_RUNS` dicts | one table, partitioned by entity type | **DynamoDB** | [the state table](#dynamodb--the-state-table) |
+| ✅ | "newest 50 runs" = read every run, sort in Python | bounded range read | **DynamoDB gsi1** | [gsi1](#gsi1--the-time-ordered-index) |
+| ✅ | UUID token in a module dict | self-describing JWT, verified offline | **Cognito** | [identity](#cognito--identity-without-a-session-store) |
+| ✅ | solves computed inline in the request | queued, retried 3×, dead-lettered | **SQS + Lambda** | [the async solve path](#sqs--lambda--the-async-solve-path) |
+| ✅ | approval as an in-process `await` | durable pause across restarts and deploys | **Step Functions** | [durable human approval](#step-functions--durable-human-approval) |
+| ✅ | uploads and artifacts on local disk | write-through, pull on local miss | **S3** | [one bucket, four prefixes](#s3--one-bucket-four-prefixes) |
+| ✅ | worker image built on a laptop, if at all | built in-account from an uploaded source zip | **CodeBuild + ECR** | [the image supply chain](#ecr--codebuild--the-image-supply-chain) |
+| ✅ | `provision_async.py`, a boto3 script with retry loops | declared once; deleting a resource deletes it | **CDK** | the file header |
+| ✅ | no backup, `DESTROY` on the state table | 35-day restore, table survives the stack | **DynamoDB PITR** | [retention](#dynamodb--the-state-table) |
+| ✅ | a failed solve rots silently in the DLQ | five alarms to one topic, to an inbox | **CloudWatch + SNS** | [being told](#cloudwatch--being-told-rather-than-looking) |
+| ✅ | Lambda logs kept forever, outside CloudFormation | 14-day retention, owned by the stack | **CloudWatch Logs** | [log retention](#log-retention) |
+| ✅ | nothing watching spend on a free-tier design | 80% actual / 100% forecast to email | **AWS Budgets** | [the budget](#the-budget) |
+
+### Planned, in the order worth doing them
+
+Ordered by *what unblocks what*, not by size. Steps 1–3 are independent and can
+be taken in any order or skipped; 4 onward build on each other.
+
+| # | Step | Service | Why now, or why not yet |
+|---|---|---|---|
+| 1 | Get `OPENAI_API_KEY` out of `backend/.env` | **SSM Parameter Store** (SecureString) | The only live exposure left. Independent of everything else, and small. |
+| 2 | Bound the growth of runs and job results | **DynamoDB TTL** + **S3 lifecycle** | Blocked on one decision, not on code: is a run a record or scratch? |
+| 3 | Move `_SCENARIOS` off a module dict | **DynamoDB** | The last registry holding analyst-created records in memory: `POST /scenarios/from-dataset` writes there, so those are lost on restart. |
+| 4 | Move `skills_user/` and `data/rag_index/` off local disk | **S3** (+ a managed vector store when the index outgrows a file) | These are what still tie a request to a particular machine. Must land *before* step 5, or a second replica answers differently from the first. |
+| 5 | Actually run the API in AWS, more than once | **ECS Fargate + ALB**, or **App Runner** | The step the whole migration has been for. Also retires step 1's remaining half: a task role means secrets arrive as an identity, not a file. |
+| 6 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. |
+| 7 | Serve the built frontend from a CDN | **S3 + CloudFront** | `vite build` output has no home today. Wants step 5 first, so there is a stable API origin to point at. |
+| 8 | Deepen observability once there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
+
+Steps 1–7 are written up in full, with the same numbers, in
+[Known gaps](#known-gaps) at the end; step 8's reasoning is in
+[deliberately absent](#deliberately-absent).
 
 ---
 
@@ -78,6 +141,15 @@ which is the spiky low-average pattern on-demand exists for, and it stays inside
 the 25 GB always-free tier. Physical names are left to CDK so a second (staging)
 stack can coexist; the real name comes out as the `StateTableName` output and
 `infra/sync_env.py` copies it into `backend/.env`.
+
+**Retention.** `RemovalPolicy.RETAIN`, and point-in-time recovery on. This table
+now holds the datasets, models, saved workflows and run history — the evidence
+trail behind numbers that get filed — so the cost of RETAIN is an orphaned table
+to delete by hand after a teardown, and the cost of DESTROY is the trail. That
+is the correct direction to fail. PITR gives 35 days of second-granularity
+restore, bills on stored bytes (cents at this volume), and is the only defence
+against a *bad write*: versioning protects the documents in S3, and until this
+was turned on, nothing protected these records.
 
 ### gsi1 — the time-ordered index
 
@@ -204,7 +276,9 @@ the function timeout, because it would redeliver a message still being
 processed. Stating that rule only in a comment is what let a later timeout bump
 break it.
 
-Dead letters are retained 14 days; live messages 1 day.
+Dead letters are retained 14 days; live messages 1 day. Fourteen days of
+retention is only useful if somebody knows to look inside the fourteen days —
+see the `DlqNotEmpty` alarm below.
 
 ### Two worker flavours, one parameter
 
@@ -270,7 +344,8 @@ Failed    ApprovalExpired
 `WAIT_FOR_TASK_TOKEN` is the point of the whole thing. The execution holds at
 the gate until `SendTaskSuccess` arrives with the reviewer's answer — the pause
 is **durable**, surviving restarts and deploys, which an in-process `await`
-never could. Execution timeout is 2 days; the gate's own is 24 hours.
+never could. Execution timeout is 2 days; the gate's own is 24 hours, and
+`PlaybookApprovalsExpired` is what says so out loud when it lapses.
 
 Retries cover `Lambda.ServiceException`, `TooManyRequestsException`, and
 `States.TaskFailed` with exponential backoff, then fall to an explicit `Fail`
@@ -327,7 +402,98 @@ worker already reads, so an uploaded artifact is reachable by the worker
 without a second copy under a different name.
 
 Versioning matters more than durability here: it is the audit trail for which
-version of a methodology was in force when a number was published.
+version of a methodology was in force when a number was published. Note the
+limit of that claim — it records *what* the artifact was, never who read or
+replaced it. Object-level access is a CloudTrail data-event question, and this
+account has no trail; see the deliberately-absent list below.
+
+---
+
+## CloudWatch — being told, rather than looking
+
+Two of this system's states are *designed* to be reached, and both used to be
+silent when reached. A solve that fails three times lands in `SolvesDlq` and
+waits 14 days. An approval nobody answers times out after 24 hours and the
+execution sits red in a console. In both cases the analyst who asked for the
+number is still waiting, and nothing anywhere says so.
+
+Five alarms, all publishing to one SNS topic:
+
+| Alarm | Metric | What it means |
+|---|---|---|
+| `DlqNotEmpty` | `ApproximateNumberOfMessagesVisible` (max) | A solve failed 3× and is parked |
+| `WorkerErrors` | Lambda `Errors` (sum) | The worker raised — fires *before* the DLQ does |
+| `WorkerThrottles` | Lambda `Throttles` (sum) | Concurrency limit, invisible in the error metric |
+| `PlaybookFailures` | `ExecutionsFailed` (sum) | An execution reached `Failed` |
+| `PlaybookApprovalsExpired` | `ExecutionsTimedOut` (sum) | Most likely the 24-hour gate expired |
+
+Each fires on any occurrence at all — threshold `> 0` over five minutes, one
+evaluation period. At this volume a *rate* threshold would only delay the
+message.
+
+**Failures and expiries are separate alarms on purpose.** A timed-out execution
+is not a broken system; it is a reviewer who never answered. Different cause,
+different fix, so it should arrive as a different message.
+
+**`treatMissingData: NOT_BREACHING` matters more than it looks.** None of these
+metrics is emitted when nothing goes wrong, so the healthy state is *no data at
+all*. The CloudWatch default would leave all five parked in
+`INSUFFICIENT_DATA`, which reads like a broken alarm and teaches people to
+ignore the whole set.
+
+**Alarms, not a dashboard.** A dashboard has to be visited and nobody visits a
+lab dashboard. The point is to be told.
+
+`CMA_ALARM_EMAIL` supplies the subscriber. Left unset the alarms are still
+created and still fire — they just have nobody to tell, which is one
+subscription away from fixed. Set it and **confirm the email SNS sends**: an
+unconfirmed subscription drops every notification silently.
+
+### Log retention
+
+Left to itself, Lambda creates `/aws/lambda/<function>` on first invoke with
+retention set to *never expire*, and does it outside CloudFormation — so
+`cdk destroy` leaves the group behind and it accrues forever. The stack declares
+the group instead, at 14 days: longer than any debugging session, short enough
+that logs never become a line item.
+
+It is an explicit `LogGroup` rather than the `logRetention` prop, which is
+deprecated and works by deploying a custom-resource Lambda whose only job is to
+call `PutRetentionPolicy` — a second function and role to maintain for a
+property the function itself can carry.
+
+### The budget
+
+Every sizing decision in this document is a bet that usage stays small: one ECR
+image, on-demand DynamoDB inside the 25 GB tier, scale-to-zero Lambda. A monthly
+budget is what tells you a bet stopped paying, and it costs nothing.
+`CMA_MONTHLY_BUDGET_USD` defaults to `5` — at this design's intended cost, five
+dollars means something changed. Two notifications: actual over 80%, and
+*forecast* over 100%, which is the useful one because it arrives while the month
+can still be changed.
+
+Budget notifications go straight to email rather than through the alerts topic.
+Routing them via SNS needs a topic policy granting `budgets.amazonaws.com`
+publish rights, and Budgets notifies from `us-east-1` while this stack follows
+the app's region. Two lines of subscriber beat a cross-region topic.
+
+### Deliberately absent
+
+- **A CloudTrail trail.** Management events are already in CloudTrail *Event
+  history* for 90 days, free, no trail required. A trail buys longer retention,
+  data events, and Athena, and costs S3 storage for all of it. The one real
+  argument for it is the audit claim in the S3 section above: versioning records *what*
+  an artifact was, not *who read it*. If that claim ever has to hold up, data
+  events scoped to `models/` is the piece that completes it — and only that
+  piece.
+- **X-Ray.** The `FastAPI → SQS → Lambda → Step Functions` chain is exactly a
+  trace-shaped problem, but with four modes in one function at this volume, the
+  log group answers the same questions.
+- **Customer-managed KMS keys.** The table and bucket use AWS-managed
+  encryption. A CMK is a compliance requirement, not a technical one, and brings
+  key policies and rotation with it.
+- **GuardDuty, Config, Security Hub, WAF.** Real cost and real noise against an
+  account with one queue, one function, and no public endpoint.
 
 ---
 
@@ -374,37 +540,103 @@ First-time sequence, because of the chicken-and-egg noted above:
 2. `python -m infra.build_worker_image` — builds and pushes the image
 3. `npx cdk deploy -c workerImageTag=<tag>` — switch to the container worker
 
-`cdk diff` before every deploy is not ceremony. The table carries
-`RemovalPolicy.DESTROY`, so a change CloudFormation treats as a *replacement*
-would take all state with it. CDK builds a real change set for the diff, so
-replacement is visible before you commit to it.
+`cdk diff` before every deploy is not ceremony. `RemovalPolicy.RETAIN` means a
+change CloudFormation treats as a *replacement* no longer destroys the state
+table — but it does orphan it and stand up an empty one in its place, and the
+app follows the new name out of stack outputs. The data survives; the workbench
+comes back blank, which is its own kind of bad morning. CDK builds a real change
+set for the diff, so replacement is visible before you commit to it.
+
+Optional, and worth setting once: `CMA_ALARM_EMAIL` (alarm and budget
+subscriber) and `CMA_MONTHLY_BUDGET_USD` (defaults to `5`). After the first
+deploy with an email set, confirm the SNS subscription — until you do, the
+alarms fire into nothing.
 
 ---
 
 ## Known gaps
 
-**Local disk is now a cache, not the record.** Uploads write through to S3
-(`services/blob_store.py`), and the two resolvers — `datasets._resolve_path`
-and `models_registry.resolve_artifact` — pull on a local miss, so a node that
-never received an upload can still read it. Model pulls bring the `_*.py`
-sidecars along, because a pickle that cannot import its classes is no more
-useful than a missing one. What remains local-only: skills uploaded to
-`agent/skills_user/`, and the RAG index under `data/rag_index/`.
+The detail behind [Planned](#planned-in-the-order-worth-doing-them); the
+numbers match.
 
-**No backup on the state table.** `point_in_time_recovery_enabled=False` and
-`removal_policy=DESTROY`. Fine for a lab; must change before anything in that
-table is treated as a record.
+**1 · Secrets live in a file.** `main.py` loads `backend/.env` before any other
+import specifically so `OPENAI_API_KEY` is set by the time `cof.orchestrator`
+is imported, and `config/data_services.example.env` points at corporate
+integrations that will want credentials of their own. A plaintext provider key
+in a file beside the code is the one real exposure left in this design. The fix
+is SSM Parameter Store **SecureString** — free, KMS-encrypted — rather than
+Secrets Manager, whose rotation machinery is worth $0.40/secret/month only for
+credentials that can actually be rotated automatically. Note the *non*-secrets
+(`CMA_STATE_TABLE`, the queue URL, the ARNs) do not need this:
+`infra/sync_env.py` already distributes stack outputs, and moving them into
+Parameter Store is a lateral move until the API itself runs in AWS.
 
-**Run storage is unbounded.** gsi1 fixed the read cost; nothing bounds growth.
-Either a TTL attribute or an archive-to-S3 path is still needed, and which one
-depends on whether a run is a record or scratch.
+**2 · Run storage is unbounded.** gsi1 fixed the read cost; nothing bounds
+growth. Either a TTL attribute or an archive-to-S3 path is still needed, and
+which one depends on whether a run is a record or scratch. The same question is
+open one layer down in S3: `jobs/` results and noncurrent object versions
+accumulate with no lifecycle rule, and versioning means deletes do not actually
+reclaim anything. Both are a few lines of CDK once the question is answered —
+which is why this is a decision waiting on a person, not work waiting on a
+sprint.
 
-**Three registries remain in-process.** `_SCENARIOS` (mostly derived at startup
-from packs, so arguably a cache), `playbooks._RUNS`, and
-`analytics_defs._RUNS`. The playbook one is not a mechanical swap: a background
-task mutates its run in place as it progresses and polling reads the mutation,
-which needs a write-back-per-transition design rather than a find-and-replace.
+**3 · `_SCENARIOS` is still a module dict, and it is not a cache.**
+`playbooks._RUNS` and `analytics_defs._RUNS` have both moved to the table; the
+playbook one needed a design rather than a rename, because a background task
+mutates its run in place as it progresses and polling reads the mutation — that
+became a write-back per transition.
 
-**Auth is stateless when a pool is configured**, and a module dict otherwise —
-see the Cognito section above. The mock path is still the default, so the
-in-process token store is what runs locally.
+What is left (`routers/scenarios.py`) is a *mixed* registry, and the mix is the
+problem. Built-in scenarios are re-derived from packs at startup, so every
+replica computes the same ones — those really are a cache. But
+`POST /scenarios/from-dataset` mints a `scn-…` record from an analyst's dataset
+and puts it in the same dict, and that one is not derived from anything. It
+dies with the process and is invisible to a second replica. The delete
+endpoint already knows the difference — it refuses on
+`source_kind == "builtin"` — which is the codebase saying out loud that these
+are two kinds of thing sharing one home.
+
+So this is the same data-loss shape the whole migration exists to fix, just
+smaller and later-noticed. It ranks third only because steps 1 and 2 are
+smaller still, not because it is optional.
+
+**`_TRANSFORMS` (`routers/transforms.py`) genuinely is a cache** and is
+deliberately not on the list: it is seeded from pack attachments at startup and
+has no write endpoints at all, so there is nothing in it a restart could lose.
+
+**4 · Local disk is now a cache, not the record — but not everywhere.** Uploads
+write through to S3 (`services/blob_store.py`), and the two resolvers —
+`datasets._resolve_path` and `models_registry.resolve_artifact` — pull on a
+local miss, so a node that never received an upload can still read it. Model
+pulls bring the `_*.py` sidecars along, because a pickle that cannot import its
+classes is no more useful than a missing one.
+
+What remains local-only: skills uploaded to `agent/skills_user/`, and the RAG
+index under `data/rag_index/`. The skills are the same write-through pattern
+again and should be easy. The index is not: it is rebuilt by embedding a corpus,
+so the choice is between shipping the built index to S3 and having every replica
+pull it, or moving to a store that is shared by construction. The first is
+cheaper and probably right until the corpus grows.
+
+These two are why step 5 waits on step 4. A second replica that cannot see the
+first one's skills or index does not fail — it answers *differently*, which is
+harder to notice and worse to debug.
+
+**5 · Nothing runs the API in AWS.** Covered under the component map: no ALB,
+no CloudFront, no App Runner, no EC2. Every reason a second replica couldn't
+exist has now been removed — shared state, shared identity, shared files — and
+none of that is worth anything until a second replica does exist. Fargate behind
+an ALB is the conventional answer; App Runner is less to operate if the
+single-container shape holds. Note this is a *different* Fargate question from
+[On Fargate](#on-fargate) above, which is about the solver, not the web tier.
+
+**6 · Auth is stateless when a pool is configured**, and a module dict
+otherwise — see the Cognito section above. The mock path is still the default,
+so the in-process token store is what runs locally. Two things remain even with
+a pool: `USER_PASSWORD_AUTH` means the password still passes through this
+service, and MFA is off. Both are deliberate for a lab and both are wrong for
+anything else.
+
+**7 · The frontend has no home.** `vite build` produces a bundle that nothing
+deploys. S3 with CloudFront in front of it is the obvious shape, and it wants a
+stable API origin — step 5 — to point at first.

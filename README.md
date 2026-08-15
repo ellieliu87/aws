@@ -23,7 +23,7 @@ a directory drop, not a code-base rewrite.
 | Document | What it covers |
 |---|---|
 | [docs/SOLUTION-ARCHITECTURE.html](docs/SOLUTION-ARCHITECTURE.html) | **Start here.** What the system is, why it was re-architected, and the reasoning behind each design decision — in plain language, with the architecture diagrams. Open it in a browser. |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The AWS implementation reference: exact configuration, service limits that shape the code, deployment order. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The AWS implementation reference: exact configuration, service limits that shape the code, deployment order — and the migration ledger of which services have landed and which are still planned. |
 | [docs/ORCHESTRATOR.md](docs/ORCHESTRATOR.md) | Workflow engine mechanics step by step, and the corporate-proxy data integrations. |
 
 ## Architecture at a glance
