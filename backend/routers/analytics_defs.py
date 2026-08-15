@@ -18,6 +18,7 @@ auto-populated from prose, and plain text for the narrative an analyst pins.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -30,7 +31,7 @@ from typing import Any
 
 import pandas as pd
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from cof.llm_provider import LlmNotConfigured, complete, complete_json
 from models.schemas import (
@@ -57,8 +58,105 @@ from routers.datasets import _read_dataframe, _resolve_path, load_dataset
 
 router = APIRouter()
 
-_DEFS: dict[str, AnalyticDefinition] = {}
-_RUNS: dict[str, AnalyticDefinitionRun] = {}
+log = logging.getLogger("cma.analytics_defs")
+
+# ── persistence ────────────────────────────────────────────────────────────
+# Definitions are analyst-authored; their runs are append-only and unbounded,
+# and each carries its full result table. So this file needs both halves of
+# what scenarios.py needed: accessors for the definitions, and for the runs a
+# size guard plus a time-ordered index.
+_DEF_ENTITY = "adef"
+_ADEF_RUN_ENTITY = "adefrun"
+
+# Same 400 KB item ceiling as any other record; same margin for the key
+# attributes and the Decimal encoding.
+_MAX_RUN_BYTES = 380 * 1024
+
+RUNS_PAGE_DEFAULT = 200
+RUNS_PAGE_MAX = 500
+
+
+def _run_index_pk(function_id: str) -> str:
+    return f"{_ADEF_RUN_ENTITY}#{function_id}"
+
+
+def load_definition(def_id: str) -> AnalyticDefinition | None:
+    from services import entity_store
+
+    record = entity_store.get(_DEF_ENTITY, def_id)
+    return AnalyticDefinition(**record) if record else None
+
+
+def store_definition(d: AnalyticDefinition) -> AnalyticDefinition:
+    from services import entity_store
+
+    entity_store.put(_DEF_ENTITY, d.id, d.model_dump())
+    return d
+
+
+def all_definitions() -> list[AnalyticDefinition]:
+    from services import entity_store
+
+    out: list[AnalyticDefinition] = []
+    for record in entity_store.list_all(_DEF_ENTITY):
+        try:
+            out.append(AnalyticDefinition(**record))
+        except Exception as e:
+            log.warning("skipping unreadable definition %s: %s", record.get("id"), e)
+    return out
+
+
+def remove_definition(def_id: str) -> None:
+    from services import entity_store
+
+    entity_store.delete(_DEF_ENTITY, def_id)
+
+
+def load_adef_run(run_id: str) -> AnalyticDefinitionRun | None:
+    from services import entity_store
+
+    record = entity_store.get(_ADEF_RUN_ENTITY, run_id)
+    return AnalyticDefinitionRun(**record) if record else None
+
+
+def store_adef_run(run: AnalyticDefinitionRun) -> AnalyticDefinitionRun:
+    """Persist a run, dropping the result payload if the record will not fit.
+
+    Same trade as scenarios.store_run: the analytic already produced its
+    answer and the caller is holding it, so failing the request over the size
+    of the *history* record would discard work that succeeded.
+    """
+    from services import entity_store
+
+    payload = run.model_dump()
+    if entity_store.enabled():
+        size = len(json.dumps(payload, default=str).encode("utf-8"))
+        if size > _MAX_RUN_BYTES:
+            rows = len((run.result.table.rows if run.result and run.result.table else []) or [])
+            log.warning("adef run %s is %d bytes, over %d — storing without its result",
+                        run.id, size, _MAX_RUN_BYTES)
+            payload["result"] = None
+            note = f"[result omitted from history: {rows} rows exceeded the record size limit]"
+            payload["narrative"] = (
+                f"{run.narrative}\n\n{note}".strip() if run.narrative else note
+            )
+    entity_store.put(
+        _ADEF_RUN_ENTITY, run.id, payload,
+        index=(_run_index_pk(run.function_id), run.created_at),
+    )
+    return run
+
+
+def all_adef_runs() -> list[AnalyticDefinitionRun]:
+    from services import entity_store
+
+    out: list[AnalyticDefinitionRun] = []
+    for record in entity_store.list_all(_ADEF_RUN_ENTITY):
+        try:
+            out.append(AnalyticDefinitionRun(**record))
+        except Exception as e:
+            log.warning("skipping unreadable adef run %s: %s", record.get("id"), e)
+    return out
 
 
 def _now() -> str:
@@ -605,7 +703,7 @@ def _execute_definition(d: AnalyticDefinition) -> AnalyticDefinitionRun:
             error=str(e), created_at=_now(),
             duration_ms=(time.perf_counter() - started) * 1000,
         )
-    _RUNS[run.id] = run
+    store_adef_run(run)
     return run
 
 
@@ -615,7 +713,7 @@ async def list_definitions(
     function_id: str | None = Query(default=None),
     _: str = Depends(get_current_user),
 ):
-    items = list(_DEFS.values())
+    items = all_definitions()
     if function_id:
         items = [d for d in items if d.function_id == function_id]
     items.sort(key=lambda d: d.updated_at or d.created_at, reverse=True)
@@ -630,29 +728,63 @@ async def create_definition(req: AnalyticDefinitionCreate, _: str = Depends(get_
         created_at=_now(),
         **req.model_dump(),
     )
-    _DEFS[did] = d
+    store_definition(d)
     return d
 
 
 # Literal route comes before /{def_id} parameter route
 @router.get("/runs", response_model=list[AnalyticDefinitionRun])
 async def list_runs(
+    response: Response,
     function_id: str | None = Query(default=None),
     definition_id: str | None = Query(default=None),
+    limit: int = Query(default=RUNS_PAGE_DEFAULT, ge=1, le=RUNS_PAGE_MAX),
+    cursor: str | None = Query(default=None),
     _: str = Depends(get_current_user),
 ):
-    items = list(_RUNS.values())
+    """Newest first, paged the same way as /api/analytics/runs.
+
+    With a `function_id` this reads the (function, time) index and stops after
+    `limit`; without one there is no index partition to query and it falls
+    back to reading the whole run partition. `definition_id` is applied after
+    the read either way — it is not part of the key, and adding a second index
+    for a filter this narrow would cost more than it saves.
+    """
+    from services import entity_store
+
+    items: list[AnalyticDefinitionRun] | None = None
     if function_id:
-        items = [r for r in items if r.function_id == function_id]
+        try:
+            records, next_cursor = entity_store.query_index(
+                _run_index_pk(function_id), limit=limit, cursor=cursor,
+            )
+            items = []
+            for record in records:
+                try:
+                    items.append(AnalyticDefinitionRun(**record))
+                except Exception as e:
+                    log.warning("skipping unreadable adef run %s: %s", record.get("id"), e)
+            if next_cursor:
+                response.headers["X-Next-Cursor"] = next_cursor
+        except entity_store.IndexUnavailable:
+            log.warning("adef run index not deployed yet — falling back to a full read")
+            items = None
+
+    if items is None:
+        items = all_adef_runs()
+        if function_id:
+            items = [r for r in items if r.function_id == function_id]
+        items.sort(key=lambda r: r.created_at, reverse=True)
+        items = items[:limit]
+
     if definition_id:
         items = [r for r in items if r.definition_id == definition_id]
-    items.sort(key=lambda r: r.created_at, reverse=True)
     return items
 
 
 @router.get("/runs/{run_id}", response_model=AnalyticDefinitionRun)
 async def get_run(run_id: str, _: str = Depends(get_current_user)):
-    r = _RUNS.get(run_id)
+    r = load_adef_run(run_id)
     if not r:
         raise HTTPException(status_code=404, detail="Run not found")
     return r
@@ -660,7 +792,7 @@ async def get_run(run_id: str, _: str = Depends(get_current_user)):
 
 @router.post("/runs/{run_id}/narrate", response_model=AnalyticNarrationResponse)
 async def narrate_run(run_id: str, _: str = Depends(get_current_user)):
-    r = _RUNS.get(run_id)
+    r = load_adef_run(run_id)
     if not r:
         raise HTTPException(status_code=404, detail="Run not found")
     return AnalyticNarrationResponse(markdown=await _narrate(r))
@@ -673,7 +805,7 @@ async def draft_definition(req: AnalyticDraftRequest, _: str = Depends(get_curre
 
 @router.get("/{def_id}", response_model=AnalyticDefinition)
 async def get_definition(def_id: str, _: str = Depends(get_current_user)):
-    d = _DEFS.get(def_id)
+    d = load_definition(def_id)
     if not d:
         raise HTTPException(status_code=404, detail="Definition not found")
     return d
@@ -681,26 +813,28 @@ async def get_definition(def_id: str, _: str = Depends(get_current_user)):
 
 @router.patch("/{def_id}", response_model=AnalyticDefinition)
 async def update_definition(def_id: str, req: AnalyticDefinitionUpdate, _: str = Depends(get_current_user)):
-    d = _DEFS.get(def_id)
+    d = load_definition(def_id)
     if not d:
         raise HTTPException(status_code=404, detail="Definition not found")
     update = req.model_dump(exclude_unset=True)
     for k, v in update.items():
         setattr(d, k, v)
     d.updated_at = _now()
+    # `d` is a copy, not the registry's object — this is the write.
+    store_definition(d)
     return d
 
 
 @router.delete("/{def_id}", status_code=204)
 async def delete_definition(def_id: str, _: str = Depends(get_current_user)):
-    if def_id not in _DEFS:
+    if not load_definition(def_id):
         raise HTTPException(status_code=404, detail="Definition not found")
-    del _DEFS[def_id]
+    remove_definition(def_id)
 
 
 @router.post("/{def_id}/run", response_model=AnalyticDefinitionRun)
 async def run_definition(def_id: str, _: str = Depends(get_current_user)):
-    d = _DEFS.get(def_id)
+    d = load_definition(def_id)
     if not d:
         raise HTTPException(status_code=404, detail="Definition not found")
     return _execute_definition(d)

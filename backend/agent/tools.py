@@ -26,7 +26,7 @@ from routers.datasets import (
 )
 from routers.models_registry import load_model
 from routers.plots import _apply_filters, load_plot, store_plot
-from routers.scenarios import _SCENARIOS, load_run
+from routers.scenarios import load_run
 from services.workspace_data import get_workspace
 
 
@@ -699,8 +699,8 @@ def _t_get_tile(args: dict) -> str:
     ctx = _REQUEST_CTX.get() or {}
     if ctx.get("entity_kind") == "analytic_def":
         adef_id = args.get("tile_id", "") or ctx.get("entity_id", "")
-        from routers.analytics_defs import _DEFS as _ADEFS
-        d = _ADEFS.get(adef_id)
+        from routers.analytics_defs import load_definition
+        d = load_definition(adef_id)
         if d:
             return d.model_dump_json(indent=2)
         return json.dumps({"error": f"AnalyticDefinition `{adef_id}` not found"})
@@ -734,11 +734,11 @@ def _t_get_tile_preview(args: dict) -> str:
     ctx = _REQUEST_CTX.get() or {}
     if ctx.get("entity_kind") == "analytic_def":
         adef_id = args.get("tile_id", "") or ctx.get("entity_id", "")
-        from routers.analytics_defs import _DEFS as _ADEFS, _RUNS as _ARUNS
-        d = _ADEFS.get(adef_id)
+        from routers.analytics_defs import all_adef_runs, load_definition
+        d = load_definition(adef_id)
         if not d:
             return json.dumps({"error": f"AnalyticDefinition `{adef_id}` not found"})
-        runs_for_def = [r for r in _ARUNS.values() if r.definition_id == adef_id]
+        runs_for_def = [r for r in all_adef_runs() if r.definition_id == adef_id]
         runs_for_def.sort(key=lambda r: r.created_at, reverse=True)
         latest = runs_for_def[0] if runs_for_def else None
         chart = latest.result.chart if (latest and latest.result and latest.result.chart) else None
@@ -793,9 +793,9 @@ def _resolve_target(args: dict):
         p = load_plot(tid)
         return ("tile", p, (lambda: store_plot(p)) if p else None)
     if kind == "analytic_def":
-        from routers.analytics_defs import _DEFS as _ADEFS
-        d = _ADEFS.get(tid)
-        return ("analytic_def", d, (lambda: None) if d else None)
+        from routers.analytics_defs import load_definition, store_definition
+        d = load_definition(tid)
+        return ("analytic_def", d, (lambda: store_definition(d)) if d else None)
     return (kind, None, None)
 
 
