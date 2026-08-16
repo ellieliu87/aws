@@ -1603,6 +1603,31 @@
       <p><span class="tag lesson">Lesson</span>The first startup after the change published two search-index files that had been sitting on one machine for months. Uploading only at the moment of a rebuild sounds sufficient and is not: a rebuild happens when the <em>corpus</em> changes, so files built before the seam existed would have stayed where they were indefinitely. Reconciling in both directions at startup is what actually moved them.</p>
     </div>
   </div>
+
+  <p class="logphase">Giving the application somewhere to run</p>
+
+  <div class="logentry">
+    <div class="n">33</div>
+    <div>
+      <h4>A convenience wrapper that only failed once it was useful</h4>
+      <p>Deployment had become four commands in a fixed order, so they were wrapped in one. It ran clean twice, then broke on the first deploy that actually changed something — in two unrelated ways, both of which had been there since it was written.</p>
+      <p><span class="tag broke">Broke</span>It read the deployment tool's output using the operating system's regional text encoding, while the tool emits box-drawing characters and symbols in its diff. Any diff with real content in it crashed the wrapper. The earlier runs had survived only because <em>"there were no differences"</em> contains nothing but plain letters.</p>
+      <p><span class="tag lesson">Lesson</span>The failure appeared at the exact moment the tool first did something, which made it look like the change under review had caused it. A convenience layer that is only exercised on the no-op path has not been tested; it has been visited.</p>
+      <p><span class="tag broke">Broke</span>Worse, and a design mistake rather than a slip. The wrapper asked the deployment tool to prompt for confirmation on permission changes. Without an interactive terminal the tool cannot prompt, so it refuses outright — meaning every deploy touching permissions failed from automation, from a script, and from the way the wrapper was actually being used. It reported nothing obviously wrong; the infrastructure simply stayed as it was.</p>
+      <p><span class="tag fix">Fix</span>Turn the prompt off, which needs justifying because it reads like disabling a safety check. It is not — <b>the check moved.</b> The wrapper already prints the permission-change table as part of the review step, and then requires a second, separate command before anything is applied. The person running it has already seen precisely what the prompt would have shown. Asking the same question twice inside one command is how people learn to answer it without reading.</p>
+      <p><span class="tag lesson">Lesson</span>Both bugs share a shape worth naming: <b>a safeguard you have never seen fire is a safeguard you have never tested.</b> The same deploy was the first time the wrapper's own replacement guard fired — it flagged a budget change as possibly destructive, which was right to surface and turned out to be conservative, since the platform updated the budget in place. That is the correct direction for that kind of check to be wrong in, and the only reason anyone knows it works is that it finally had something to say.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">34</div>
+    <div>
+      <h4>The build that worked first time, and why that is worth recording too</h4>
+      <p>The web-tier image had never been built. The expected failures were dependency resolution against a newer Python, and imports from the domain packs that the file list had missed.</p>
+      <p><span class="tag lesson">Lesson</span>Neither happened: 102 seconds, 259 MB, first attempt. Recorded because a log that only contains disasters quietly teaches that everything is hard, and the reason this one was not is visible in the preceding entries — the image copies an explicit list of directories rather than the whole tree, so there was no ambiguity about what belonged in it, and the dependency list was pinned to the same floors the application already declared. The build was boring because the decisions before it were not.</p>
+      <p><span class="tag lesson">Lesson</span>A successful build still proves only that the image assembles. It says nothing about whether the application starts inside it, which is a different question answered by a different failure, at a cost of roughly thirty-four dollars a month to ask.</p>
+    </div>
+  </div>
 </section>
 
 <footer>
