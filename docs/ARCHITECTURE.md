@@ -72,7 +72,7 @@ developer's machine or a box someone provisioned. That is worth stating
 plainly, because the premise of everything below is that a *second replica*
 must see the same truth as the first, and nothing here creates that second
 replica. What the stack does is remove every reason one couldn't exist. Choosing
-the hosting is **step 2 of the plan below**.
+the hosting is **step 1 of the plan below**.
 
 ---
 
@@ -91,7 +91,7 @@ behind an environment variable. This is the ledger of where that has got to.
 | ✅ | UUID token in a module dict | self-describing JWT, verified offline | **Cognito** | [identity](#cognito--identity-without-a-session-store) |
 | ✅ | solves computed inline in the request | queued, retried 3×, dead-lettered | **SQS + Lambda** | [the async solve path](#sqs--lambda--the-async-solve-path) |
 | ✅ | approval as an in-process `await` | durable pause across restarts and deploys | **Step Functions** | [durable human approval](#step-functions--durable-human-approval) |
-| ✅ | uploads and artifacts on local disk | write-through, pull on local miss | **S3** | [one bucket, four prefixes](#s3--one-bucket-four-prefixes) |
+| ✅ | uploads and artifacts on local disk | write-through, pull on local miss | **S3** | [one bucket, six prefixes](#s3--one-bucket-six-prefixes) |
 | ✅ | worker image built on a laptop, if at all | built in-account from an uploaded source zip | **CodeBuild + ECR** | [the image supply chain](#ecr--codebuild--the-image-supply-chain) |
 | ✅ | `provision_async.py`, a boto3 script with retry loops | declared once; deleting a resource deletes it | **CDK** | the file header |
 | ✅ | no backup, `DESTROY` on the state table | 35-day restore, table survives the stack | **DynamoDB PITR** | [retention](#dynamodb--the-state-table) |
@@ -101,22 +101,22 @@ behind an environment variable. This is the ledger of where that has got to.
 | ✅ | `OPENAI_API_KEY` in plaintext in `backend/.env` | KMS-encrypted, pulled into the environment at boot | **SSM Parameter Store** | [the key that is not in the file](#ssm-parameter-store--the-key-that-is-not-in-the-file) |
 | ✅ | runs and job results accumulated forever | 90-day run TTL, prefix-scoped object lifecycle | **DynamoDB TTL + S3 lifecycle** | [what expires](#what-expires) |
 | ✅ | `_SCENARIOS`, one dict holding derived *and* analyst data | built-ins cached, `scn-…` records in the table | **DynamoDB** | [scenarios, and the mixed registry](#scenarios-and-the-mixed-registry) |
+| ✅ | uploaded skills and the built RAG index on one node's disk | S3 is the record; each node syncs a cache of it | **S3** | [the last two local-only paths](#the-last-two-local-only-paths) |
 
 ### Planned, in the order worth doing them
 
-Ordered by *what unblocks what*, not by size. Steps 1–2 build on each other;
-3 and 4 are independent of them.
+Ordered by *what unblocks what*, not by size. Steps 2 and 3 are independent of
+step 1.
 
 | # | Step | Service | Why now, or why not yet |
 |---|---|---|---|
-| 1 | Move `skills_user/` and `data/rag_index/` off local disk | **S3** (+ a managed vector store when the index outgrows a file) | These are what still tie a request to a particular machine. Must land *before* step 2, or a second replica answers differently from the first. |
-| 2 | Actually run the API in AWS, more than once | **ECS Fargate + ALB**, or **App Runner** | The step the whole migration has been for. Also finishes the secrets work: a task role means credentials arrive as an identity, not as anything on the host. |
-| 3 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. |
-| 4 | Serve the built frontend from a CDN | **S3 + CloudFront** | `vite build` output has no home today. Wants step 2 first, so there is a stable API origin to point at. |
-| 5 | Deepen observability once there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
+| 1 | Actually run the API in AWS, more than once | **ECS Fargate + ALB**, or **App Runner** | The step the whole migration has been for, and nothing blocks it now. Also finishes the secrets work: a task role means credentials arrive as an identity, not as anything on the host. |
+| 2 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. |
+| 3 | Serve the built frontend from a CDN | **S3 + CloudFront** | `vite build` output has no home today. Wants step 1 first, so there is a stable API origin to point at. |
+| 4 | Deepen observability once there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
 
-Steps 1–4 are written up in full, with the same numbers, in
-[Known gaps](#known-gaps) at the end; step 5's reasoning is in
+Steps 1–3 are written up in full, with the same numbers, in
+[Known gaps](#known-gaps) at the end; step 4's reasoning is in
 [deliberately absent](#deliberately-absent).
 
 ---
@@ -244,7 +244,7 @@ swept.
 
 `models/` is the exception and the reason every expiry rule is prefix-scoped:
 its noncurrent versions *are* the audit trail described under
-[S3](#s3--one-bucket-four-prefixes). Expiring them would quietly convert "we can
+[S3](#s3--one-bucket-six-prefixes). Expiring them would quietly convert "we can
 show which artifact produced this number" into "we can show it for a year", and
 a claim that decays on a timer is worse than one never made.
 
@@ -382,7 +382,7 @@ remove instead.
 
 **What this does not yet fix.** Reading the parameter needs AWS credentials of
 its own, so on a laptop it trades a plaintext key for an AWS profile. The half
-that finishes the job is step 2 of the plan: once the API runs as an ECS task or
+that finishes the job is step 1 of the plan: once the API runs as an ECS task or
 an App Runner service, the task role *is* the credential and no secret material
 exists on the host at all.
 
@@ -557,7 +557,7 @@ you would rather have instant rollback.
 
 ---
 
-## S3 — one bucket, four prefixes
+## S3 — one bucket, six prefixes
 
 `CMA_CORPUS_BUCKET`, versioned:
 
@@ -567,6 +567,8 @@ you would rather have instant rollback.
 | `models/` | model artifacts + `_classes.py` sidecars | `workflow_artifacts.py`, `blob_store.py` |
 | `datasets/` | uploaded dataset files | `blob_store.py` |
 | `builds/` | worker image source zip | `build_worker_image.py` |
+| `skills/` | analyst-uploaded agent skills | `routers/skills.py` |
+| `rag_index/` | built vector indexes, named by content fingerprint | `agent/retrieval.py` |
 | corpus | knowledge-base documents | `corpus_store.py` |
 
 `blob_store` writes model artifacts under the same `models/` layout the Lambda
@@ -583,6 +585,59 @@ Versioning also means a delete reclaims nothing and an overwrite keeps both
 copies, which is what [what expires](#what-expires) is about. `models/` is
 exempt from every expiry rule, because its noncurrent versions are the trail
 this paragraph is claiming exists.
+
+### The last two local-only paths
+
+`ensure_local` — write locally and to S3, pull on a local miss — is the right
+shape for datasets and model artifacts, because those are read **by id**. A
+request names the thing it wants, so a miss is detectable and the pull happens
+exactly then.
+
+Skills and the RAG index are not read that way, and that difference is the
+whole design:
+
+| | `agent/skills_user/` | `data/rag_index/` |
+|---|---|---|
+| Read by | globbing a directory | fingerprint lookup |
+| A miss looks like | the skill is simply absent from the list | a cache miss |
+| So it needs | the whole prefix reconciled | pull on miss, plus a startup sync |
+
+**Skills.** A missing file does not raise — it just is not in the listing,
+which is exactly the *answers differently* failure this is meant to prevent. So
+`skill_loader.sync_user_skills` reconciles the whole prefix rather than fetching
+one key: it pulls anything newer than the local copy, and **prunes** local files
+that no longer exist in S3, which is how a delete on one node reaches the
+others. Pruning applies only when the listing *succeeded* — treating an
+unreachable bucket as "nothing exists" would empty the directory it was meant to
+protect.
+
+It is throttled to `CMA_SKILLS_SYNC_SECONDS` (default 30) because
+`load_all_skills` is a hot path — the orchestrator resolves skills per chat turn,
+and a LIST on each would put S3 in the middle of every message. That interval is
+therefore the staleness window between replicas. The node that served the upload
+writes through immediately, so it never sees its own edit late.
+
+**The RAG index.** Not an upload but a *build*: embedding the whole corpus
+through Bedrock, which is the burstiest thing this app does. Left on local disk
+that cost is paid again per replica — and worse, a node still building falls
+back to keyword scoring, so two replicas answer the same question differently
+until they converge.
+
+The file is named by a content fingerprint of the chunks, model and dimensions,
+which is what makes sharing it safe: a name collision means the inputs were
+identical, and a corpus change produces a different name rather than a stale
+hit. So there is no coherence problem to solve, only a transfer.
+
+`sync_indexes()` runs at startup and goes **both ways**. Pull, so a fresh
+replica does not re-embed what another node already paid for. Push, because
+`_save_cached` only uploads at the moment of a rebuild, and a rebuild only
+happens when the corpus changes — without the push half, an index built before
+this seam existed would stay on one machine forever.
+
+Deliberately **not** a managed vector store. At this corpus size the index is
+about 1 MB, a dot product over it is instant, and a vector database would be a
+standing cost for a file that fits in memory. The day the corpus outgrows that,
+`_pull_index` / `_push_index` are the seam to replace.
 
 ---
 
@@ -768,25 +823,7 @@ which is why this is a script at all.
 The detail behind [Planned](#planned-in-the-order-worth-doing-them); the
 numbers match.
 
-**1 · Local disk is now a cache, not the record — but not everywhere.** Uploads
-write through to S3 (`services/blob_store.py`), and the two resolvers —
-`datasets._resolve_path` and `models_registry.resolve_artifact` — pull on a
-local miss, so a node that never received an upload can still read it. Model
-pulls bring the `_*.py` sidecars along, because a pickle that cannot import its
-classes is no more useful than a missing one.
-
-What remains local-only: skills uploaded to `agent/skills_user/`, and the RAG
-index under `data/rag_index/`. The skills are the same write-through pattern
-again and should be easy. The index is not: it is rebuilt by embedding a corpus,
-so the choice is between shipping the built index to S3 and having every replica
-pull it, or moving to a store that is shared by construction. The first is
-cheaper and probably right until the corpus grows.
-
-These two are why step 2 waits on step 1. A second replica that cannot see the
-first one's skills or index does not fail — it answers *differently*, which is
-harder to notice and worse to debug.
-
-**2 · Nothing runs the API in AWS.** Covered under the component map: no ALB,
+**1 · Nothing runs the API in AWS.** Covered under the component map: no ALB,
 no CloudFront, no App Runner, no EC2. Every reason a second replica couldn't
 exist has now been removed — shared state, shared identity, shared files — and
 none of that is worth anything until a second replica does exist. Fargate behind
@@ -794,13 +831,13 @@ an ALB is the conventional answer; App Runner is less to operate if the
 single-container shape holds. Note this is a *different* Fargate question from
 [On Fargate](#on-fargate) above, which is about the solver, not the web tier.
 
-**3 · Auth is stateless when a pool is configured**, and a module dict
+**2 · Auth is stateless when a pool is configured**, and a module dict
 otherwise — see the Cognito section above. The mock path is still the default,
 so the in-process token store is what runs locally. Two things remain even with
 a pool: `USER_PASSWORD_AUTH` means the password still passes through this
 service, and MFA is off. Both are deliberate for a lab and both are wrong for
 anything else.
 
-**4 · The frontend has no home.** `vite build` produces a bundle that nothing
+**3 · The frontend has no home.** `vite build` produces a bundle that nothing
 deploys. S3 with CloudFront in front of it is the obvious shape, and it wants a
-stable API origin — step 2 — to point at first.
+stable API origin — step 1 — to point at first.

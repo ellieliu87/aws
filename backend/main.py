@@ -177,6 +177,23 @@ async def _ingest_pack_assets():
         print(f"[startup] data_services: materialized {n} built-in scenario(s)")
     except Exception as e:
         print(f"[startup] data_services scenario materialization failed: {e}")
+    # Pull the two things that used to live only on this machine's disk.
+    # Both are no-ops without CMA_CORPUS_BUCKET, and neither is fatal: a node
+    # that starts with an empty cache is slower or shows fewer skills for a
+    # moment, and both self-correct. Done here rather than lazily so a fresh
+    # replica is complete before it takes its first request.
+    try:
+        from agent.skill_loader import sync_user_skills
+        sync_user_skills(force=True)
+    except Exception as e:
+        print(f"[startup] user skill sync failed: {e}")
+    try:
+        from agent.retrieval import sync_indexes
+        pulled, pushed = sync_indexes()
+        if pulled or pushed:
+            print(f"[startup] rag index: pulled {pulled}, published {pushed}")
+    except Exception as e:
+        print(f"[startup] rag index sync failed: {e}")
     # MCP server registration already runs at module import (see top of
     # this file) so the orchestrator sees the live registry when it
     # constructs specialists. No-op here.

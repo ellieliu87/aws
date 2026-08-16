@@ -39,6 +39,11 @@ log = logging.getLogger("cma.blob_store")
 
 DATASET_PREFIX = "datasets/"
 MODEL_PREFIX = "models/"
+# Skills an analyst uploaded, and the built RAG index. Both were the last two
+# things tying a request to a particular machine — see `sync_down` for why
+# these two need a different pattern from the two above.
+SKILL_PREFIX = "skills/"
+RAG_INDEX_PREFIX = "rag_index/"
 
 
 def bucket() -> str:
@@ -152,6 +157,111 @@ def ensure_siblings(prefix: str, rel_dir: str, dest_dir: Path, match: str = "_")
             pulled.append(dest)
     except Exception as e:
         log.warning("could not pull sidecars under %s: %s", listing_prefix, e)
+    return pulled
+
+
+# ── sync a whole prefix ───────────────────────────────────────────────────
+def list_names(prefix: str, suffix: str | None = None) -> set[str]:
+    """Object names directly under `prefix`, with the prefix stripped.
+
+    Returns an empty set both when nothing is there and when the listing
+    failed, so callers must not read "empty" as "S3 is definitely empty" for
+    anything destructive — see the prune guard in `sync_down`.
+    """
+    if not enabled():
+        return set()
+    names: set[str] = set()
+    try:
+        paginator = _client().get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket(), Prefix=prefix):
+            for obj in page.get("Contents", []):
+                name = obj["Key"][len(prefix):]
+                if name and "/" not in name and (not suffix or name.endswith(suffix)):
+                    names.add(name)
+    except Exception as e:
+        log.warning("could not list %s: %s", prefix, e)
+    return names
+
+
+
+def sync_down(
+    prefix: str,
+    dest_dir: Path,
+    *,
+    suffix: str | None = None,
+    prune: bool = False,
+) -> list[Path]:
+    """Make `dest_dir` match what S3 holds under `prefix`.
+
+    `ensure_local` above is the right shape for datasets and model artifacts,
+    because those are read *by id*: a request names the thing it wants, so a
+    local miss is detectable and a pull can be triggered exactly then.
+
+    Skills and the RAG index are not read that way. A skill is found by
+    globbing a directory, and a missing file does not raise — it simply is not
+    in the list, which is precisely the "answers differently" failure this is
+    meant to prevent. So these need the whole prefix reconciled rather than one
+    key fetched.
+
+    Re-downloads when S3 holds something newer than the local copy, so an edit
+    made on one node reaches the others. A freshly downloaded file gets the
+    current time as its mtime, which is necessarily newer than the object's
+    LastModified, so a synced file is not fetched again on the next pass.
+
+    `prune` deletes local files that no longer exist in S3, which is how a
+    delete propagates. Only pass it where S3 is genuinely authoritative for the
+    whole directory — and note it is applied *only* when the listing succeeded,
+    because treating an unreachable bucket as "nothing exists" would wipe the
+    directory it was supposed to be protecting.
+
+    Returns the paths actually written. Never raises: a sync failure leaves the
+    node serving whatever it already had, which is the same trade every other
+    S3 seam here makes.
+    """
+    dest_dir = Path(dest_dir)
+    if not enabled():
+        return []
+
+    pulled: list[Path] = []
+    seen: set[str] = set()
+    try:
+        paginator = _client().get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket(), Prefix=prefix):
+            for obj in page.get("Contents", []):
+                name = obj["Key"][len(prefix):]
+                # A key with a slash left in it belongs to a nested prefix this
+                # caller did not ask for; ignore rather than flatten it.
+                if not name or "/" in name:
+                    continue
+                if suffix and not name.endswith(suffix):
+                    continue
+                seen.add(name)
+                dest = dest_dir / name
+                if dest.exists() and dest.stat().st_mtime >= obj["LastModified"].timestamp():
+                    continue
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                tmp = dest.with_suffix(dest.suffix + ".part")
+                _client().download_file(bucket(), obj["Key"], str(tmp))
+                tmp.replace(dest)
+                pulled.append(dest)
+    except Exception as e:
+        log.warning("could not sync %s: %s", prefix, e)
+        return pulled
+
+    if prune and dest_dir.exists():
+        for local in dest_dir.iterdir():
+            if not local.is_file() or local.name in seen:
+                continue
+            if suffix and not local.name.endswith(suffix):
+                continue
+            try:
+                local.unlink()
+                log.info("removed %s — no longer in s3://%s", local.name, prefix)
+            except OSError as e:
+                log.warning("could not remove %s: %s", local, e)
+
+    if pulled:
+        log.info("synced %d file(s) from %s", len(pulled), prefix)
     return pulled
 
 

@@ -789,6 +789,67 @@
       Runs additionally carry a second key — function plus timestamp — which is what makes "the newest fifty runs" a direct range read instead of reading every run ever recorded. Only records that carry that second key appear in the index, so datasets, models and workflows cost nothing there.
     </figcaption>
   </figure>
+
+  <h3>What code runs where</h3>
+  <p>The services above say what is running. This says <em>which code</em> is running on each of them — a different question, and the one that decides how the repository is packaged.</p>
+
+  <div class="note">
+    <p><strong>Application code is not stored the way records are.</strong> It is built into an image, the image is kept in the container registry, and a compute service runs it. So "where does this folder live in the cloud" has two answers that are easy to conflate: the registry is where it <em>lives</em>, and the compute service is where it <em>runs</em>.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Code</th><th>Packaged as</th><th>Runs on</th><th>Why there</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="svc">main.py<br>routers/<br>services/<br>cof/ · agent/ · packs/<br>models/</td>
+          <td>web-tier image<br><span class="pill trap">designed</span></td>
+          <td class="svc">Fargate<br>(or App Runner)</td>
+          <td>The request path: HTTP handlers, the agent runtime, the canvas compiler, and every storage seam. It needs to be long-lived and hold open connections, which is a container's shape rather than a function's. This is the last step of the migration, and it waits on nothing but the uploaded skills and search index still sitting on local disk.</td>
+        </tr>
+        <tr>
+          <td class="svc">infra/cdk/worker_image/<br>handler.py</td>
+          <td>worker image<br><span class="pill free">built · deployed</span></td>
+          <td class="svc">Lambda</td>
+          <td>One file plus the numerical libraries, and deliberately nothing else — it imports none of <code>services/</code>. Solves are short, spiky and event-driven, which is exactly a function's shape, and scaling to zero is what holds an idle lab account at no cost. Keeping the image minimal is also what keeps it inside the registry's free allowance.</td>
+        </tr>
+        <tr>
+          <td class="svc">infra/cdk/worker/<br>handler.py</td>
+          <td>zip bundle<br><span class="pill watch">built · superseded</span></td>
+          <td class="svc">Lambda</td>
+          <td>The same entry point without the machine-learning libraries. It exists so the <em>first</em> deploy is possible at all: a function cannot reference an image that does not exist yet, and the image is built by a project the same stack creates. One parameter switches between the two.</td>
+        </tr>
+        <tr>
+          <td class="svc">infra/cdk/<br>async_stack.py · app.py</td>
+          <td>not packaged</td>
+          <td class="svc">operator shell / CI</td>
+          <td>Infrastructure definition. It never runs in the cloud — it is read locally to produce a template, and the cloud executes the template rather than the Python.</td>
+        </tr>
+        <tr>
+          <td class="svc">infra/deploy.py<br>infra/deploy_workflows.py<br>infra/put_secret.py<br>infra/apply_lifecycle.py</td>
+          <td>not packaged</td>
+          <td class="svc">operator shell / CI</td>
+          <td>Privileged operations, deliberately outside the request path. The web tier holds no permission to create infrastructure, so the process that turns a saved canvas into a running state machine is a separate identity — see §6.5. That separation is the reason these are not simply endpoints.</td>
+        </tr>
+        <tr>
+          <td class="svc">frontend/<br>build output</td>
+          <td>static bundle<br><span class="pill trap">designed</span></td>
+          <td class="svc">S3 + CloudFront</td>
+          <td>Compiled assets with no server behaviour, so paying for compute to serve them would be waste. Wants the web tier first, so there is a stable API origin to point at.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><b>The shape worth noticing: two images, not one.</b> The obvious approach ships one image everywhere, and it would work — the worker would simply ignore the code it does not call. What it would cost is size. The worker image carries the numerical stack because it unpickles real model artifacts, and it is already most of the registry's free allowance on its own; folding in the web framework, the agent runtime and the domain packs would push every cold start to pull an image several times larger for the sake of one file. Two images means each contains what it actually runs.</p>
+
+  <p><b>And one thing that is not in either image: the models themselves.</b> An uploaded artifact is never deployed as code. It is data in object storage, fetched by the worker at invocation time and named in the payload — which is why adding a model requires no deploy, and why every workflow step invokes the same single function rather than one function per model.</p>
+
+  <p><b>Nor is anything an analyst creates.</b> Uploaded skills and the built search index used to sit on the disk of whichever server happened to receive them, which is the one thing that would have made a second replica genuinely dangerous — not a failure, but two servers answering the same question differently, with nothing anywhere reporting a problem. Both now live in object storage, and each server keeps a local copy it reconciles: at startup, and for skills on a short interval afterwards, since a skill is found by listing a folder rather than by name and a missing one raises nothing. That was the last thing tying a request to a particular machine.</p>
+
+  <div class="note warn">
+    <p><strong>The same service, two opposite answers.</strong> §6.12 argues that the solver should stay on functions rather than containers, and that remains true — solves are short and bursty and scale to zero. The web tier above reaches the opposite conclusion about the same service, because it is a long-lived process serving requests. Both are in this document, and reading one as the answer to the other is the easiest mistake to make here.</p>
+  </div>
 </section>
 
 <section id="decisions">
@@ -1107,7 +1168,7 @@
         <tr><td>Analyst-created records — charts, tools, layouts, connections, analytic definitions</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Backup and deletion protection on the records database</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Time-ordered index for run history</td><td><span class="pill free">built · deployed</span></td></tr>
-        <tr><td>Uploaded files in S3, servers fetch on demand</td><td><span class="pill free">built</span></td></tr>
+        <tr><td>Uploaded files in S3, servers fetch on demand</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Identity with stateless tokens</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Playbook state out of process memory</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Analyst-created scenarios out of process memory</td><td><span class="pill free">built · deployed</span></td></tr>
@@ -1117,7 +1178,7 @@
         <tr><td>Alert notifications reaching a person</td><td><span class="pill watch">built · no subscriber</span></td></tr>
         <tr><td><b>Web tier on containers behind a load balancer</b></td><td><span class="pill trap">designed</span></td></tr>
         <tr><td><b>Static frontend on a CDN</b></td><td><span class="pill trap">designed</span></td></tr>
-        <tr><td>Uploaded skills and the search index off local disk</td><td><span class="pill trap">designed</span></td></tr>
+        <tr><td>Uploaded skills and the search index off local disk</td><td><span class="pill free">built · deployed</span></td></tr>
       </tbody>
     </table>
   </div>
@@ -1528,6 +1589,18 @@
       <p><span class="tag fix">Fix</span>A second script, opening with the reason it is not part of the stack. It prints the bucket's existing configuration before replacing it, because the underlying call overwrites the whole configuration rather than merging into it — a detail that turns "add one rule" into "silently delete the others" for anyone who assumes otherwise.</p>
       <p><span class="tag lesson">Lesson</span>An estimate written while reading a document is not the same as one written while reading the code. This one had been sitting in the plan for weeks, stated with confidence, and cost nothing to correct only because it was caught before the work was scheduled rather than after.</p>
       <p><span class="tag lesson">Lesson</span>A related trap in the same rules: on a versioned bucket, expiring an object only writes a deletion marker — the bytes stay, and stay billed, until a <em>second</em> rule expires the superseded versions. It is the most common way a lifecycle rule appears to work and does nothing.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">32</div>
+    <div>
+      <h4>The dormant bug that only mattered once the data moved</h4>
+      <p>Moving uploaded skills into object storage is the same write-through pattern the datasets already used, so it should have been the easy half of the last migration step. The test that proved it worked failed on the first run — but not where it was pointed.</p>
+      <p><span class="tag broke">Broke</span>Saving a skill and deleting one had disagreed about the filename for as long as both had existed. The writer kept hyphens; every lookup converted them to underscores. Since skills are named in kebab-case by convention, the two never matched for any real skill, and deleting one reported it missing.</p>
+      <p><span class="tag lesson">Lesson</span>It had been harmless. A file nobody could delete through the interface was a nuisance on a single server, and the folder was empty in practice, so nothing surfaced it. Making the shared copy authoritative changed that completely: a delete that cannot find its file also cannot remove the shared one, and the next reconcile would faithfully restore what the user had just deleted. <b>A latent bug is not a small bug — it is a bug whose blast radius is determined by what you build on top of it.</b> The migration did not introduce this one; it promoted it.</p>
+      <p><span class="tag fix">Fix</span>One naming function, used by every writer and every lookup, plus a fallback so files written under the old convention are still removable rather than stranded. The narrow fix — teach the delete path the other spelling — would have left two conventions in a codebase that now uses the filename as a storage key.</p>
+      <p><span class="tag lesson">Lesson</span>The first startup after the change published two search-index files that had been sitting on one machine for months. Uploading only at the moment of a rebuild sounds sufficient and is not: a rebuild happens when the <em>corpus</em> changes, so files built before the seam existed would have stayed where they were indefinitely. Reconciling in both directions at startup is what actually moved them.</p>
     </div>
   </div>
 </section>

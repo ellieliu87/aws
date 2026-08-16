@@ -27,7 +27,10 @@ Skill frontmatter shape::
 """
 from __future__ import annotations
 
+import os
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +39,61 @@ from cof.llm_config import resolve_model
 _HERE = Path(__file__).parent
 BUILTIN_SKILLS_DIR = _HERE / "skills"
 USER_SKILLS_DIR = _HERE / "skills_user"
+
+# ── keeping skills_user/ the same on every node ───────────────────────────
+# Built-in and pack skills ship with the code, so every replica has them by
+# construction. Uploaded ones did not: they landed on the disk of whichever
+# node served the upload, and a second replica simply did not list them. That
+# is worse than a clean failure — the agent answers *differently* depending on
+# which node took the request, with nothing anywhere reporting a problem.
+#
+# S3 is the record now (`services/blob_store.py:SKILL_PREFIX`) and this
+# directory is a cache of it. `load_all_skills` globs a directory, so unlike a
+# dataset read there is no "miss" to detect and pull on: the whole prefix has
+# to be reconciled instead.
+#
+# Throttled because this is a hot path — the orchestrator resolves skills per
+# chat turn, and a LIST on every one of those would put S3 in the middle of
+# every message. The interval is therefore the staleness window: an upload on
+# one node becomes visible on the others within it. Thirty seconds is well
+# under how long anyone takes to switch tabs and try the skill they just
+# uploaded, and the node that *served* the upload writes through immediately,
+# so it never sees its own edit late.
+_SYNC_SECONDS = float(os.getenv("CMA_SKILLS_SYNC_SECONDS", "30"))
+_sync_lock = threading.Lock()
+_last_sync = 0.0
+
+
+def sync_user_skills(force: bool = False) -> None:
+    """Reconcile `skills_user/` against S3, at most once per interval.
+
+    `force=True` for startup, where paying the round trip once is obviously
+    right and the interval has not started yet.
+
+    A no-op without a configured bucket, so local development keeps behaving
+    exactly as it did: the directory is the record, and nothing syncs.
+    """
+    global _last_sync
+
+    from services import blob_store
+
+    if not blob_store.enabled():
+        return
+
+    now = time.monotonic()
+    with _sync_lock:
+        if not force and now - _last_sync < _SYNC_SECONDS:
+            return
+        # Claimed before the network call, not after: two concurrent requests
+        # should produce one sync, and the loser should not block on it.
+        _last_sync = now
+
+    blob_store.sync_down(
+        blob_store.SKILL_PREFIX, USER_SKILLS_DIR, suffix=".md",
+        # S3 owns this directory outright, so a file that is gone there was
+        # deleted by somebody and must go here too.
+        prune=True,
+    )
 
 
 @dataclass
@@ -173,6 +231,9 @@ def load_all_skills() -> dict[str, AgentSkill]:
     skills: dict[str, AgentSkill] = {}
     BUILTIN_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    # Before the glob, not after: a skill another node uploaded has to be on
+    # disk by the time the directory is read, or this call misses it entirely.
+    sync_user_skills()
 
     import warnings
     for path, source, pack_id in _SKILL_SOURCES:

@@ -60,13 +60,63 @@ def _to_schema(s: AgentSkill) -> AgentSkillSchema:
 
 
 def _safe_filename(name: str) -> str:
-    norm = re.sub(r"[^a-zA-Z0-9_-]+", "_", name).strip("_")
+    """`My KPI-Explainer` -> `my_kpi_explainer.md`.
+
+    One convention, used by every writer *and* every lookup. It previously had
+    two: writes kept hyphens while lookups converted them to underscores, so
+    for any kebab-case name — which is the convention skills are named in —
+    `delete` looked for a file that upload had never written and reported the
+    skill missing. Built-in skills were already underscored, so this also makes
+    the two directories agree.
+
+    That matters more now than it did: S3 is the record for this directory and
+    the filename is the object key. A write and a delete that disagree leave an
+    object nothing can ever remove, which the next sync would faithfully
+    restore.
+    """
+    norm = re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower()
     return f"{norm or 'skill'}.md"
 
 
+def _legacy_filename(name: str) -> str:
+    """The hyphen-preserving name writes used before the fix above.
+
+    Only consulted on delete, so a skill saved by an older build is still
+    removable rather than stranded.
+    """
+    return f"{re.sub(r'[^a-zA-Z0-9_-]+', '_', name).strip('_') or 'skill'}.md"
+
+
+def _user_skill_path(name: str) -> Path | None:
+    """The file backing a user skill, under either naming convention."""
+    for candidate in (_safe_filename(name), _legacy_filename(name)):
+        path = USER_SKILLS_DIR / candidate
+        if path.exists():
+            return path
+    return None
+
+
 def _is_user_skill(skill_name: str) -> bool:
-    path = USER_SKILLS_DIR / f"{skill_name.replace('-', '_')}.md"
-    return path.exists()
+    return _user_skill_path(skill_name) is not None
+
+
+# ── S3 write-through ─────────────────────────────────────────────────────
+# The local file is written first and stays the thing the loader reads; S3 is
+# the copy that makes the upload survive a restart and reach a second replica.
+# Same shape as `services/blob_store.py` gives datasets and model artifacts,
+# and the same trade: a failed upload is logged, never fatal. The analyst's
+# skill is already on this node's disk and already works here, so failing the
+# request would discard work to report a durability problem.
+def _publish_skill(path: Path) -> None:
+    from services import blob_store
+
+    blob_store.put_file(blob_store.SKILL_PREFIX, path.name, path)
+
+
+def _unpublish_skill(path: Path) -> None:
+    from services import blob_store
+
+    blob_store.delete(blob_store.SKILL_PREFIX, path.name)
 
 
 # ── Routes ───────────────────────────────────────────────────────────────
@@ -218,6 +268,7 @@ async def upload_skill(
     USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = USER_SKILLS_DIR / _safe_filename(skill_name)
     out_path.write_text(text, encoding="utf-8")
+    _publish_skill(out_path)
 
     # Reload and return the now-active skill (which may be either user or builtin override)
     skills = load_all_skills()
@@ -260,6 +311,7 @@ tools:
     USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = USER_SKILLS_DIR / _safe_filename(skill_name)
     out_path.write_text(md, encoding="utf-8")
+    _publish_skill(out_path)
 
     skills = load_all_skills()
     s = skills.get(skill_name.replace("-", "_"))
@@ -311,6 +363,7 @@ tools:
     USER_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = USER_SKILLS_DIR / _safe_filename(new_name)
     out_path.write_text(md, encoding="utf-8")
+    _publish_skill(out_path)
 
     skills = load_all_skills()
     s2 = skills.get(new_name.replace("-", "_").lower())
@@ -326,9 +379,12 @@ tools:
 async def delete_skill(skill_id: str, _: str = Depends(get_current_user)):
     """Delete a user override. Built-in skills cannot be deleted."""
     norm = skill_id.replace("-", "_").lower()
-    user_path = USER_SKILLS_DIR / f"{norm}.md"
-    if user_path.exists():
+    user_path = _user_skill_path(skill_id)
+    if user_path is not None:
         user_path.unlink()
+        # S3 first-class, not best-effort: leaving the object behind means the
+        # next sync pulls the skill straight back onto this node.
+        _unpublish_skill(user_path)
         try:
             from routers.chat import _ORCH
             _ORCH._reload_skills()  # type: ignore[attr-defined]

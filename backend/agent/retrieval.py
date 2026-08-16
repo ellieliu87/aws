@@ -157,6 +157,13 @@ def _cache_path(fingerprint: str) -> Path:
 def _load_cached(fingerprint: str, count: int) -> np.ndarray | None:
     path = _cache_path(fingerprint)
     if not path.exists():
+        # Another node may have built this exact index already. Worth one
+        # HeadObject-shaped miss to avoid re-embedding the whole corpus, which
+        # is minutes of Bedrock calls and the burstiest thing this app does.
+        # `prefetch` at startup usually makes this a no-op; it earns its place
+        # for an index built *after* this process started.
+        _pull_index(fingerprint)
+    if not path.exists():
         return None
     try:
         vectors = np.load(path)["vectors"]
@@ -178,6 +185,98 @@ def _save_cached(fingerprint: str, vectors: np.ndarray) -> None:
         # A cache we can't write is a performance problem, not a correctness
         # one — the search already has its vectors in memory.
         log.warning("could not persist rag index: %s", e)
+        return
+    _push_index(fingerprint)
+
+
+# ── S3, so the corpus is embedded once rather than once per node ──────────
+# The index is not an upload; it is *built*, by embedding the whole corpus
+# through Bedrock. Left on local disk that cost is paid again by every replica
+# that has not happened to answer a retrieval query yet — and worse, a node
+# still building falls back to keyword scoring, so two replicas return
+# different results for the same question until they converge.
+#
+# The file is keyed by a content fingerprint of the chunks, model and
+# dimensions, so it is safe to share: a name collision would mean the inputs
+# were identical, and a corpus change produces a different name rather than a
+# stale hit. That property is what makes S3 a plain cache here and not a
+# coherence problem.
+#
+# Deliberately not a managed vector store. At this corpus size the index is
+# ~1 MB, a dot product over it is instant, and a vector database would be a
+# standing cost for a file that fits in memory. The day the corpus outgrows
+# that, the seam to replace is this pair of functions.
+def _pull_index(fingerprint: str) -> None:
+    from services import blob_store
+
+    if not blob_store.enabled():
+        return
+    blob_store.ensure_local(
+        blob_store.RAG_INDEX_PREFIX, f"{fingerprint}.npz", _cache_path(fingerprint),
+    )
+
+
+def _push_index(fingerprint: str) -> None:
+    from services import blob_store
+
+    if not blob_store.enabled():
+        return
+    if blob_store.put_file(
+        blob_store.RAG_INDEX_PREFIX, f"{fingerprint}.npz", _cache_path(fingerprint),
+    ):
+        log.info("published rag index %s", fingerprint)
+
+
+def sync_indexes() -> tuple[int, int]:
+    """Reconcile the local index cache with S3, in both directions. Startup.
+
+    Returns `(pulled, pushed)`. Best-effort by construction — a node that ends
+    up with an empty cache is slower on its first retrieval, never wrong,
+    because `score_chunks` rebuilds whatever it cannot find.
+
+    **Pull**, so a replica that has never embedded anything does not repeat
+    minutes of Bedrock calls that another node already paid for. Note this
+    cannot be "pull *the* index": the file is named by a fingerprint of the
+    chunks going into it, which is not knowable until the corpus is loaded. So
+    startup pulls whatever exists and `_load_cached` covers the fingerprint
+    that turns out to be needed.
+
+    **Push**, because otherwise an index built before this seam existed — or
+    built while the bucket was briefly unreachable — stays on one machine
+    forever. `_save_cached` only uploads at the moment of a rebuild, and a
+    rebuild only happens when the corpus changes, so without this the existing
+    files would never leave the disk they are on.
+
+    Uploading is safe to do from any node precisely because the name is a
+    content fingerprint: two nodes producing the same file produce the same
+    bytes, so there is no last-writer-wins question to answer.
+    """
+    from services import blob_store
+
+    if not blob_store.enabled():
+        return (0, 0)
+
+    # No prune: a locally built index not yet pushed is legitimate, and this
+    # directory is a build cache rather than a mirror of the bucket.
+    pulled = blob_store.sync_down(
+        blob_store.RAG_INDEX_PREFIX, _INDEX_DIR, suffix=".npz", prune=False,
+    )
+
+    remote = blob_store.list_names(blob_store.RAG_INDEX_PREFIX, ".npz")
+    pushed = 0
+    if _INDEX_DIR.exists():
+        for local in sorted(_INDEX_DIR.glob("*.npz")):
+            if local.name in remote:
+                continue
+            if blob_store.put_file(blob_store.RAG_INDEX_PREFIX, local.name, local):
+                pushed += 1
+                # Mark the local copy as current. `sync_down` re-fetches when
+                # the object is newer than the file, and an upload always is —
+                # so without this the next startup downloads the bytes it just
+                # sent. Harmless, but it logs as "pulled 2" immediately after
+                # "published 2", which reads like a bug.
+                local.touch()
+    return (len(pulled), pushed)
 
 
 # ── Public ────────────────────────────────────────────────────────────────
