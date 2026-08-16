@@ -15,6 +15,7 @@ Physical names are left to CDK on purpose. Hardcoding them stops you deploying
 a second copy (a staging stack) and forces awkward replacements later; the real
 names come out as stack outputs instead.
 """
+import hashlib
 from pathlib import Path
 
 from aws_cdk import (
@@ -27,6 +28,12 @@ from aws_cdk import (
 )
 from aws_cdk import (
     aws_budgets as budgets,
+)
+from aws_cdk import (
+    aws_cloudfront as cloudfront,
+)
+from aws_cdk import (
+    aws_cloudfront_origins as origins,
 )
 from aws_cdk import (
     aws_cloudwatch as cloudwatch,
@@ -65,6 +72,9 @@ from aws_cdk import (
     aws_logs as logs,
 )
 from aws_cdk import (
+    aws_s3 as s3,
+)
+from aws_cdk import (
     aws_sns as sns,
 )
 from aws_cdk import (
@@ -93,6 +103,7 @@ class AsyncSolveStack(Stack):
                  web_image_tag: str | None = None,
                  web_desired_count: int = 2,
                  secrets_prefix: str | None = None,
+                 origin_secret: str | None = None,
                  **kwargs) -> None:
         """`worker_image_tag` selects the container worker.
 
@@ -543,6 +554,15 @@ class AsyncSolveStack(Stack):
         web_repo.grant_pull_push(web_builder)
 
         if web_image_tag:
+            # Derived rather than required, because a deploy that fails on a
+            # missing value nobody knew to set is a worse first experience than
+            # a guard that is merely adequate. Account and region are not
+            # secret, which is exactly why the comment on the listener rule
+            # below says plainly what this token is and is not.
+            origin_secret = origin_secret or hashlib.sha256(
+                f"cma-origin/{self.account}/{self.region}/{construct_id}".encode()
+            ).hexdigest()[:32]
+
             # Public subnets and NO NAT gateway. A NAT is ~$32/month before it
             # passes a byte, which on a stack whose entire budget is $5 would
             # be the single largest line by a wide margin - more than the
@@ -691,14 +711,14 @@ class AsyncSolveStack(Stack):
                 # unpleasant afternoon to diagnose.
                 health_check_grace_period=Duration.minutes(3),
             )
-            listener = alb.add_listener("Http", port=80, open=True)
-            listener.add_targets(
-                "WebTargets",
+            targets = elbv2.ApplicationTargetGroup(
+                self, "WebTargets",
+                vpc=vpc,
                 port=8001,
                 # Explicit because CDK only infers a protocol for 80 and 443,
-                # and uvicorn is on neither. The hop from the load balancer to
-                # the task is plain HTTP inside the VPC; TLS terminates at the
-                # listener, which is the piece still missing — see below.
+                # and uvicorn is on neither. The hop from CloudFront to the
+                # load balancer, and from there to the task, is plain HTTP;
+                # TLS terminates at CloudFront.
                 protocol=elbv2.ApplicationProtocol.HTTP,
                 targets=[service],
                 health_check=elbv2.HealthCheck(
@@ -713,9 +733,132 @@ class AsyncSolveStack(Stack):
                 deregistration_delay=Duration.seconds(30),
             )
 
-            CfnOutput(self, "WebUrl", value=f"http://{alb.load_balancer_dns_name}",
-                      description="The API. HTTP only - see the note in "
-                                  "docs/ARCHITECTURE.md about TLS.")
+            # The load balancer answers only to CloudFront. Without this the
+            # distribution below would add HTTPS while leaving the plaintext
+            # endpoint serving the same API to anyone who found it, which is
+            # not "the API is on HTTPS" — it is "HTTPS is also available".
+            #
+            # Be honest about what the token is. CloudFront can only send a
+            # literal string as an origin header, so it lives in the template
+            # and in the distribution config: it is a bypass guard, not a
+            # credential. It stops direct access and casual scanning; it does
+            # not stop anyone who can read the stack. The real fix is an ALB
+            # that is not internet-facing at all, which needs either VPC
+            # origins or a private subnet and a NAT.
+            listener = alb.add_listener(
+                "Http", port=80, open=True,
+                default_action=elbv2.ListenerAction.fixed_response(
+                    403, content_type="text/plain",
+                    message_body="Direct access is not permitted. "
+                                 "Use the CloudFront distribution.",
+                ),
+            )
+            listener.add_action(
+                "FromCloudFront",
+                priority=10,
+                conditions=[elbv2.ListenerCondition.http_header(
+                    "X-Origin-Verify", [origin_secret])],
+                action=elbv2.ListenerAction.forward([targets]),
+            )
+
+            # -- the distribution ------------------------------------------
+            # One distribution, three problems. It terminates TLS with a
+            # certificate CloudFront supplies for its own domain, which is the
+            # only way to get HTTPS without owning a domain — a load
+            # balancer's `*.elb.amazonaws.com` name cannot carry one, because
+            # nobody controls that domain. It gives `vite build` output a
+            # home. And it puts the browser app and the API on one origin,
+            # which retires the CORS question rather than configuring it.
+            site_bucket = s3.Bucket(
+                self, "Site",
+                block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+                encryption=s3.BucketEncryption.S3_MANAGED,
+                # DESTROY and auto-delete, unlike the corpus bucket's RETAIN.
+                # The asymmetry is the point: this holds compiled assets that
+                # `npm run build` reproduces exactly, so the cost of losing
+                # them is one command. auto_delete_objects does deploy a
+                # custom-resource Lambda, which this stack otherwise avoids —
+                # worth it here only because the alternative is a `cdk destroy`
+                # that fails on a non-empty bucket every time.
+                removal_policy=RemovalPolicy.DESTROY,
+                auto_delete_objects=True,
+            )
+
+            # Client-side routing needs a server that answers /workspace/xyz
+            # with index.html. The obvious lever — map 404 to /index.html — is
+            # a *distribution-wide* setting, so it would rewrite genuine API
+            # 404s into an HTML page with a 200, which is a memorable way to
+            # spend an afternoon. A function attaches to one behaviour, so the
+            # rewrite reaches the site and never the API.
+            spa_rewrite = cloudfront.Function(
+                self, "SpaRewrite",
+                code=cloudfront.FunctionCode.from_inline(
+                    "function handler(event) {\n"
+                    "  var request = event.request;\n"
+                    "  // A path with no dot in it is a route, not a file.\n"
+                    "  if (request.uri.indexOf('.') === -1) {\n"
+                    "    request.uri = '/index.html';\n"
+                    "  }\n"
+                    "  return request;\n"
+                    "}\n"
+                ),
+                comment="History fallback for client-side routes",
+            )
+
+            distribution = cloudfront.Distribution(
+                self, "Site distribution",
+                default_root_object="index.html",
+                comment="CMA Workbench — frontend and API on one origin",
+                default_behavior=cloudfront.BehaviorOptions(
+                    origin=origins.S3BucketOrigin.with_origin_access_control(
+                        site_bucket),
+                    viewer_protocol_policy=(
+                        cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS),
+                    cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                    function_associations=[cloudfront.FunctionAssociation(
+                        function=spa_rewrite,
+                        event_type=cloudfront.FunctionEventType.VIEWER_REQUEST,
+                    )],
+                ),
+                additional_behaviors={
+                    "/api/*": cloudfront.BehaviorOptions(
+                        origin=origins.LoadBalancerV2Origin(
+                            alb,
+                            protocol_policy=(
+                                cloudfront.OriginProtocolPolicy.HTTP_ONLY),
+                            custom_headers={"X-Origin-Verify": origin_secret},
+                            read_timeout=Duration.seconds(60),
+                        ),
+                        viewer_protocol_policy=(
+                            cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS),
+                        # POST, PUT and DELETE, or the API is read-only.
+                        allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+                        # Caching an authenticated API response would serve one
+                        # analyst's data to another. Not a tuning choice.
+                        cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                        # Forwards Authorization, cookies and query strings.
+                        # EXCEPT_HOST_HEADER because a custom origin should see
+                        # its own hostname, not the distribution's.
+                        origin_request_policy=(
+                            cloudfront.OriginRequestPolicy
+                            .ALL_VIEWER_EXCEPT_HOST_HEADER),
+                    ),
+                },
+            )
+
+            CfnOutput(self, "SiteUrl",
+                      value=f"https://{distribution.distribution_domain_name}",
+                      description="The workbench. HTTPS, frontend and API on "
+                                  "one origin.")
+            CfnOutput(self, "SiteBucket", value=site_bucket.bucket_name,
+                      description="vite build output goes here — see "
+                                  "infra/deploy_frontend.py")
+            CfnOutput(self, "DistributionId", value=distribution.distribution_id,
+                      description="Needed to invalidate the cache after a "
+                                  "frontend deploy")
+            CfnOutput(self, "AlbDnsName", value=alb.load_balancer_dns_name,
+                      description="The origin. Answers 403 to anything not "
+                                  "arriving through CloudFront.")
             CfnOutput(self, "WebLogGroup", value=web_logs.log_group_name,
                       description="Web tier logs, retained 14 days")
             CfnOutput(self, "WebServiceName", value=service.service_name,

@@ -76,6 +76,11 @@ except ValueError:
 # cannot do — see services/secrets.py.
 secrets_prefix = os.getenv("CMA_SECRETS_PREFIX", "").strip() or None
 
+# Shared between the distribution and the load balancer rule that only admits
+# traffic carrying it. Derived from the account when unset — see the comment on
+# the listener rule for what this token is and, more importantly, is not.
+origin_secret = os.getenv("CMA_ORIGIN_SECRET", "").strip() or None
+
 AsyncSolveStack(
     app, "CmaWorkbenchAsync",
     result_bucket=bucket,
@@ -85,6 +90,7 @@ AsyncSolveStack(
     web_image_tag=web_image_tag,
     web_desired_count=web_desired_count,
     secrets_prefix=secrets_prefix,
+    origin_secret=origin_secret,
     env=Environment(region=region),
     description="CMA Workbench: async solve queue, worker, playbook orchestration, "
                 "and the web tier on Fargate",

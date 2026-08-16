@@ -40,13 +40,15 @@ holds its own truth.
 ## Component map
 
 ```
-   Analyst (browser)
-        │
-        ▼
-   ALB  :80  ]─ http://CmaWor-WebAl-...elb.amazonaws.com
-        │
-        ▼
-   FastAPI  × 2 Fargate tasks   (backend/main.py)
+   Analyst (browser)  ──► https://d25dobitv0e2c3.cloudfront.net
+                              │
+                        CloudFront
+                              ├── default ──► S3  site/ (vite build)
+                              │
+                              └── /api/*  ──► ALB :80
+                                               │  403 unless X-Origin-Verify
+                                               ▼
+   FastAPI  × 2 Fargate tasks  (backend/main.py)
         │
         ├───────────────► DynamoDB ── single table + gsi1
         │                 registries: dataset · model · workflow · run
@@ -69,15 +71,16 @@ holds its own truth.
    Playbook failed/expired ─┘
 ```
 
-**The API runs in AWS, twice.** A VPC, an internet-facing load balancer and
-two Fargate tasks, all in this stack. That is the sentence the rest of this
-document was written to earn: every store the two replicas read is shared, so
-they agree by construction rather than by luck.
+**The whole thing runs in AWS, over HTTPS, with the API on two replicas.** That
+is the sentence the rest of this document was written to earn: every store the
+two replicas read is shared, so they agree by construction rather than by luck,
+and the browser reaches both the app and the API through one origin.
 
-Unsetting `CMA_WEB_IMAGE_TAG` removes all of it and returns the account to
-free — the gate is still there, it is simply open now. See
-[the web tier](#ecs-fargate--the-web-tier), including what is deliberately
-still missing: TLS, CORS for a deployed frontend, and autoscaling.
+Unsetting `CMA_WEB_IMAGE_TAG` removes the web tier, the distribution and the
+site bucket, and returns the account to free — the gate is still there, it is
+simply open now. What is deliberately still missing is listed under
+[the web tier](#ecs-fargate--the-web-tier): autoscaling, and an origin that is
+not internet-facing at all.
 
 ---
 
@@ -108,20 +111,19 @@ behind an environment variable. This is the ledger of where that has got to.
 | ✅ | `_SCENARIOS`, one dict holding derived *and* analyst data | built-ins cached, `scn-…` records in the table | **DynamoDB** | [scenarios, and the mixed registry](#scenarios-and-the-mixed-registry) |
 | ✅ | uploaded skills and the built RAG index on one node's disk | S3 is the record; each node syncs a cache of it | **S3** | [the last two local-only paths](#the-last-two-local-only-paths) |
 | ✅ | nothing anywhere runs the API | **two replicas behind a load balancer**, sharing every store | **ECS Fargate + ALB** | [the web tier](#ecs-fargate--the-web-tier) |
+| ✅ | plain HTTP, no home for the frontend, CORS by allowlist | **HTTPS**, the app and API on one origin, bucket private | **CloudFront + S3** | [one origin](#cloudfront--one-origin-and-the-tls-that-comes-with-it) |
 
 ### Planned, in the order worth doing them
 
-Ordered by *what unblocks what*, not by size. Step 2 does not depend on step 1,
-but is worth doing after it.
+Ordered by *what unblocks what*, not by size.
 
 | # | Step | Service | Why now, or why not yet |
 |---|---|---|---|
-| 1 | Serve the frontend from a CDN, and get TLS with it | **S3 + CloudFront** | One distribution retires three things at once: a home for `vite build` output, **HTTPS** (CloudFront brings its own certificate, so no domain to buy), and the CORS gap — the app and the API would share an origin. The API is on plain HTTP today, which makes this the security-relevant one as well as the cheapest. |
-| 2 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. Worth doing *after* TLS: rearranging the login flow while the transport is still in the clear fixes the smaller half first. |
-| 3 | Deepen observability now that there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
+| 1 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. Now unblocked: the transport is no longer in the clear, so moving the login flow is the whole remaining problem rather than half of it. |
+| 2 | Deepen observability now that there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
 
-Steps 1–2 are written up in full, with the same numbers, in
-[Known gaps](#known-gaps) at the end; step 3's reasoning is in
+Step 1 is written up in full, with the same number, in
+[Known gaps](#known-gaps) at the end; step 2's reasoning is in
 [deliberately absent](#deliberately-absent).
 
 ---
@@ -734,6 +736,108 @@ the app's region. Two lines of subscriber beat a cross-region topic.
 
 ---
 
+## CloudFront — one origin, and the TLS that comes with it
+
+```
+                    https://d25dobitv0e2c3.cloudfront.net
+                                   │
+                          CloudFront distribution
+                          │                     │
+              default ────┤                     ├──── /api/*
+                          ▼                     ▼
+                  S3  site bucket          ALB :80  ──► Fargate ×2
+                  (private, OAC)           403 unless
+                  + history fallback       X-Origin-Verify
+```
+
+One distribution, three problems, which is why they were one gap rather than
+three.
+
+**TLS, without owning a domain.** An ALB's own `*.elb.amazonaws.com` name
+cannot carry a certificate — nobody controls that domain, so ACM will not issue
+for it. CloudFront arrives with a hostname *and* a certificate already attached.
+The viewer protocol policy is `REDIRECT_TO_HTTPS`, so plain HTTP answers `301`
+rather than serving anything. A domain of your own works equally well and costs
+~$12–15/year; the certificate is free either way.
+
+**A home for the frontend.** `vite build` output goes to a private bucket
+reached by Origin Access Control, so the bucket is not public and the
+distribution is the only way in.
+
+**The CORS question stops existing.** `src/lib/api.ts` sets `baseURL: ''` — the
+app has always called same-origin `/api/...`, which is why this needed no
+frontend change at all. Behind one distribution the browser app and the API
+share an origin, so `main.py`'s localhost-only `allow_origins` list is once
+again about local development and nothing else.
+
+### Two behaviours, and why they must differ
+
+| | default | `/api/*` |
+|---|---|---|
+| Origin | S3 (OAC) | ALB |
+| Cache | `CACHING_OPTIMIZED` | **`CACHING_DISABLED`** |
+| Methods | GET/HEAD | **ALL** |
+| Forwards | — | `ALL_VIEWER_EXCEPT_HOST_HEADER` |
+
+`CACHING_DISABLED` on the API is not a tuning choice. Caching an authenticated
+response would serve one analyst's data to another, which is a data-leak with a
+cache-hit ratio. `ALL_VIEWER_EXCEPT_HOST_HEADER` forwards `Authorization`,
+cookies and query strings, and withholds `Host` because a custom origin should
+see its own hostname.
+
+### The history fallback, and the trap under it
+
+`App.tsx` uses `BrowserRouter`, so `/workspace/capital_planning` is a route the
+browser must be able to request directly. The obvious lever is CloudFront's
+custom error responses — map 404 to `/index.html` — and it is a trap: **error
+responses are distribution-wide**, so the same rule would rewrite a genuine API
+404 into an HTML page with a `200`. A frontend that works and an API that lies.
+
+A **CloudFront Function** attaches to one behaviour instead. Any path with no
+dot in it is a route rather than a file, so it is rewritten to `/index.html`;
+`/assets/index-a1b2c3.js` has a dot and passes through. The API behaviour never
+sees the function.
+
+### The load balancer answers 403
+
+Adding HTTPS at the distribution does nothing if the plaintext origin still
+serves the same API to anyone who finds it — that is not "the API is on HTTPS",
+it is "HTTPS is also available". So the listener's default action is a fixed
+`403`, and a rule at priority 10 forwards to the tasks only when the request
+carries `X-Origin-Verify`.
+
+**Be honest about that token.** CloudFront can only send a literal string as an
+origin header, so it lives in the template and in the distribution config: it is
+a bypass guard, not a credential. It stops direct access and casual scanning; it
+does not stop anyone who can read the stack. The real fix is an origin that is
+not internet-facing at all, which needs VPC origins or a private subnet and a
+NAT gateway. Override the derived value with `CMA_ORIGIN_SECRET`.
+
+### Publishing the frontend
+
+```bash
+cd frontend && npm run build
+cd ../backend && python -m infra.deploy_frontend --write
+```
+
+Not CDK's `BucketDeployment`, which bundles assets at synth time and deploys a
+custom-resource Lambda to copy them — that turns every frontend change into a
+CloudFormation deployment. Uploading files to a bucket does not need a change
+set.
+
+Cache headers are split, and the split is the whole design:
+
+| File | Header | Why |
+|---|---|---|
+| `assets/*` | `max-age=31536000, immutable` | Vite fingerprints the name, so the content can never change under it |
+| `index.html` | `no-cache` | The one stable name, and the file that points at the fingerprinted ones |
+
+Which is also why the invalidation names `/index.html` and `/` rather than
+`/*`: everything else got a new name, so there is nothing stale to invalidate,
+and `/*` would spend the free allowance on paths whose content cannot change.
+
+---
+
 ## ECS Fargate — the web tier
 
 **Built, not deployed.** The stack declares it; nothing is running. Deploy
@@ -793,15 +897,16 @@ holds while the task role stays this narrow.
 
 ### What this does not include
 
-- **TLS.** The listener is HTTP on port 80. HTTPS needs a certificate, which
-  needs a domain, which is a decision rather than a line of CDK. Until then the
-  Cognito token crosses the internet in clear text, which is acceptable for a
-  lab and unacceptable for anything else.
-- **CORS for a deployed frontend.** `main.py` allows the two localhost Vite
-  origins. A browser app served from CloudFront would be a third origin and is
-  currently blocked — that lands with step 3.
+- **A private origin.** The load balancer is internet-facing and refuses
+  anything without `X-Origin-Verify`, which is a guard rather than a boundary —
+  see [one origin](#cloudfront--one-origin-and-the-tls-that-comes-with-it).
+  Making it genuinely unreachable needs VPC origins, or a private subnet and the
+  NAT gateway this design spent effort avoiding.
 - **Autoscaling.** Fixed task count. Adding a target-tracking policy is a few
   lines, and pointless before there is traffic to track.
+
+TLS and CORS *were* on this list and are not any more; the distribution took
+both.
 
 ### The first deploy, and why it is three commands
 
@@ -925,27 +1030,7 @@ which is why this is a script at all.
 The detail behind [Planned](#planned-in-the-order-worth-doing-them); the
 numbers match.
 
-**1 · The frontend has no home, and the API has no TLS.** One distribution
-answers both, which is why these are one gap rather than two.
-
-`vite build` produces a bundle nothing deploys. S3 behind CloudFront is the
-obvious shape, and it now has a stable API origin to point at. The same
-distribution supplies **HTTPS**: a load balancer's own `*.elb.amazonaws.com`
-name cannot carry a certificate, because nobody controls that domain, whereas
-CloudFront arrives with a hostname and a certificate already attached and stays
-inside its perpetual free tier at this volume. Buying a domain would work too
-and costs ~$12–15/year; the certificate itself is free either way.
-
-It also closes the third thing: `main.py` allows the two localhost Vite origins,
-so a browser app served from anywhere else is currently blocked. Behind one
-distribution the app and the API share an origin and the question stops
-existing.
-
-Until then the listener is plain HTTP, so a Cognito token crosses the internet
-in clear text — acceptable for a lab, unacceptable for anything else, and the
-reason this sits above the identity work below rather than after it.
-
-**2 · The password still passes through this service, and MFA is off.**
+**1 · The password still passes through this service, and MFA is off.**
 `USER_PASSWORD_AUTH` was the migration step, not the destination: the frontend
 posts a username and password to the API, which forwards them to Cognito. The
 Hosted UI authorization-code flow keeps the password out of this service

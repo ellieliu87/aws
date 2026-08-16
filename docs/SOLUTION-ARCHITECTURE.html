@@ -833,7 +833,7 @@
         </tr>
         <tr>
           <td class="svc">frontend/<br>build output</td>
-          <td>static bundle<br><span class="pill trap">designed</span></td>
+          <td>static bundle<br><span class="pill free">built · deployed</span></td>
           <td class="svc">S3 + CloudFront</td>
           <td>Compiled assets with no server behaviour, so paying for compute to serve them would be waste. Wants the web tier first, so there is a stable API origin to point at.</td>
         </tr>
@@ -1145,13 +1145,21 @@
     <p><b>Two related gaps were closed earlier.</b> The records database has point-in-time recovery enabled — 35 days of second-granularity restore — and its removal policy is RETAIN rather than DESTROY, so neither a stack teardown nor a change the platform treats as a replacement takes the records with it. The cost of RETAIN is an orphaned table to delete by hand, which is the correct direction to fail: recovering from an unwanted leftover is tedious, recovering from a deleted audit trail is impossible.</p>
   </div>
 
-  <h3>7.5 Where does the data live?</h3>
+  <h3>7.5 Is the connection encrypted, and can it be bypassed?</h3>
+  <p>Yes, and no — and the second half is the part usually left out. The platform is reached over HTTPS through a content delivery network, which supplies the certificate; plain HTTP is redirected rather than served. That alone would have been half an answer, because the load balancer behind it was still answering the same requests unencrypted to anyone who found its address. "Encryption is available" and "encryption is enforced" are different claims.</p>
+  <p>So the load balancer now refuses any request that did not arrive through the network — it returns a refusal to everything else. Stated precisely, because the distinction matters to anyone assessing it: this is a <em>guard</em>, not a boundary. The token it checks has to be a literal value in the configuration, so it stops direct access and casual scanning without being a secret. Making the origin genuinely unreachable requires putting it on a private network, which costs real money for a gateway this design deliberately avoided.</p>
+
+  <h3>7.6 Where does the data live?</h3>
   <p>One region, deliberately. Nothing is replicated across regions, so there is no question about where a given record resides. Data residency requirements are met by choosing the region, not by configuring replication.</p>
 </section>
 
 <section id="status">
   <h2><span class="n">8</span>Built versus designed</h2>
-  <p class="sub">Everything above the line has been deployed and verified against real AWS services. Everything below it is a drawing.</p>
+  <p class="sub">This table used to have a line through it, with drawings below. It no longer does — everything listed is deployed and verified against real services. What is left is qualified rather than absent, and the qualifications are the interesting rows.</p>
+
+  <div class="note">
+    <p><strong>One row is still qualified, and deliberately so.</strong> Semantic document search is built, measured, and switched off — the measurement said keyword search won on this particular corpus, so shipping it enabled would have been shipping a slower answer. "Built and off for a recorded reason" is a different state from "not built", and collapsing the two is how a table like this stops being useful.</p>
+  </div>
 
   <div class="tablewrap">
     <table>
@@ -1175,9 +1183,10 @@
         <tr><td>Retention policy for run history — decided, and enforced</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Object lifecycle rules on the results bucket</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Provider credentials in an encrypted parameter store</td><td><span class="pill free">built · deployed</span></td></tr>
-        <tr><td>Alert notifications reaching a person</td><td><span class="pill watch">built · no subscriber</span></td></tr>
+        <tr><td>Alert notifications reaching a person</td><td><span class="pill free">built · confirmed</span></td></tr>
         <tr><td><b>Web tier on containers behind a load balancer</b></td><td><span class="pill free">built · deployed · 2 replicas</span></td></tr>
-        <tr><td><b>Static frontend on a CDN, and TLS with it</b></td><td><span class="pill trap">designed</span></td></tr>
+        <tr><td>Static frontend on a CDN, and TLS with it</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Load balancer refuses anything not from the CDN</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Uploaded skills and the search index off local disk</td><td><span class="pill free">built · deployed</span></td></tr>
       </tbody>
     </table>
@@ -1637,6 +1646,18 @@
       <p><span class="tag lesson">Lesson</span>The interesting output was not the successful request. It was one line, printed identically by both servers as they started: <em>pulled 2 prebuilt index files, published 0</em>. Neither had ever embedded anything, and neither needed to, because the other had already paid that cost and left the result where both could find it.</p>
       <p>That line is the whole argument in miniature. Without it each server would have quietly fallen back to keyword search while it rebuilt, and for those minutes the same question would have returned different answers depending on which server the load balancer picked — no error, no alarm, nothing to grep for. Every earlier entry in this log was in service of that line being boring.</p>
       <p><span class="tag lesson">Lesson</span>Worth being precise about what was and was not proved. Two replicas ran, shared their stores, and agreed. Nobody has yet logged in and driven an analysis end to end through the deployed system, which needs a credential this work did not have. "It starts and is healthy" and "it is correct" are separated by exactly the kind of gap this document keeps finding.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">36</div>
+    <div>
+      <h4>Three problems that turned out to be one purchase</h4>
+      <p>The remaining list read: the browser application has nowhere to be served from, the interface is unencrypted, and cross-origin permissions are configured for a developer's laptop. Three entries, three efforts, in three different places.</p>
+      <p><span class="tag lesson">Lesson</span>They were one thing. A content delivery network in front of the existing load balancer supplies a certificate — which the load balancer <em>cannot</em> have on its own, because certificates are issued against domains and nobody owns the one it was given. It also serves the compiled application, and puts the application and the interface on a single address, which does not so much configure cross-origin permissions as delete the question. At this volume the network is free. <b>The reason to look for the shape is not elegance; it is that three separate efforts would each have been individually justified and collectively wasteful.</b></p>
+      <p><span class="tag broke">Broke</span>Nearly. The application uses real paths for its internal navigation, so a bookmarked page has to be answerable directly. The obvious lever is the network's "when something is missing, serve the main page instead" setting — and it applies to <em>everything</em>, so it would have turned genuine "no such record" answers from the interface into a web page reporting success. A working application in front of an interface that lies.</p>
+      <p><span class="tag fix">Fix</span>A tiny function attached to the application's traffic only, rewriting anything that looks like a route rather than a file. The interface's traffic never sees it. The general lesson: <b>a setting that reads as a per-section option and is documented as a whole-system one is worth checking before relying on it</b> — the failure it would have caused is silent and would have been blamed on the application.</p>
+      <p><span class="tag lesson">Lesson</span>One deliberate non-change is worth recording. Nothing in the browser application was modified. It had always requested data using relative addresses, which meant it needed no notion of where the interface lived — and that decision, made long before any of this, is the reason a change of address cost nothing.</p>
     </div>
   </div>
 </section>
