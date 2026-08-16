@@ -1,0 +1,35 @@
+# Keep the build context to source. Everything excluded here is either
+# re-fetchable from S3, rebuilt inside the image, or must never be in it.
+
+# The one that matters: secrets. CMA_SECRETS_PREFIX exists so the key is read
+# from Parameter Store at boot, and baking .env into a layer would undo that
+# in the most durable way possible — an image layer is immutable and shipped
+# to a registry.
+.env
+.env.*
+
+# Local caches that are now caches of S3, not the record. A task pulls what it
+# needs; shipping them would bloat the image with one machine's working set.
+data/
+agent/skills_user/
+
+# Build and tooling artifacts
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+infra/cdk/cdk.out/
+infra/cdk/node_modules/
+
+# The worker's own image source. It is built separately by CodeBuild from a
+# zip, and including it here would put a second Dockerfile in this context.
+infra/cdk/worker/
+infra/cdk/worker_image/
+
+# Sample material — useful in the repo, dead weight in a running container.
+../sample_data/
+../sample_docs/
+../sample_models/

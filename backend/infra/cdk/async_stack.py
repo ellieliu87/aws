@@ -44,7 +44,16 @@ from aws_cdk import (
     aws_dynamodb as dynamodb,
 )
 from aws_cdk import (
+    aws_ec2 as ec2,
+)
+from aws_cdk import (
     aws_ecr as ecr,
+)
+from aws_cdk import (
+    aws_ecs as ecs,
+)
+from aws_cdk import (
+    aws_elasticloadbalancingv2 as elbv2,
 )
 from aws_cdk import (
     aws_iam as iam,
@@ -81,6 +90,9 @@ class AsyncSolveStack(Stack):
                  result_bucket: str, worker_image_tag: str | None = None,
                  alarm_email: str | None = None,
                  monthly_budget_usd: float | None = None,
+                 web_image_tag: str | None = None,
+                 web_desired_count: int = 2,
+                 secrets_prefix: str | None = None,
                  **kwargs) -> None:
         """`worker_image_tag` selects the container worker.
 
@@ -463,6 +475,256 @@ class AsyncSolveStack(Stack):
             timeout=Duration.days(2),
             comment="CMA Workbench playbook: solve, human approval, publish",
         )
+
+        # -- the web tier ---------------------------------------------------
+        # The step everything above was for. Every reason a second replica
+        # could not exist has been removed one at a time - shared state,
+        # shared identity, shared files, shared skills, a shared search index
+        # - and none of that was worth anything while `main.py` ran once, by
+        # hand, on somebody's laptop.
+        #
+        # Gated on `web_image_tag` for the same reason the worker is: a service
+        # cannot reference an image that does not exist, and the image is built
+        # by the CodeBuild project below. Deploy once without it to create the
+        # registry and the builder, build, then deploy again with the tag.
+        web_repo = ecr.Repository(
+            self, "WebImage",
+            image_scan_on_push=True,
+            removal_policy=RemovalPolicy.DESTROY,
+            empty_on_delete=True,
+            # One more than the worker keeps, and the asymmetry is deliberate.
+            # A bad worker image fails a solve that can be retried; a bad web
+            # image takes the whole application down, and the fix at that
+            # moment should be repointing at the previous tag rather than
+            # waiting out a rebuild.
+            lifecycle_rules=[ecr.LifecycleRule(max_image_count=2)],
+        )
+
+        web_builder = codebuild.Project(
+            self, "WebImageBuild",
+            project_name=f"{construct_id}-web-image",
+            source=codebuild.Source.s3(
+                bucket=__import__("aws_cdk").aws_s3.Bucket.from_bucket_name(
+                    self, "WebSourceBucket", result_bucket),
+                path="builds/web-image-src.zip",
+            ),
+            environment=codebuild.BuildEnvironment(
+                build_image=codebuild.LinuxBuildImage.STANDARD_7_0,
+                privileged=True,
+                # The worker image builds on SMALL; this one installs pandas,
+                # scikit-learn and pyarrow, and SMALL turns a four-minute build
+                # into something closer to fifteen.
+                compute_type=codebuild.ComputeType.MEDIUM,
+            ),
+            environment_variables={
+                "IMAGE_REPO": codebuild.BuildEnvironmentVariable(
+                    value=web_repo.repository_uri),
+                "AWS_ACCOUNT_ID": codebuild.BuildEnvironmentVariable(
+                    value=self.account),
+                "IMAGE_TAG": codebuild.BuildEnvironmentVariable(value="manual"),
+            },
+            timeout=Duration.minutes(45),
+            build_spec=codebuild.BuildSpec.from_object({
+                "version": "0.2",
+                "phases": {
+                    "build": {"commands": [
+                        'echo "building web ${IMAGE_TAG}"',
+                        "aws ecr get-login-password --region $AWS_DEFAULT_REGION "
+                        "| docker login --username AWS --password-stdin "
+                        "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com",
+                        "docker build -t $IMAGE_REPO:$IMAGE_TAG "
+                        "-t $IMAGE_REPO:latest .",
+                        "docker push $IMAGE_REPO:$IMAGE_TAG",
+                        "docker push $IMAGE_REPO:latest",
+                    ]},
+                },
+            }),
+        )
+        web_repo.grant_pull_push(web_builder)
+
+        if web_image_tag:
+            # Public subnets and NO NAT gateway. A NAT is ~$32/month before it
+            # passes a byte, which on a stack whose entire budget is $5 would
+            # be the single largest line by a wide margin - more than the
+            # compute it exists to serve. Tasks get public IPs and reach S3,
+            # DynamoDB and Bedrock over the internet gateway instead.
+            #
+            # The trade, stated plainly: the tasks are addressable from the
+            # internet at the network level, and only their security group
+            # keeps them private. That group allows ingress from the load
+            # balancer alone. A production account puts the tasks in private
+            # subnets and pays for the NAT, or uses VPC endpoints; this is a
+            # lab, and the honest version of that decision is written down
+            # rather than discovered later in a bill.
+            vpc = ec2.Vpc(
+                self, "Net",
+                max_azs=2,          # an ALB requires two, and only two are needed
+                nat_gateways=0,
+                subnet_configuration=[
+                    ec2.SubnetConfiguration(
+                        name="public", subnet_type=ec2.SubnetType.PUBLIC,
+                        cidr_mask=24,
+                    ),
+                ],
+            )
+
+            # Container Insights is left off: it bills per metric and this
+            # account has nobody watching a dashboard. The log group below is
+            # what gets read when something breaks.
+            cluster = ecs.Cluster(self, "Cluster", vpc=vpc)
+
+            web_logs = logs.LogGroup(
+                self, "WebLogs",
+                retention=logs.RetentionDays.TWO_WEEKS,
+                removal_policy=RemovalPolicy.DESTROY,
+            )
+
+            task = ecs.FargateTaskDefinition(
+                self, "WebTask",
+                # 0.25 vCPU is the smallest Fargate sells and is enough for an
+                # async framework whose work is mostly waiting on DynamoDB, S3
+                # and a model endpoint. Memory is 1 GB rather than the 512 MB
+                # that pairs with it by default: pandas, scikit-learn and the
+                # agent SDK are resident from import, and a task that OOM-loops
+                # costs far more attention than the ~$3/month difference.
+                cpu=256,
+                memory_limit_mib=1024,
+            )
+
+            # The environment the app reads. Every value comes from a construct
+            # in this file rather than from backend/.env, which is the whole
+            # point: infra/sync_env.py exists because a human runs main.py by
+            # hand, and a task definition needs no such step.
+            web_env = {
+                "CMA_STATE_TABLE": table.table_name,
+                "CMA_CORPUS_BUCKET": result_bucket,
+                "CMA_JOBS_QUEUE_URL": queue.queue_url,
+                "CMA_PLAYBOOK_STATE_MACHINE": machine.state_machine_arn,
+                "CMA_SOLVER_FUNCTION_ARN": worker.function_arn,
+                "CMA_PLAYBOOK_ROLE_ARN": machine.role.role_arn,
+                "CMA_COGNITO_USER_POOL_ID": user_pool.user_pool_id,
+                "CMA_COGNITO_CLIENT_ID": user_pool_client.user_pool_client_id,
+                "CMA_JOBS_REGION": self.region,
+            }
+
+            # The half of the secrets work that only closes here. On a laptop
+            # services/secrets.py fetches the key at boot, which needs AWS
+            # credentials of its own - so a plaintext key was traded for a
+            # local profile. ECS injects it from the parameter at container
+            # start using the execution role, so nothing on the host holds a
+            # credential and no application code fetches a secret.
+            web_secrets = {}
+            if secrets_prefix:
+                from aws_cdk import aws_ssm as ssm
+
+                key_param = ssm.StringParameter.from_secure_string_parameter_attributes(
+                    self, "OpenAiKeyParam",
+                    parameter_name=f"/{secrets_prefix.strip('/')}/OPENAI_API_KEY",
+                )
+                web_secrets["OPENAI_API_KEY"] = ecs.Secret.from_ssm_parameter(key_param)
+
+            task.add_container(
+                "web",
+                image=ecs.ContainerImage.from_ecr_repository(web_repo, web_image_tag),
+                environment=web_env,
+                secrets=web_secrets,
+                logging=ecs.LogDrivers.aws_logs(stream_prefix="web",
+                                                log_group=web_logs),
+                port_mappings=[ecs.PortMapping(container_port=8001)],
+            )
+
+            # Permissions, scoped to what the web tier actually does. Note what
+            # is absent: nothing here can create AWS resources. That is the
+            # same argument as services/workflow_plans.py - the request path
+            # compiles and records a plan, and a separate privileged identity
+            # deploys it - and it only holds if the task role stays this
+            # narrow.
+            table.grant_read_write_data(task.task_role)
+            queue.grant_send_messages(task.task_role)
+            machine.grant_start_execution(task.task_role)
+            machine.grant_task_response(task.task_role)  # SendTaskSuccess at the gate
+            task.task_role.add_to_principal_policy(iam.PolicyStatement(
+                actions=["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+                resources=[f"arn:aws:s3:::{result_bucket}/*"],
+            ))
+            task.task_role.add_to_principal_policy(iam.PolicyStatement(
+                actions=["s3:ListBucket", "s3:ListBucketVersions"],
+                resources=[f"arn:aws:s3:::{result_bucket}"],
+            ))
+            # Sign-in and sign-out. Deliberately not the admin actions: the app
+            # authenticates users, it does not provision them.
+            task.task_role.add_to_principal_policy(iam.PolicyStatement(
+                actions=["cognito-idp:InitiateAuth", "cognito-idp:GlobalSignOut",
+                         "cognito-idp:GetUser", "cognito-idp:RespondToAuthChallenge"],
+                resources=[user_pool.user_pool_arn],
+            ))
+            # Bedrock, for the embedding model behind vector retrieval. Model
+            # invocation only — no ability to change model access or entitlement.
+            task.task_role.add_to_principal_policy(iam.PolicyStatement(
+                actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
+                         "bedrock:Converse", "bedrock:ConverseStream"],
+                resources=["*"],  # model ARNs vary by region and provider
+            ))
+
+            alb = elbv2.ApplicationLoadBalancer(
+                self, "WebAlb", vpc=vpc, internet_facing=True,
+            )
+            service = ecs.FargateService(
+                self, "WebService",
+                cluster=cluster,
+                task_definition=task,
+                # Two, because "run the API in AWS" was never the goal - a
+                # *second replica* was, and one task proves nothing the laptop
+                # did not already prove. Set CMA_WEB_DESIRED_COUNT=1 to halve
+                # the compute bill once the point has been made.
+                desired_count=web_desired_count,
+                # Required without a NAT: a task in a public subnet needs a
+                # public IP to reach anything, including ECR to pull its image.
+                assign_public_ip=True,
+                circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True),
+                # Generous on purpose. Startup imports pandas, scikit-learn
+                # and the agent SDK, discovers packs, constructs every
+                # specialist agent, and syncs skills and the RAG index from
+                # S3 — on a quarter of a vCPU. A grace period shorter than
+                # that turns a healthy task into a kill-and-restart loop,
+                # which presents as "the deploy hangs" and is a genuinely
+                # unpleasant afternoon to diagnose.
+                health_check_grace_period=Duration.minutes(3),
+            )
+            listener = alb.add_listener("Http", port=80, open=True)
+            listener.add_targets(
+                "WebTargets",
+                port=8001,
+                # Explicit because CDK only infers a protocol for 80 and 443,
+                # and uvicorn is on neither. The hop from the load balancer to
+                # the task is plain HTTP inside the VPC; TLS terminates at the
+                # listener, which is the piece still missing — see below.
+                protocol=elbv2.ApplicationProtocol.HTTP,
+                targets=[service],
+                health_check=elbv2.HealthCheck(
+                    path="/health",
+                    interval=Duration.seconds(30),
+                    healthy_threshold_count=2,
+                    unhealthy_threshold_count=3,
+                ),
+                # 30 seconds rather than the 300-second default. Nothing here
+                # holds a long-lived connection worth draining for five
+                # minutes, and the default makes every deploy feel broken.
+                deregistration_delay=Duration.seconds(30),
+            )
+
+            CfnOutput(self, "WebUrl", value=f"http://{alb.load_balancer_dns_name}",
+                      description="The API. HTTP only - see the note in "
+                                  "docs/ARCHITECTURE.md about TLS.")
+            CfnOutput(self, "WebLogGroup", value=web_logs.log_group_name,
+                      description="Web tier logs, retained 14 days")
+            CfnOutput(self, "WebServiceName", value=service.service_name,
+                      description="ECS service running the API")
+
+        CfnOutput(self, "WebImageRepo", value=web_repo.repository_uri,
+                  description="ECR repo for the web tier image")
+        CfnOutput(self, "WebImageBuildProject", value=web_builder.project_name,
+                  description="CodeBuild project that builds the web image")
 
         # -- alerting -------------------------------------------------------
         # Two of this stack's states are designed to be reached and were, until

@@ -55,13 +55,38 @@ except ValueError:
         f"CMA_MONTHLY_BUDGET_USD must be a number (got {budget_raw!r})."
     ) from None
 
+# Set once an image exists, to bring up the web tier on Fargate:
+#     npx cdk deploy -c webImageTag=<tag>
+# or persist it as CMA_WEB_IMAGE_TAG in backend/.env. Left unset, the stack
+# creates the registry and the build project but no VPC, load balancer or
+# service — which is what makes the first deploy possible, and also what keeps
+# the account at zero cost until you actually want the API running.
+web_image_tag = (app.node.try_get_context("webImageTag")
+                 or os.getenv("CMA_WEB_IMAGE_TAG", "").strip() or None)
+
+# Two replicas is the point of the whole migration; one is cheaper and proves
+# nothing new. Both are legitimate, so it is a knob rather than a constant.
+try:
+    web_desired_count = int(os.getenv("CMA_WEB_DESIRED_COUNT", "2").strip() or 2)
+except ValueError:
+    raise SystemExit("CMA_WEB_DESIRED_COUNT must be a whole number.") from None
+
+# Where the provider key lives. Passing it here lets ECS inject the secret from
+# Parameter Store at container start, which is the half of that work a laptop
+# cannot do — see services/secrets.py.
+secrets_prefix = os.getenv("CMA_SECRETS_PREFIX", "").strip() or None
+
 AsyncSolveStack(
     app, "CmaWorkbenchAsync",
     result_bucket=bucket,
     worker_image_tag=worker_image_tag,
     alarm_email=alarm_email,
     monthly_budget_usd=monthly_budget_usd,
+    web_image_tag=web_image_tag,
+    web_desired_count=web_desired_count,
+    secrets_prefix=secrets_prefix,
     env=Environment(region=region),
-    description="CMA Workbench: async solve queue, worker, and playbook orchestration",
+    description="CMA Workbench: async solve queue, worker, playbook orchestration, "
+                "and the web tier on Fargate",
 )
 app.synth()

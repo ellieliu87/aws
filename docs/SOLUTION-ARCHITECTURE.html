@@ -803,7 +803,7 @@
       <tbody>
         <tr>
           <td class="svc">main.py<br>routers/<br>services/<br>cof/ · agent/ · packs/<br>models/</td>
-          <td>web-tier image<br><span class="pill trap">designed</span></td>
+          <td>web-tier image<br><span class="pill watch">declared · not deployed</span></td>
           <td class="svc">Fargate<br>(or App Runner)</td>
           <td>The request path: HTTP handlers, the agent runtime, the canvas compiler, and every storage seam. It needs to be long-lived and hold open connections, which is a container's shape rather than a function's. This is the last step of the migration, and it waits on nothing but the uploaded skills and search index still sitting on local disk.</td>
         </tr>
@@ -1176,7 +1176,7 @@
         <tr><td>Object lifecycle rules on the results bucket</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Provider credentials in an encrypted parameter store</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Alert notifications reaching a person</td><td><span class="pill watch">built · no subscriber</span></td></tr>
-        <tr><td><b>Web tier on containers behind a load balancer</b></td><td><span class="pill trap">designed</span></td></tr>
+        <tr><td><b>Web tier on containers behind a load balancer</b></td><td><span class="pill watch">declared · not deployed</span></td></tr>
         <tr><td><b>Static frontend on a CDN</b></td><td><span class="pill trap">designed</span></td></tr>
         <tr><td>Uploaded skills and the search index off local disk</td><td><span class="pill free">built · deployed</span></td></tr>
       </tbody>

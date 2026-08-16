@@ -43,7 +43,10 @@ holds its own truth.
    Analyst (browser)
         │
         ▼
-   FastAPI  (backend/main.py)
+   ALB  :80  ]─ declared, off unless CMA_WEB_IMAGE_TAG is set
+        │
+        ▼
+   FastAPI  (backend/main.py)  × 2 Fargate tasks, or one by hand
         │
         ├───────────────► DynamoDB ── single table + gsi1
         │                 registries: dataset · model · workflow · run
@@ -66,13 +69,13 @@ holds its own truth.
    Playbook failed/expired ─┘
 ```
 
-**Where the API itself runs is not in this stack.** There is no ALB, no
-CloudFront, no App Runner, no EC2 — `backend/main.py` is started by hand, on a
-developer's machine or a box someone provisioned. That is worth stating
-plainly, because the premise of everything below is that a *second replica*
-must see the same truth as the first, and nothing here creates that second
-replica. What the stack does is remove every reason one couldn't exist. Choosing
-the hosting is **step 1 of the plan below**.
+**The API now has somewhere to run, but is not running.** The stack
+declares a VPC, an internet-facing load balancer and a two-task Fargate
+service — and creates none of it unless `CMA_WEB_IMAGE_TAG` is set, which is
+what keeps the account at zero. Until then `backend/main.py` is still started
+by hand. See [the web tier](#ecs-fargate--the-web-tier); the deliberate
+omissions there (TLS, CORS for a deployed frontend, autoscaling) are the
+remaining work, not the design.
 
 ---
 
@@ -102,6 +105,7 @@ behind an environment variable. This is the ledger of where that has got to.
 | ✅ | runs and job results accumulated forever | 90-day run TTL, prefix-scoped object lifecycle | **DynamoDB TTL + S3 lifecycle** | [what expires](#what-expires) |
 | ✅ | `_SCENARIOS`, one dict holding derived *and* analyst data | built-ins cached, `scn-…` records in the table | **DynamoDB** | [scenarios, and the mixed registry](#scenarios-and-the-mixed-registry) |
 | ✅ | uploaded skills and the built RAG index on one node's disk | S3 is the record; each node syncs a cache of it | **S3** | [the last two local-only paths](#the-last-two-local-only-paths) |
+| 🔨 | nothing anywhere runs the API | VPC + ALB + 2-task service, declared and gated on an image tag | **ECS Fargate** | [the web tier](#ecs-fargate--the-web-tier) |
 
 ### Planned, in the order worth doing them
 
@@ -110,7 +114,7 @@ step 1.
 
 | # | Step | Service | Why now, or why not yet |
 |---|---|---|---|
-| 1 | Actually run the API in AWS, more than once | **ECS Fargate + ALB**, or **App Runner** | The step the whole migration has been for, and nothing blocks it now. Also finishes the secrets work: a task role means credentials arrive as an identity, not as anything on the host. |
+| 1 | Build the image and turn the web tier on | **ECS Fargate + ALB** | **Declared, not deployed.** The VPC, load balancer, task definition and two-task service are in the stack, gated on `CMA_WEB_IMAGE_TAG`. What remains is `build_web_image`, a deploy, and accepting ~$25-35/month — the point at which this stack stops being free. |
 | 2 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. |
 | 3 | Serve the built frontend from a CDN | **S3 + CloudFront** | `vite build` output has no home today. Wants step 1 first, so there is a stable API origin to point at. |
 | 4 | Deepen observability once there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
@@ -729,15 +733,112 @@ the app's region. Two lines of subscriber beat a cross-region topic.
 
 ---
 
-## On Fargate
+## ECS Fargate — the web tier
 
-**There is no Fargate or ECS in this system.** Compute is Lambda, in two
+**Built, not deployed.** The stack declares it; nothing is running. Deploy
+without `CMA_WEB_IMAGE_TAG` and you get the image registry and the build
+project and nothing else, which is what keeps the account at zero while the
+rest of this document stays true.
+
+This is the step everything else was for. Shared state, shared identity, shared
+files, shared skills, a shared search index — each removed one reason a second
+replica could not exist, and none of it was worth anything while `main.py` ran
+once, by hand.
+
+```
+internet ──► ALB :80 ──► ECS service (Fargate)
+                           ├─ task  cma web image   0.25 vCPU / 1 GB
+                           └─ task  cma web image        ← the second replica
+                                       │
+                                       ├─ DynamoDB · S3 · SQS · Step Functions
+                                       ├─ Cognito (verify offline)
+                                       └─ OPENAI_API_KEY, injected by ECS
+```
+
+**Two tasks by default.** `CMA_WEB_DESIRED_COUNT` defaults to 2 because "run
+the API in AWS" was never the goal — a *second replica* was, and one task
+proves nothing a laptop did not already prove. Set it to 1 to halve the
+compute once the point has been made.
+
+**No NAT gateway, and the tasks are in public subnets.** A NAT is ~$32/month
+before it passes a byte, which on a stack budgeted at $5 would be the largest
+line by a wide margin — more than the compute it exists to serve. The trade,
+stated plainly: the tasks are addressable from the internet at the network
+level, and only their security group keeps them private. That group admits the
+load balancer and nothing else. A production account puts the tasks in private
+subnets and pays for the NAT, or uses VPC endpoints.
+
+**The secret arrives as an identity.** `ecs.Secret.from_ssm_parameter` injects
+`OPENAI_API_KEY` at container start using the execution role, so no secret
+material exists on the host and no application code fetches one. This is the
+half of [the key that is not in the file](#ssm-parameter-store--the-key-that-is-not-in-the-file)
+that a laptop cannot do — there, `services/secrets.py` still needs AWS
+credentials of its own, so a plaintext key was traded for a local profile.
+`services/secrets.py` becomes dead code the day this is the only way the app
+runs.
+
+**Environment comes from constructs, not from a file.** Every `CMA_*` value in
+the task definition is read off the table, queue, machine and user-pool objects
+in the same stack. `infra/sync_env.py` exists because a human starts `main.py`
+by hand; a task definition needs no such step.
+
+**IAM, scoped to what the web tier does.** Read/write on the table, send on the
+queue, start-execution and task-response on the state machine, object access
+under the bucket, sign-in and sign-out on the pool, and model invocation on
+Bedrock. Note what is absent: **nothing here can create AWS resources.** That is
+the same argument as `services/workflow_plans.py` — the request path compiles
+and records a plan, and a separate privileged identity deploys it — and it only
+holds while the task role stays this narrow.
+
+### What this does not include
+
+- **TLS.** The listener is HTTP on port 80. HTTPS needs a certificate, which
+  needs a domain, which is a decision rather than a line of CDK. Until then the
+  Cognito token crosses the internet in clear text, which is acceptable for a
+  lab and unacceptable for anything else.
+- **CORS for a deployed frontend.** `main.py` allows the two localhost Vite
+  origins. A browser app served from CloudFront would be a third origin and is
+  currently blocked — that lands with step 3.
+- **Autoscaling.** Fixed task count. Adding a target-tracking policy is a few
+  lines, and pointless before there is traffic to track.
+
+### The first deploy, and why it is three commands
+
+Same chicken-and-egg as the worker: a service cannot reference an image that
+does not exist, and the image is built by a project this stack creates.
+
+```bash
+npx cdk deploy                        # registry + builder, still free
+python -m infra.build_web_image       # builds and pushes; prints the tag
+npx cdk deploy -c webImageTag=<tag>   # VPC, ALB, service — costs begin
+```
+
+`build_web_image.py` packages an explicit allowlist of the application rather
+than zipping the tree, and refuses outright if anything resembling a credential
+is in the set. An image layer is immutable and gets pushed to a registry; a
+secret baked into one is not a mistake you quietly correct later.
+
+**ECR keeps two web images**, against the worker's one. The asymmetry is
+deliberate: a bad worker image fails a solve that can be retried, while a bad
+web image takes the application down, and the fix at that moment should be
+repointing at the previous tag rather than waiting out a rebuild.
+
+---
+
+## On Fargate — for the *solver*
+
+**The solver does not run on Fargate, and should not** — even though the
+section above puts the web tier there. Solver compute is Lambda, in two
 flavours, orchestrated by Step Functions.
 
-That is the right call for the current workload. Solves are short, spiky, and
-event-driven — exactly Lambda's shape — and Lambda's scale-to-zero is what keeps
-an idle lab account at no cost. Fargate would mean paying for a task that spends
-most of its life idle.
+Two opposite conclusions about the same service, which is worth stating
+plainly because reading one as the answer to the other is the easiest mistake
+this document invites. The web tier is a long-lived process serving requests,
+so it wants a container that stays up. Solves are short, spiky, and
+event-driven — exactly Lambda's shape — and scale-to-zero is what keeps an idle
+lab account at no cost. Fargate for the solver would mean paying for a task
+that spends most of its life idle, which is precisely the cost the web tier
+accepts and the solver has no reason to.
 
 Fargate becomes the right answer when one of these becomes true, and none is
 today:
@@ -823,13 +924,30 @@ which is why this is a script at all.
 The detail behind [Planned](#planned-in-the-order-worth-doing-them); the
 numbers match.
 
-**1 · Nothing runs the API in AWS.** Covered under the component map: no ALB,
-no CloudFront, no App Runner, no EC2. Every reason a second replica couldn't
-exist has now been removed — shared state, shared identity, shared files — and
-none of that is worth anything until a second replica does exist. Fargate behind
-an ALB is the conventional answer; App Runner is less to operate if the
-single-container shape holds. Note this is a *different* Fargate question from
-[On Fargate](#on-fargate) above, which is about the solver, not the web tier.
+**1 · The web tier is declared but not deployed.** Every reason a second
+replica couldn't exist has been removed — shared state, shared identity, shared
+files, shared skills, a shared search index — and the VPC, load balancer, task
+definition and two-task service that would use them are now in the stack. They
+are gated on `CMA_WEB_IMAGE_TAG`, so a deploy today still creates nothing but
+the image registry and the build project.
+
+What remains is not engineering, it is a decision: this is where the design
+stops being free. A load balancer is ~$16/month before it serves a request, an
+ECS service cannot scale to zero the way Lambda does, and the realistic floor is
+**$25–35/month** against a `CMA_MONTHLY_BUDGET_USD` that defaults to 5. The NAT
+gateway — which would have been the largest line at ~$32 — is designed out by
+putting the tasks in public subnets, and [the web tier](#ecs-fargate--the-web-tier)
+states what that costs in exchange.
+
+Three deliberate omissions are listed there too: TLS, CORS for a deployed
+frontend, and autoscaling. The first is the one that matters — the listener is
+plain HTTP, so a Cognito token crosses the internet in clear text. Acceptable
+for a lab, unacceptable for anything else, and it needs a domain before it needs
+code.
+
+Note this was a *different* Fargate question from
+[the solver's](#on-fargate--for-the-solver), which reaches the opposite
+conclusion for good reasons.
 
 **2 · Auth is stateless when a pool is configured**, and a module dict
 otherwise — see the Cognito section above. The mock path is still the default,
