@@ -111,13 +111,13 @@ behind an environment variable. This is the ledger of where that has got to.
 
 ### Planned, in the order worth doing them
 
-Ordered by *what unblocks what*, not by size. Steps 1 and 2 are independent of
-each other.
+Ordered by *what unblocks what*, not by size. Step 2 does not depend on step 1,
+but is worth doing after it.
 
 | # | Step | Service | Why now, or why not yet |
 |---|---|---|---|
-| 1 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. |
-| 2 | Serve the frontend from a CDN, and get TLS with it | **S3 + CloudFront** | Now the highest-value step, because one distribution retires three things at once: a home for `vite build` output, **HTTPS** (CloudFront brings its own certificate, so no domain purchase), and the CORS gap — the app and the API would share an origin. |
+| 1 | Serve the frontend from a CDN, and get TLS with it | **S3 + CloudFront** | One distribution retires three things at once: a home for `vite build` output, **HTTPS** (CloudFront brings its own certificate, so no domain to buy), and the CORS gap — the app and the API would share an origin. The API is on plain HTTP today, which makes this the security-relevant one as well as the cheapest. |
+| 2 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. Worth doing *after* TLS: rearranging the login flow while the transport is still in the clear fixes the smaller half first. |
 | 3 | Deepen observability now that there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
 
 Steps 1–2 are written up in full, with the same numbers, in
@@ -925,20 +925,7 @@ which is why this is a script at all.
 The detail behind [Planned](#planned-in-the-order-worth-doing-them); the
 numbers match.
 
-**1 · The password still passes through this service, and MFA is off.**
-`USER_PASSWORD_AUTH` was the migration step, not the destination: the frontend
-posts a username and password to the API, which forwards them to Cognito. The
-Hosted UI authorization-code flow keeps the password out of this service
-entirely, and MFA is a checkbox on the pool that a lab does not need and
-anything real does. Both are deliberate and both are wrong for production.
-
-Verification is already stateless — a JWT checked offline against the pool's
-public keys, which is what let two replicas exist at all — so this is the last
-piece of the identity story rather than a structural problem. The mock login
-remains the default only when no pool is configured, which now means local
-development and nothing else.
-
-**2 · The frontend has no home, and the API has no TLS.** One distribution
+**1 · The frontend has no home, and the API has no TLS.** One distribution
 answers both, which is why these are one gap rather than two.
 
 `vite build` produces a bundle nothing deploys. S3 behind CloudFront is the
@@ -955,5 +942,18 @@ distribution the app and the API share an origin and the question stops
 existing.
 
 Until then the listener is plain HTTP, so a Cognito token crosses the internet
-in clear text — acceptable for a lab, unacceptable for anything else, and worth
-being the reason this moves up the list.
+in clear text — acceptable for a lab, unacceptable for anything else, and the
+reason this sits above the identity work below rather than after it.
+
+**2 · The password still passes through this service, and MFA is off.**
+`USER_PASSWORD_AUTH` was the migration step, not the destination: the frontend
+posts a username and password to the API, which forwards them to Cognito. The
+Hosted UI authorization-code flow keeps the password out of this service
+entirely, and MFA is a checkbox on the pool that a lab does not need and
+anything real does. Both are deliberate and both are wrong for production.
+
+Verification is already stateless — a JWT checked offline against the pool's
+public keys, which is what let two replicas exist at all — so this is the last
+piece of the identity story rather than a structural problem. The mock login
+remains the default only when no pool is configured, which now means local
+development and nothing else.
