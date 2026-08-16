@@ -98,6 +98,41 @@ _GSI_SK = "gsi1sk"
 # development has no growth problem to solve.
 _TTL_ATTR = "expires_at"
 
+# How long a run stays before the sweep takes it. Read here rather than in each
+# router because there are *three* unbounded run collections - analytics runs,
+# analytic-definition runs, and playbook runs - and a retention window that is
+# 90 days in one of them and something else in the other two is not a policy,
+# it is a bug waiting to be discovered by whoever looks for a run that should
+# still be there.
+_RUN_TTL_DAYS_DEFAULT = 90
+
+
+def run_ttl() -> int | None:
+    """Epoch seconds at which a run written now becomes eligible for deletion.
+
+    The judgement, recorded once: a run is scratch, not a record. Everything a
+    published number was derived from - the dataset, the model, the saved
+    workflow, the compiled plan versions in S3 - is kept, so a result stays
+    reproducible long after the row that first reported it is gone. What
+    expires is the transcript, not the evidence.
+
+    `CMA_RUN_TTL_DAYS=0` keeps runs forever, which is the right setting the day
+    the history itself has to answer what was filed and when. An unreadable
+    value falls back to the same thing: being wrong in the direction that keeps
+    data is recoverable, and being wrong in the other direction is not.
+    """
+    import time
+
+    raw = os.getenv("CMA_RUN_TTL_DAYS", "").strip()
+    try:
+        days = int(raw) if raw else _RUN_TTL_DAYS_DEFAULT
+    except ValueError:
+        log.warning("CMA_RUN_TTL_DAYS=%r is not a number - keeping runs forever", raw)
+        return None
+    if days <= 0:
+        return None
+    return int(time.time()) + days * 86400
+
 # Attributes that belong to the storage layer, not the caller's model. Stripped
 # on the way out so a caller round-tripping an item never has to know they
 # exist — which is what lets `AnalyticsRun(**record)` stay a plain constructor.

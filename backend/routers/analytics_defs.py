@@ -143,6 +143,11 @@ def store_adef_run(run: AnalyticDefinitionRun) -> AnalyticDefinitionRun:
     entity_store.put(
         _ADEF_RUN_ENTITY, run.id, payload,
         index=(_run_index_pk(run.function_id), run.created_at),
+        # Same window as every other run collection. These are append-only,
+        # one item per execution, each carrying a full result table — exactly
+        # the shape the retention decision was made about, so they expire on
+        # the same schedule rather than on one of their own.
+        ttl=entity_store.run_ttl(),
     )
     return run
 

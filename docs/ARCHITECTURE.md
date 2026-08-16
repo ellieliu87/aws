@@ -198,14 +198,32 @@ bound that, and both rest on the same judgement:
 > run row that first reported it is gone. What expires is the transcript, not
 > the evidence.
 
-**DynamoDB TTL**, on the `expires_at` attribute. `store_run` stamps each run
-with now + `CMA_RUN_TTL_DAYS` (default 90; `0` keeps runs forever, which is the
-right setting the day the run history itself has to answer *what did we file,
-and when*). The attribute is written and stripped by `entity_store`, so it never
-reaches a caller's model, and only items carrying it are ever touched — datasets,
-models and workflows are exempt by construction, exactly as they are absent from
-the sparse index. The GSI entry goes when its base item does, so the history page
-can never show a run the table no longer holds. TTL deletes are not billed as
+**DynamoDB TTL**, on the `expires_at` attribute. The window lives in
+`entity_store.run_ttl()` — now + `CMA_RUN_TTL_DAYS`, default 90, `0` keeps runs
+forever. It is shared rather than per-router because there are **three**
+unbounded run collections, and a retention window that is 90 days in one and
+something else in the others is not a policy:
+
+| Collection | Written by | Expires |
+|---|---|---|
+| `run` — analytics runs | `scenarios.store_run` | ✅ |
+| `adef_run` — analytic-definition runs | `analytics_defs.store_adef_run` | ✅ |
+| `pbrun` — playbook runs | `playbooks.store_pbrun` | ✅ |
+| `published` — published reports | `playbooks.store_published` | ❌ **never** |
+
+A published report is the thing somebody filed. That is evidence, not
+transcript, and it is the one item in this family that must outlive the run
+that produced it.
+
+Note `store_pbrun` writes on every progress transition, so an in-flight
+playbook's expiry slides forward as it advances — the clock starts when the run
+stops changing, which is the behaviour you want.
+
+The attribute is written and stripped by `entity_store`, so it never reaches a
+caller's model, and only items carrying it are ever touched — datasets, models
+and workflows are exempt by construction, exactly as they are absent from the
+sparse index. The GSI entry goes when its base item does, so a history page can
+never show a run the table no longer holds. TTL deletes are not billed as
 writes, which is the whole reason to prefer this to a scheduled sweeper.
 
 Two properties worth stating plainly. Deletion is asynchronous and best-effort —
@@ -686,11 +704,32 @@ assumes.
 ## Deployment
 
 ```bash
+cd backend
+python -m infra.deploy              # diff + dry runs; changes nothing
+python -m infra.deploy --write      # deploy, sync .env, apply S3 rules
+```
+
+`infra/deploy.py` runs the four steps in dependency order and stops at the
+first failure. It reads `backend/.env` itself, so `AWS_PROFILE` set there
+reaches the CDK CLI — which does *not* read that file, and is the usual way a
+deploy ends up pointed at the wrong account. The bare command is the review
+gate: it prints the diff and applies nothing, and `--write` is a second,
+deliberate invocation. It also refuses to deploy when the diff reports a
+replacement, overridable with `--allow-replacement`.
+
+`infra.put_secret` is deliberately not one of its steps — it carries a value
+that has to come from a human, and `put_parameter` mints a new version on every
+call, so running it per deploy would churn versions of an unchanged key.
+
+By hand, equivalently:
+
+```bash
 cd backend/infra/cdk
 export AWS_PROFILE=cma-lab          # the CDK CLI does not read backend/.env
 npx cdk diff                        # always; confirm no [-]/[+] replacement
 npx cdk deploy
-cd .. && python -m infra.sync_env --write   # stack outputs -> backend/.env
+cd .. && python -m infra.sync_env --write      # stack outputs -> backend/.env
+python -m infra.apply_lifecycle --write        # S3 rules
 ```
 
 First-time sequence, because of the chicken-and-egg noted above:
@@ -711,17 +750,16 @@ subscriber) and `CMA_MONTHLY_BUDGET_USD` (defaults to `5`). After the first
 deploy with an email set, confirm the SNS subscription — until you do, the
 alarms fire into nothing.
 
-Two things live outside the stack, for reasons given in their own sections, and
-each is idempotent and runs about once:
+Two things live outside the stack, for reasons given in their own sections.
+`apply_lifecycle` is folded into `infra.deploy` above; `put_secret` is not, and
+runs on key rotation rather than on deploy:
 
 ```bash
 python -m infra.put_secret OPENAI_API_KEY   # dry run; --write to apply
-python -m infra.apply_lifecycle             # dry run; --write to apply
 ```
 
-`put_secret` needs `CMA_SECRETS_PREFIX` set — CloudFormation cannot create a
-SecureString. `apply_lifecycle` prints the bucket's existing configuration
-first, because it replaces rather than merges.
+It needs `CMA_SECRETS_PREFIX` set — CloudFormation cannot create a SecureString,
+which is why this is a script at all.
 
 ---
 

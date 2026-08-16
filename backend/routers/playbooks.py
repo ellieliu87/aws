@@ -179,6 +179,14 @@ def store_pbrun(run: PlaybookRun) -> PlaybookRun:
     entity_store.put(
         _PBRUN_ENTITY, run.id, payload,
         index=(_run_index_pk(run.function_id), run.created_at),
+        # Same window as every other run collection. Note this is written on
+        # every progress transition, not once, so the expiry slides forward
+        # while a run is still in flight — which is the behaviour you want: a
+        # long playbook's clock should start when it stops changing, not when
+        # it started. What must NOT expire is `_PUBLISHED_ENTITY` below: a
+        # published report is the thing someone filed, and that is evidence
+        # rather than transcript.
+        ttl=entity_store.run_ttl(),
     )
     return run
 

@@ -986,7 +986,7 @@
         <p>Reads walk it newest-first and stop at the page size, returning a continuation marker for the next page. That marker travels back in an HTTP header rather than in the response body, so existing callers that expect a plain list are unaffected.</p>
         <p>Timestamps are stored as text in a format that sorts chronologically when sorted alphabetically — which is the property the whole index depends on.</p>
       </dd>
-      <dt class="gaveup">Gave up</dt><dd>Nothing, on the read path. But it fixed only half the problem: storage still grows without bound. Read cost and retention are separate questions and only the first is answered — see §7.4.</dd>
+      <dt class="gaveup">Gave up</dt><dd>Nothing, on the read path. But it fixed only half the problem, and the half it left is worth separating out: making a read cheap says nothing about how much there is to read. Retention was a distinct question with a distinct answer, settled later — see §7.4.</dd>
     </dl>
   </div>
 
@@ -1072,13 +1072,16 @@
   <p>The approval gate is a state machine state, not a convention. The execution history is the evidence, produced automatically rather than assembled after the fact. It also enforces a real timeout — an approval nobody grants within twenty-four hours fails explicitly, rather than a run sitting in limbo.</p>
 
   <h3>7.3 What can each component do if compromised?</h3>
-  <p>Permissions are scoped to intent, not convenience. The compute worker can write results and read model files — not the document corpus, which lives in the same bucket under a different prefix. The internet-facing web tier holds no permission to create infrastructure at all. Access is by role, never by stored credentials.</p>
+  <p>Permissions are scoped to intent, not convenience. The compute worker can write results and read model files — not the document corpus, which lives in the same bucket under a different prefix. The internet-facing web tier holds no permission to create infrastructure at all. Access between components is by role, never by stored credentials.</p>
+  <p>The exception used to be the one credential that cannot come from a role, because it belongs to a third party: the AI provider's API key, which sat in plaintext in a file beside the code and was copied onto every machine that ran the application. It now lives in an encrypted parameter store and is read into the process at startup, so no secret material sits on disk. That is <em>most</em> of the fix rather than all of it — reading the parameter still needs cloud credentials of its own, so on a developer's laptop it trades a plaintext key for a local profile. The remainder closes with the hosting step, where the container's own role supplies the parameter and the application stops fetching anything at all.</p>
 
   <h3>7.4 What is your retention policy?</h3>
-  <div class="note warn">
-    <p><strong>This is the open item, and it is a policy question rather than a technical one.</strong> Run history currently grows without bound. Two viable answers: automatic expiry after a defined period, or archival to cheaper storage with nothing ever deleted.</p>
-    <p>The right choice depends on whether a run is <em>evidence</em> — in which case archival is the only acceptable answer — or working scratch. Given these numbers feed regulatory filings, archival is the likely answer, and the versioned document bucket is the established pattern to follow.</p>
-    <p><b>Two related gaps have since been closed.</b> The records database now has point-in-time recovery enabled — 35 days of second-granularity restore — and its removal policy is RETAIN rather than DESTROY, so neither a stack teardown nor a change the platform treats as a replacement takes the records with it. The cost of RETAIN is an orphaned table to delete by hand, which is the correct direction to fail: recovering from an unwanted leftover is tedious, recovering from a deleted audit trail is impossible.</p>
+  <div class="note">
+    <p><strong>Decided, and the decision is the interesting part.</strong> This was the open item on this page for some time, because it is a policy question rather than a technical one: does a run count as <em>evidence</em>, in which case nothing may ever be deleted, or as working scratch?</p>
+    <p><b>A run is scratch.</b> The reasoning turns on what a filed number is actually reconstructed from. The dataset, the model artifact, the saved workflow, and the immutable compiled plan for the version that ran are all retained indefinitely — so a result stays reproducible long after the row that first reported it is gone. What expires is the transcript, not the evidence. Run history is therefore a rolling ninety-day window, enforced by the database's own expiry mechanism, and configurable to "never" by a single setting on the day that judgement stops holding.</p>
+    <p><b>Object storage got the matching treatment, with one deliberate exception.</b> Job results expire after thirty days; superseded dataset uploads after a hundred and eighty; build artifacts after ninety. Model artifacts are exempt from every rule — their older versions <em>are</em> the answer to §7.1, and expiring them would quietly convert "we can show which artifact produced this number" into "we can show it for a year". A control that decays on a timer is worse than one that was never claimed.</p>
+    <p><b>The honest limit.</b> Expiry is asynchronous and best-effort — the database sweeps within days of the deadline, not on the second. That makes it a mechanism for bounding growth and emphatically not an access control; anything that must be <em>unreadable</em> at a deadline needs a different mechanism. It also applies only to runs recorded after it was switched on, which is why turning it on late cost nothing: existing records carry no expiry and were never at risk.</p>
+    <p><b>Two related gaps were closed earlier.</b> The records database has point-in-time recovery enabled — 35 days of second-granularity restore — and its removal policy is RETAIN rather than DESTROY, so neither a stack teardown nor a change the platform treats as a replacement takes the records with it. The cost of RETAIN is an orphaned table to delete by hand, which is the correct direction to fail: recovering from an unwanted leftover is tedious, recovering from a deleted audit trail is impossible.</p>
   </div>
 
   <h3>7.5 Where does the data live?</h3>
@@ -1106,10 +1109,15 @@
         <tr><td>Time-ordered index for run history</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Uploaded files in S3, servers fetch on demand</td><td><span class="pill free">built</span></td></tr>
         <tr><td>Identity with stateless tokens</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Playbook state out of process memory</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Analyst-created scenarios out of process memory</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Retention policy for run history — decided, and enforced</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Object lifecycle rules on the results bucket</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Provider credentials in an encrypted parameter store</td><td><span class="pill free">built · deployed</span></td></tr>
+        <tr><td>Alert notifications reaching a person</td><td><span class="pill watch">built · no subscriber</span></td></tr>
         <tr><td><b>Web tier on containers behind a load balancer</b></td><td><span class="pill trap">designed</span></td></tr>
         <tr><td><b>Static frontend on a CDN</b></td><td><span class="pill trap">designed</span></td></tr>
-        <tr><td>Playbook state out of process memory</td><td><span class="pill watch">needs design</span></td></tr>
-        <tr><td>Retention policy for run history</td><td><span class="pill watch">open decision</span></td></tr>
+        <tr><td>Uploaded skills and the search index off local disk</td><td><span class="pill trap">designed</span></td></tr>
       </tbody>
     </table>
   </div>
@@ -1176,6 +1184,14 @@
   </details>
 
   <details>
+    <summary>"Why isn't all of your infrastructure declared in one place?"</summary>
+    <p>Most of it is — one file describes the stack, and deleting a resource from it deletes it from the account. Two things sit outside, and the useful answer is that each is outside for a different reason, neither of which is that somebody forgot.</p>
+    <p><b>The object lifecycle rules</b>, because the bucket predates the stack and is referenced rather than owned. Infrastructure-as-code can grant access to a resource it does not manage, but it cannot set properties on one. The alternatives were a small function-plus-role maintained forever to make a single API call, or adopting the bucket into the stack and putting the document corpus one policy mistake away from deletion.</p>
+    <p><b>The provider API key</b>, because the template format has no encrypted-value type at all — and that is a deliberate refusal rather than a gap, since a template is a plaintext document that surfaces in the console, in change sets, and in every diff. Declaring the secret there would write it into precisely the places the exercise exists to keep it out of.</p>
+    <p>The generalisable point: a secret whose value you did not generate can never originate in infrastructure code. Something has to carry it in from outside, exactly once. The only real question is which command does that, and whether the codebase says so out loud — both scripts open by explaining why they are not part of the stack, so the next reader is not left wondering whether it was an oversight. A thin wrapper runs everything in dependency order for the cases where one command is genuinely wanted.</p>
+  </details>
+
+  <details>
     <summary>"When would you not use an AI model?"</summary>
     <p>For the numerical optimisation at the core of this platform. It is a deterministic calculation with a correct answer, it must be reproducible for a regulator, and a language model is worse at it in every dimension that matters. The agents explain results and help build pipelines; they do not compute the numbers.</p>
   </details>
@@ -1183,6 +1199,7 @@
   <details>
     <summary>"What would you do differently?"</summary>
     <p>Two things. The retention policy should have been decided before run history was stored rather than after — it is a policy question that constrains the data model, and answering it late risks a migration.</p>
+    <p>It was eventually answered late and cost nothing, which is worth saying only because the reason is luck rather than foresight: the expiry mechanism is per-record and opt-in, so switching it on left every existing record untouched instead of demanding a backfill. Had the answer been "archive everything, delete nothing", the same delay would have meant moving years of records after the fact.</p>
     <p>And the semantic search work should have started with the evaluation set rather than the implementation; building it first meant discovering it lost after the effort was spent, when a day defining the benchmark would have found the same answer sooner.</p>
   </details>
 </section>
@@ -1486,6 +1503,31 @@
       <p>The new record types had only been exercised against the in-memory fallback. Two things were genuinely untested against the real database: how these particular records serialise, and a <em>second</em> kind of record writing into the shared index — until now only run history used it.</p>
       <p><span class="tag lesson">Lesson</span>"Two partitions in one index do not collide" is obviously true right up until it is not. It cost one throwaway test to stop assuming, and the same test confirmed the existing partition was untouched.</p>
       <p><span class="tag lesson">Lesson</span>Three times in this stretch a test was wrong about the schema while the code was right. That is the healthier direction for errors to run, but it is also a signal: a test written from memory of an interface tests the memory, not the interface.</p>
+    </div>
+  </div>
+
+  <p class="logphase">Closing the last three gaps</p>
+
+  <div class="logentry">
+    <div class="n">30</div>
+    <div>
+      <h4>The one thing infrastructure-as-code refuses to do</h4>
+      <p>Moving the AI provider's key out of the configuration file looked like a one-line addition to the stack definition: declare an encrypted parameter, done.</p>
+      <p><span class="tag broke">Broke</span>The template format has no encrypted-value type. It accepts plain strings and lists of strings, and nothing else — so there is no way to declare the thing at all, let alone declare it safely.</p>
+      <p><span class="tag fix">Fix</span>A short script writes the parameter once, and the application reads it at startup before the modules that need it are imported. The script deliberately does <em>not</em> then edit the configuration file for you: deleting the only copy of a key before anyone has confirmed the remote one reads back is a bad afternoon, so it prints the line to remove instead.</p>
+      <p><span class="tag lesson">Lesson</span>This is a refusal, not a gap someone will close. A template is a plaintext document that ends up in a console, in change sets, and in every diff. The deeper rule underneath it: a secret whose value you did not generate cannot originate in infrastructure code — something has to carry it in from outside, once, and the honest design is the one that says so rather than hiding the step.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">31</div>
+    <div>
+      <h4>Owned, referenced, and the difference between them</h4>
+      <p>The other half of the retention work was object lifecycle rules, which the plan had described as "a few lines" in the stack definition.</p>
+      <p><span class="tag broke">Broke</span>It was not. The bucket predates the stack, so the definition <em>references</em> it by name rather than creating it — and a reference can be granted access, but cannot have properties set on it. The plan's own estimate was wrong, and writing the code was how that surfaced.</p>
+      <p><span class="tag fix">Fix</span>A second script, opening with the reason it is not part of the stack. It prints the bucket's existing configuration before replacing it, because the underlying call overwrites the whole configuration rather than merging into it — a detail that turns "add one rule" into "silently delete the others" for anyone who assumes otherwise.</p>
+      <p><span class="tag lesson">Lesson</span>An estimate written while reading a document is not the same as one written while reading the code. This one had been sitting in the plan for weeks, stated with confidence, and cost nothing to correct only because it was caught before the work was scheduled rather than after.</p>
+      <p><span class="tag lesson">Lesson</span>A related trap in the same rules: on a versioned bucket, expiring an object only writes a deletion marker — the bytes stay, and stay billed, until a <em>second</em> rule expires the superseded versions. It is the most common way a lifecycle rule appears to work and does nothing.</p>
     </div>
   </div>
 </section>

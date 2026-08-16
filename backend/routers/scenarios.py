@@ -16,8 +16,6 @@ synthesize a plausible response curve so the UI works end-to-end.
 """
 import json
 import logging
-import os
-import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -133,20 +131,11 @@ _RUN_ENTITY = "run"
 # Decimal encoding being wider than the JSON we measure.
 _MAX_RUN_BYTES = 380 * 1024
 
-# How long a run stays on the history page before DynamoDB sweeps it.
-#
 # gsi1 made reading the newest N cheap regardless of how many exist; it did
-# nothing about the fact that the number only ever goes up. This is the
-# decision that bounds it, and it is a judgement rather than a tuning knob: a
-# run is scratch, not a record. Everything a number was derived from — the
-# dataset, the model, the saved workflow, the compiled plan versions in S3 —
-# is kept indefinitely, so a result stays reproducible long after the run row
-# that first reported it has gone.
-#
-# Set `CMA_RUN_TTL_DAYS=0` to keep runs forever, which is the right setting
-# the day someone has to answer "what exactly did we file, and when" from the
-# run history itself rather than from its inputs.
-_RUN_TTL_DAYS_DEFAULT = 90
+# nothing about the fact that the number only ever goes up. The window that
+# bounds it, and the judgement behind it, live in `entity_store.run_ttl` —
+# shared, because playbook runs and analytic-definition runs are the same kind
+# of thing and must expire on the same schedule.
 
 # Page size for the run history. The cap exists because the index makes a
 # large page genuinely expensive again — a page of runs carries their series.
@@ -156,28 +145,6 @@ RUNS_PAGE_MAX = 500
 
 def _run_index_pk(function_id: str) -> str:
     return f"{_RUN_ENTITY}#{function_id}"
-
-
-def _run_ttl() -> int | None:
-    """Epoch seconds at which a run written now becomes eligible for deletion.
-
-    Returns None when the TTL is disabled, which is also what an unreadable
-    setting falls back to: getting this wrong in the permissive direction
-    leaves runs lying around, and getting it wrong in the other direction
-    deletes them. Only one of those is recoverable.
-    """
-    raw = os.getenv("CMA_RUN_TTL_DAYS", "").strip()
-    try:
-        days = int(raw) if raw else _RUN_TTL_DAYS_DEFAULT
-    except ValueError:
-        log.warning("CMA_RUN_TTL_DAYS=%r is not a number — keeping runs forever", raw)
-        return None
-    if days <= 0:
-        return None
-    # From now rather than from `run.created_at`: the two are the same value in
-    # every current caller, and parsing the stored string to rediscover it
-    # would add a failure mode for no gain.
-    return int(time.time()) + days * 86400
 
 
 def load_run(run_id: str) -> AnalyticsRun | None:
@@ -222,7 +189,7 @@ def store_run(run: AnalyticsRun) -> AnalyticsRun:
     entity_store.put(
         _RUN_ENTITY, run.id, payload,
         index=(_run_index_pk(run.function_id), run.created_at),
-        ttl=_run_ttl(),
+        ttl=entity_store.run_ttl(),
     )
     return run
 
