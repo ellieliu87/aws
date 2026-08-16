@@ -43,10 +43,10 @@ holds its own truth.
    Analyst (browser)
         │
         ▼
-   ALB  :80  ]─ declared, off unless CMA_WEB_IMAGE_TAG is set
+   ALB  :80  ]─ http://CmaWor-WebAl-...elb.amazonaws.com
         │
         ▼
-   FastAPI  (backend/main.py)  × 2 Fargate tasks, or one by hand
+   FastAPI  × 2 Fargate tasks   (backend/main.py)
         │
         ├───────────────► DynamoDB ── single table + gsi1
         │                 registries: dataset · model · workflow · run
@@ -69,13 +69,15 @@ holds its own truth.
    Playbook failed/expired ─┘
 ```
 
-**The API now has somewhere to run, but is not running.** The stack
-declares a VPC, an internet-facing load balancer and a two-task Fargate
-service — and creates none of it unless `CMA_WEB_IMAGE_TAG` is set, which is
-what keeps the account at zero. Until then `backend/main.py` is still started
-by hand. See [the web tier](#ecs-fargate--the-web-tier); the deliberate
-omissions there (TLS, CORS for a deployed frontend, autoscaling) are the
-remaining work, not the design.
+**The API runs in AWS, twice.** A VPC, an internet-facing load balancer and
+two Fargate tasks, all in this stack. That is the sentence the rest of this
+document was written to earn: every store the two replicas read is shared, so
+they agree by construction rather than by luck.
+
+Unsetting `CMA_WEB_IMAGE_TAG` removes all of it and returns the account to
+free — the gate is still there, it is simply open now. See
+[the web tier](#ecs-fargate--the-web-tier), including what is deliberately
+still missing: TLS, CORS for a deployed frontend, and autoscaling.
 
 ---
 
@@ -105,22 +107,21 @@ behind an environment variable. This is the ledger of where that has got to.
 | ✅ | runs and job results accumulated forever | 90-day run TTL, prefix-scoped object lifecycle | **DynamoDB TTL + S3 lifecycle** | [what expires](#what-expires) |
 | ✅ | `_SCENARIOS`, one dict holding derived *and* analyst data | built-ins cached, `scn-…` records in the table | **DynamoDB** | [scenarios, and the mixed registry](#scenarios-and-the-mixed-registry) |
 | ✅ | uploaded skills and the built RAG index on one node's disk | S3 is the record; each node syncs a cache of it | **S3** | [the last two local-only paths](#the-last-two-local-only-paths) |
-| 🔨 | nothing anywhere runs the API | VPC + ALB + 2-task service, declared and gated on an image tag | **ECS Fargate** | [the web tier](#ecs-fargate--the-web-tier) |
+| ✅ | nothing anywhere runs the API | **two replicas behind a load balancer**, sharing every store | **ECS Fargate + ALB** | [the web tier](#ecs-fargate--the-web-tier) |
 
 ### Planned, in the order worth doing them
 
-Ordered by *what unblocks what*, not by size. Steps 2 and 3 are independent of
-step 1.
+Ordered by *what unblocks what*, not by size. Steps 1 and 2 are independent of
+each other.
 
 | # | Step | Service | Why now, or why not yet |
 |---|---|---|---|
-| 1 | Build the image and turn the web tier on | **ECS Fargate + ALB** | **Declared, not deployed.** The VPC, load balancer, task definition and two-task service are in the stack, gated on `CMA_WEB_IMAGE_TAG`. What remains is `build_web_image`, a deploy, and accepting ~$25-35/month — the point at which this stack stops being free. |
-| 2 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. |
-| 3 | Serve the built frontend from a CDN | **S3 + CloudFront** | `vite build` output has no home today. Wants step 1 first, so there is a stable API origin to point at. |
-| 4 | Deepen observability once there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
+| 1 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. |
+| 2 | Serve the frontend from a CDN, and get TLS with it | **S3 + CloudFront** | Now the highest-value step, because one distribution retires three things at once: a home for `vite build` output, **HTTPS** (CloudFront brings its own certificate, so no domain purchase), and the CORS gap — the app and the API would share an origin. |
+| 3 | Deepen observability now that there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
 
-Steps 1–3 are written up in full, with the same numbers, in
-[Known gaps](#known-gaps) at the end; step 4's reasoning is in
+Steps 1–2 are written up in full, with the same numbers, in
+[Known gaps](#known-gaps) at the end; step 3's reasoning is in
 [deliberately absent](#deliberately-absent).
 
 ---
@@ -924,38 +925,35 @@ which is why this is a script at all.
 The detail behind [Planned](#planned-in-the-order-worth-doing-them); the
 numbers match.
 
-**1 · The web tier is declared but not deployed.** Every reason a second
-replica couldn't exist has been removed — shared state, shared identity, shared
-files, shared skills, a shared search index — and the VPC, load balancer, task
-definition and two-task service that would use them are now in the stack. They
-are gated on `CMA_WEB_IMAGE_TAG`, so a deploy today still creates nothing but
-the image registry and the build project.
+**1 · The password still passes through this service, and MFA is off.**
+`USER_PASSWORD_AUTH` was the migration step, not the destination: the frontend
+posts a username and password to the API, which forwards them to Cognito. The
+Hosted UI authorization-code flow keeps the password out of this service
+entirely, and MFA is a checkbox on the pool that a lab does not need and
+anything real does. Both are deliberate and both are wrong for production.
 
-What remains is not engineering, it is a decision: this is where the design
-stops being free. A load balancer is ~$16/month before it serves a request, an
-ECS service cannot scale to zero the way Lambda does, and the realistic floor is
-**$25–35/month** against a `CMA_MONTHLY_BUDGET_USD` that defaults to 5. The NAT
-gateway — which would have been the largest line at ~$32 — is designed out by
-putting the tasks in public subnets, and [the web tier](#ecs-fargate--the-web-tier)
-states what that costs in exchange.
+Verification is already stateless — a JWT checked offline against the pool's
+public keys, which is what let two replicas exist at all — so this is the last
+piece of the identity story rather than a structural problem. The mock login
+remains the default only when no pool is configured, which now means local
+development and nothing else.
 
-Three deliberate omissions are listed there too: TLS, CORS for a deployed
-frontend, and autoscaling. The first is the one that matters — the listener is
-plain HTTP, so a Cognito token crosses the internet in clear text. Acceptable
-for a lab, unacceptable for anything else, and it needs a domain before it needs
-code.
+**2 · The frontend has no home, and the API has no TLS.** One distribution
+answers both, which is why these are one gap rather than two.
 
-Note this was a *different* Fargate question from
-[the solver's](#on-fargate--for-the-solver), which reaches the opposite
-conclusion for good reasons.
+`vite build` produces a bundle nothing deploys. S3 behind CloudFront is the
+obvious shape, and it now has a stable API origin to point at. The same
+distribution supplies **HTTPS**: a load balancer's own `*.elb.amazonaws.com`
+name cannot carry a certificate, because nobody controls that domain, whereas
+CloudFront arrives with a hostname and a certificate already attached and stays
+inside its perpetual free tier at this volume. Buying a domain would work too
+and costs ~$12–15/year; the certificate itself is free either way.
 
-**2 · Auth is stateless when a pool is configured**, and a module dict
-otherwise — see the Cognito section above. The mock path is still the default,
-so the in-process token store is what runs locally. Two things remain even with
-a pool: `USER_PASSWORD_AUTH` means the password still passes through this
-service, and MFA is off. Both are deliberate for a lab and both are wrong for
-anything else.
+It also closes the third thing: `main.py` allows the two localhost Vite origins,
+so a browser app served from anywhere else is currently blocked. Behind one
+distribution the app and the API share an origin and the question stops
+existing.
 
-**3 · The frontend has no home.** `vite build` produces a bundle that nothing
-deploys. S3 with CloudFront in front of it is the obvious shape, and it wants a
-stable API origin — step 1 — to point at first.
+Until then the listener is plain HTTP, so a Cognito token crosses the internet
+in clear text — acceptable for a lab, unacceptable for anything else, and worth
+being the reason this moves up the list.

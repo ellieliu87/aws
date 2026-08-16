@@ -803,7 +803,7 @@
       <tbody>
         <tr>
           <td class="svc">main.py<br>routers/<br>services/<br>cof/ · agent/ · packs/<br>models/</td>
-          <td>web-tier image<br><span class="pill watch">declared · not deployed</span></td>
+          <td>web-tier image<br><span class="pill free">built · deployed</span></td>
           <td class="svc">Fargate<br>(or App Runner)</td>
           <td>The request path: HTTP handlers, the agent runtime, the canvas compiler, and every storage seam. It needs to be long-lived and hold open connections, which is a container's shape rather than a function's. This is the last step of the migration, and it waits on nothing but the uploaded skills and search index still sitting on local disk.</td>
         </tr>
@@ -1176,8 +1176,8 @@
         <tr><td>Object lifecycle rules on the results bucket</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Provider credentials in an encrypted parameter store</td><td><span class="pill free">built · deployed</span></td></tr>
         <tr><td>Alert notifications reaching a person</td><td><span class="pill watch">built · no subscriber</span></td></tr>
-        <tr><td><b>Web tier on containers behind a load balancer</b></td><td><span class="pill watch">declared · not deployed</span></td></tr>
-        <tr><td><b>Static frontend on a CDN</b></td><td><span class="pill trap">designed</span></td></tr>
+        <tr><td><b>Web tier on containers behind a load balancer</b></td><td><span class="pill free">built · deployed · 2 replicas</span></td></tr>
+        <tr><td><b>Static frontend on a CDN, and TLS with it</b></td><td><span class="pill trap">designed</span></td></tr>
         <tr><td>Uploaded skills and the search index off local disk</td><td><span class="pill free">built · deployed</span></td></tr>
       </tbody>
     </table>
@@ -1626,6 +1626,17 @@
       <p>The web-tier image had never been built. The expected failures were dependency resolution against a newer Python, and imports from the domain packs that the file list had missed.</p>
       <p><span class="tag lesson">Lesson</span>Neither happened: 102 seconds, 259 MB, first attempt. Recorded because a log that only contains disasters quietly teaches that everything is hard, and the reason this one was not is visible in the preceding entries — the image copies an explicit list of directories rather than the whole tree, so there was no ambiguity about what belonged in it, and the dependency list was pinned to the same floors the application already declared. The build was boring because the decisions before it were not.</p>
       <p><span class="tag lesson">Lesson</span>A successful build still proves only that the image assembles. It says nothing about whether the application starts inside it, which is a different question answered by a different failure, at a cost of roughly thirty-four dollars a month to ask.</p>
+    </div>
+  </div>
+
+  <div class="logentry">
+    <div class="n">35</div>
+    <div>
+      <h4>The line in the log that the whole migration was for</h4>
+      <p>The first deploy of the web tier brought up two servers behind a load balancer, both healthy, answering in about two hundred milliseconds. Nothing failed, which was not the expectation — a container image that has never been run usually fails its first health check.</p>
+      <p><span class="tag lesson">Lesson</span>The interesting output was not the successful request. It was one line, printed identically by both servers as they started: <em>pulled 2 prebuilt index files, published 0</em>. Neither had ever embedded anything, and neither needed to, because the other had already paid that cost and left the result where both could find it.</p>
+      <p>That line is the whole argument in miniature. Without it each server would have quietly fallen back to keyword search while it rebuilt, and for those minutes the same question would have returned different answers depending on which server the load balancer picked — no error, no alarm, nothing to grep for. Every earlier entry in this log was in service of that line being boring.</p>
+      <p><span class="tag lesson">Lesson</span>Worth being precise about what was and was not proved. Two replicas ran, shared their stores, and agreed. Nobody has yet logged in and driven an analysis end to end through the deployed system, which needs a credential this work did not have. "It starts and is healthy" and "it is correct" are separated by exactly the kind of gap this document keeps finding.</p>
     </div>
   </div>
 </section>
