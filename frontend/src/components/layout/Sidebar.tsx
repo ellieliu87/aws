@@ -73,8 +73,26 @@ export default function Sidebar() {
   }, [fnId])
 
   const handleLogout = async () => {
+    // Revoke the refresh token first, while the access token is still valid.
     try { await api.post('/api/auth/logout') } catch {}
     logout()
+
+    // With hosted sign-in there is a second session to end: Cognito's own,
+    // which lives in a cookie on its domain. Skipping this clears the app and
+    // leaves the next "sign in" completing instantly against a session the
+    // user thought they had ended — which looks like logout silently failing.
+    try {
+      const cfg = (await api.get('/api/auth/config')).data
+      if (cfg?.hosted_ui) {
+        const params = new URLSearchParams({
+          client_id: cfg.client_id,
+          logout_uri: window.location.origin + (cfg.logout_path ?? '/login'),
+        })
+        window.location.href = `${cfg.domain}/logout?${params.toString()}`
+        return
+      }
+    } catch {}
+
     navigate('/login')
   }
 

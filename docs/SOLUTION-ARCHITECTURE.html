@@ -1662,6 +1662,17 @@
       <p><span class="tag lesson">Lesson</span>One deliberate non-change is worth recording. Nothing in the browser application was modified. It had always requested data using relative addresses, which meant it needed no notion of where the interface lived — and that decision, made long before any of this, is the reason a change of address cost nothing.</p>
     </div>
   </div>
+
+  <div class="logentry">
+    <div class="n">37</div>
+    <div>
+      <h4>An endpoint that existed in the source and not in the running system</h4>
+      <p>Moving sign-in to the identity provider's own hosted page needed a small new endpoint, so the browser could ask which method this deployment uses rather than having it compiled in. It was written, tested locally, and deployed. Then it answered "not found".</p>
+      <p><span class="tag broke">Broke</span>The infrastructure had been updated; the application had not. A running container carries its code inside its image, so changing a source file and deploying the infrastructure changes nothing about what is executing. The code has to be rebuilt into a new image, the new image named, and only then does a deployment move anything.</p>
+      <p><span class="tag lesson">Lesson</span>This is a habit that expires quietly. For most of this project the application was started by hand, so "change the file, restart" was true and became reflex. The day it moved to managed containers that stopped being true, and nothing announced it — the deployment reported success, because from its point of view everything it was asked to change had changed.</p>
+      <p><span class="tag fix">Fix</span>Beyond rebuilding: the deployment wrapper printed "restart the backend for code changes to take effect", a line that had been correct when written and was now actively misleading. It now detects that the containerised path is in use and prints the actual sequence instead. <b>A stale instruction is worse than a missing one</b> — a missing instruction sends you to read; a confident wrong one sends you to debug the wrong thing.</p>
+    </div>
+  </div>
 </section>
 
 <footer>

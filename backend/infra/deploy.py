@@ -192,8 +192,22 @@ def main(write: bool, allow_replacement: bool) -> int:
 
     print(f"\n{'-' * 72}")
     if write:
-        print("done. Restart the backend for code changes to take effect —")
-        print("nothing here deploys the API itself; it is still started by hand.")
+        print("done.")
+        # This line used to say "restart the backend", which was true when the
+        # API was started by hand and became quietly wrong the day it moved to
+        # Fargate. A running task has the code baked into its image, so a
+        # backend change needs a new image and a new tag - restarting anything
+        # redeploys the same code. It cost a confusing 404 against an endpoint
+        # that existed in the source and not in the container.
+        if os.getenv("CMA_WEB_IMAGE_TAG", "").strip():
+            print("Note: backend code changes are NOT live yet. The tasks run the")
+            print("image named by CMA_WEB_IMAGE_TAG, so changing Python means:")
+            print("    python -m infra.build_web_image     # prints a new tag")
+            print("    set CMA_WEB_IMAGE_TAG, then deploy again")
+            print("Frontend changes need `npm run build` and infra.deploy_frontend.")
+        else:
+            print("Restart the backend for code changes to take effect — nothing")
+            print("here deploys the API itself; it is still started by hand.")
     else:
         print("dry run complete. Re-run with --write to apply.")
     return 0

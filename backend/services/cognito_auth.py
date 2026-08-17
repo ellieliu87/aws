@@ -83,6 +83,20 @@ def enabled() -> bool:
     return bool(user_pool_id() and client_id())
 
 
+def hosted_domain() -> str:
+    """Base URL of the Cognito Hosted UI, e.g. `https://x.auth.us-east-1...`.
+
+    Empty when the stack has not been deployed with a domain, which is what
+    keeps the password form as the fallback rather than leaving the app with
+    no way in at all.
+    """
+    return os.getenv("CMA_COGNITO_DOMAIN", "").strip().rstrip("/")
+
+
+def hosted_ui_available() -> bool:
+    return bool(enabled() and hosted_domain())
+
+
 def issuer() -> str:
     return f"https://cognito-idp.{region()}.amazonaws.com/{user_pool_id()}"
 

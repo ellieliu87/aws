@@ -1,16 +1,65 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Sparkles } from 'lucide-react'
+import { Sparkles, ShieldCheck } from 'lucide-react'
 import api from '@/lib/api'
 import { useAuthStore } from '@/store/authStore'
+import { beginLogin } from '@/lib/pkce'
+
+/**
+ * Two ways in, and the deployment decides which.
+ *
+ * With a Cognito Hosted UI configured, this page never sees a password — it
+ * sends the browser to Cognito and waits to be redirected back with a code.
+ * Without one (local development, or a stack deployed without a domain) it
+ * falls back to the form, which posts credentials to the API.
+ *
+ * The choice is fetched rather than compiled in. A static bundle is built once
+ * and served everywhere, and the pool and client ids are chosen by
+ * CloudFormation, so they are not knowable at build time.
+ */
+type AuthConfig = {
+  mode: string
+  hosted_ui: boolean
+  domain?: string
+  client_id?: string
+  scopes?: string[]
+  callback_path?: string
+}
 
 export default function LoginPage() {
   const navigate = useNavigate()
   const setAuth = useAuthStore((s) => s.setAuth)
+  const [config, setConfig] = useState<AuthConfig | null>(null)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    api
+      .get('/api/auth/config')
+      .then((r) => setConfig(r.data))
+      // A config the app cannot read should not be a blank page. Falling back
+      // to the form means a broken endpoint degrades to the older path rather
+      // than to no path at all.
+      .catch(() => setConfig({ mode: 'password', hosted_ui: false }))
+  }, [])
+
+  const startHostedLogin = async () => {
+    setError(null)
+    setLoading(true)
+    try {
+      window.location.href = await beginLogin({
+        domain: config!.domain!,
+        client_id: config!.client_id!,
+        scopes: config!.scopes ?? ['openid', 'email', 'profile'],
+        callback_path: config!.callback_path ?? '/auth/callback',
+      })
+    } catch (err: any) {
+      setError(err?.message || 'Could not start sign in')
+      setLoading(false)
+    }
+  }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -31,6 +80,15 @@ export default function LoginPage() {
       setLoading(false)
     }
   }
+
+  const errorBox = error && (
+    <div
+      className="mb-4 px-3 py-2 rounded-lg text-xs"
+      style={{ background: 'var(--error-bg)', color: 'var(--error)' }}
+    >
+      {error}
+    </div>
+  )
 
   return (
     <div
@@ -56,61 +114,85 @@ export default function LoginPage() {
           </p>
         </div>
 
-        <form
-          onSubmit={submit}
-          className="panel"
-          style={{ boxShadow: '0 24px 48px rgba(0,0,0,0.06)' }}
-        >
-          <label className="block mb-3">
-            <span
-              className="block text-[11px] font-semibold uppercase tracking-widest mb-1"
-              style={{ color: 'var(--text-secondary)' }}
-            >
-              Username
-            </span>
-            <input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-              className="w-full px-3 py-2 rounded-lg text-sm"
-              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
-            />
-          </label>
-          <label className="block mb-4">
-            <span
-              className="block text-[11px] font-semibold uppercase tracking-widest mb-1"
-              style={{ color: 'var(--text-secondary)' }}
-            >
-              Password
-            </span>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              className="w-full px-3 py-2 rounded-lg text-sm"
-              style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
-            />
-          </label>
-
-          {error && (
-            <div
-              className="mb-4 px-3 py-2 rounded-lg text-xs"
-              style={{ background: 'var(--error-bg)', color: 'var(--error)' }}
-            >
-              {error}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2.5 rounded-lg text-sm font-semibold transition-all disabled:opacity-50"
-            style={{ background: 'var(--accent)', color: '#fff' }}
+        {config === null ? (
+          <div
+            className="panel text-center text-sm"
+            style={{ color: 'var(--text-muted)', boxShadow: '0 24px 48px rgba(0,0,0,0.06)' }}
           >
-            {loading ? 'Signing in…' : 'Sign in'}
-          </button>
-        </form>
+            Loading…
+          </div>
+        ) : config.hosted_ui ? (
+          <div className="panel" style={{ boxShadow: '0 24px 48px rgba(0,0,0,0.06)' }}>
+            <div className="flex items-start gap-3 mb-4">
+              <ShieldCheck size={18} style={{ color: 'var(--teal)', marginTop: 2 }} />
+              <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                You&apos;ll sign in on your organisation&apos;s identity provider. Your
+                password is never sent to the workbench.
+              </p>
+            </div>
+
+            {errorBox}
+
+            <button
+              type="button"
+              onClick={startHostedLogin}
+              disabled={loading}
+              className="w-full py-2.5 rounded-lg text-sm font-semibold transition-all disabled:opacity-50"
+              style={{ background: 'var(--accent)', color: '#fff' }}
+            >
+              {loading ? 'Redirecting…' : 'Continue to sign in'}
+            </button>
+          </div>
+        ) : (
+          <form
+            onSubmit={submit}
+            className="panel"
+            style={{ boxShadow: '0 24px 48px rgba(0,0,0,0.06)' }}
+          >
+            <label className="block mb-3">
+              <span
+                className="block text-[11px] font-semibold uppercase tracking-widest mb-1"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                Username
+              </span>
+              <input
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                required
+                className="w-full px-3 py-2 rounded-lg text-sm"
+                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+              />
+            </label>
+            <label className="block mb-4">
+              <span
+                className="block text-[11px] font-semibold uppercase tracking-widest mb-1"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                Password
+              </span>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                className="w-full px-3 py-2 rounded-lg text-sm"
+                style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+              />
+            </label>
+
+            {errorBox}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-2.5 rounded-lg text-sm font-semibold transition-all disabled:opacity-50"
+              style={{ background: 'var(--accent)', color: '#fff' }}
+            >
+              {loading ? 'Signing in…' : 'Sign in'}
+            </button>
+          </form>
+        )}
       </div>
     </div>
   )

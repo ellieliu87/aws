@@ -83,6 +83,43 @@ def get_current_user_groups(token: str = Depends(oauth2_scheme)) -> list[str]:
     return list(_principal(token).get("groups", []))
 
 
+@router.get("/config")
+async def auth_config():
+    """How this deployment expects the browser to sign in.
+
+    The frontend asks before rendering anything, rather than being built with
+    the answer baked in. A static bundle on a CDN is compiled once and served
+    everywhere, so a `VITE_COGNITO_DOMAIN` at build time would mean a separate
+    build per environment — and the pool id and client id are chosen by
+    CloudFormation, so they are not knowable when the bundle is built anyway.
+
+    Deliberately unauthenticated. Everything here is public by construction: a
+    client id is an identifier rather than a secret, and the Hosted UI domain
+    is where the browser is about to be sent in plain sight. There is no secret
+    to leak because a public client has none — that is what PKCE replaces.
+    """
+    from services import cognito_auth
+
+    if not cognito_auth.hosted_ui_available():
+        # Either no pool (local development, mock login) or a pool without a
+        # Hosted UI domain. Both mean "show the password form".
+        return {"mode": "password", "hosted_ui": False}
+
+    return {
+        "mode": "hosted_ui",
+        "hosted_ui": True,
+        "domain": cognito_auth.hosted_domain(),
+        "client_id": cognito_auth.client_id(),
+        # The scopes the ID token needs to carry email and profile claims.
+        "scopes": ["openid", "email", "profile"],
+        # The browser appends its own origin — the redirect must match what is
+        # registered on the client exactly, and only the browser knows which of
+        # the registered origins it is being served from.
+        "callback_path": "/auth/callback",
+        "logout_path": "/login",
+    }
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
     if not request.username:

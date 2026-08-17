@@ -104,6 +104,7 @@ class AsyncSolveStack(Stack):
                  web_desired_count: int = 2,
                  secrets_prefix: str | None = None,
                  origin_secret: str | None = None,
+                 site_url: str | None = None,
                  **kwargs) -> None:
         """`worker_image_tag` selects the container worker.
 
@@ -253,21 +254,94 @@ class AsyncSolveStack(Stack):
                 require_lowercase=True, require_uppercase=True,
                 require_digits=True, require_symbols=False,
             ),
-            # A lab pool. Real deployments keep this and turn on MFA.
+            # Optional rather than required, and that is a deliberate stop
+            # short of the destination. REQUIRED locks out every existing user
+            # until each enrols a second factor, which for a pool whose only
+            # member is the person running the deploy is a fast way to lock
+            # yourself out of your own workbench. OPTIONAL makes enrolment
+            # possible today and turning it on a one-word change once there is
+            # more than one user to coordinate.
+            mfa=cognito.Mfa.OPTIONAL,
+            mfa_second_factor=cognito.MfaSecondFactor(
+                # Authenticator apps, not SMS. SMS costs money per message,
+                # needs an SNS spending limit raised, and is the weaker factor
+                # — SIM-swap attacks are the reason NIST stopped recommending it.
+                otp=True, sms=False,
+            ),
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        # The Hosted UI needs somewhere to live. A Cognito-provided domain
+        # rather than a custom one: a custom domain needs a certificate in
+        # us-east-1 and a DNS record, which is the same domain purchase the
+        # CloudFront distribution was chosen to avoid.
+        #
+        # The prefix is globally unique across all AWS accounts, so it carries
+        # the account id — a bare "cma-workbench" would collide with whoever
+        # took it first, and the failure arrives at deploy time with a message
+        # that does not obviously mean "pick another name".
+        user_pool_domain = user_pool.add_domain(
+            "HostedUi",
+            cognito_domain=cognito.CognitoDomainOptions(
+                domain_prefix=f"cma-workbench-{self.account}",
+            ),
+        )
+
+        # Where Cognito is allowed to send the browser back to. It must be an
+        # exact match, so every origin the app is served from has to be listed.
+        # The deployed one arrives as `site_url` rather than being read off the
+        # distribution below, and that is not laziness: the client is an input
+        # to the task definition, the task definition to the service, the
+        # service to the load balancer, and the load balancer to the
+        # distribution. Referencing the distribution here closes that ring and
+        # CloudFormation refuses it. Same two-deploy shape as the image tags —
+        # deploy, read the URL, set CMA_SITE_URL, deploy again.
+        callback_urls = [
+            "http://localhost:5173/auth/callback",
+            "http://localhost:5174/auth/callback",
+        ]
+        logout_urls = ["http://localhost:5173/login",
+                       "http://localhost:5174/login"]
+        if site_url:
+            callback_urls.append(f"{site_url.rstrip('/')}/auth/callback")
+            logout_urls.append(f"{site_url.rstrip('/')}/login")
+
         user_pool_client = user_pool.add_client(
             "WorkbenchClient",
-            # No secret: the token is verified by signature, not by the caller
-            # proving it holds one, and a secret would mean every InitiateAuth
-            # call also computes a SECRET_HASH for no security gain here.
+            # No secret, and now for a second reason. It was already pointless
+            # — the token is verified by signature, not by the caller proving
+            # it holds one — and it is now actively wrong: a static bundle
+            # served from a CDN cannot keep a secret, because everything it
+            # ships is readable by anyone who opens devtools. That is the
+            # definition of a *public* client, and PKCE is how a public client
+            # proves it started the flow it is completing: a random verifier
+            # per login, of which only its hash is sent up front.
             generate_secret=False,
+            o_auth=cognito.OAuthSettings(
+                flows=cognito.OAuthFlows(
+                    authorization_code_grant=True,
+                    # Never the implicit grant. It returns tokens in the URL
+                    # fragment, which lands in browser history and anywhere a
+                    # URL gets logged. The authorization-code flow returns a
+                    # single-use code instead, and PKCE is what stops a stolen
+                    # one being redeemable.
+                    implicit_code_grant=False,
+                ),
+                scopes=[cognito.OAuthScope.OPENID,
+                        cognito.OAuthScope.EMAIL,
+                        cognito.OAuthScope.PROFILE],
+                callback_urls=callback_urls,
+                logout_urls=logout_urls,
+            ),
             auth_flows=cognito.AuthFlow(
-                # Keeps the existing login form working: the frontend still
-                # posts a username and password and gets a token back. The
-                # production path is the Hosted UI authorization-code flow,
-                # which keeps the password out of this service entirely.
+                # Still enabled, deliberately, and this is the one thing here
+                # that is not the destination. Removing it is what finally
+                # stops a password being able to reach this service — but the
+                # CDK deploy, the backend image and the frontend bundle ship
+                # separately, so there is no instant at which all three change
+                # together. Leaving it on means a broken Hosted UI is a
+                # rollback rather than a lockout. Turn it off in a follow-up,
+                # once a real login has gone through the hosted flow.
                 user_password=True,
                 user_srp=True,
             ),
@@ -556,11 +630,23 @@ class AsyncSolveStack(Stack):
         if web_image_tag:
             # Derived rather than required, because a deploy that fails on a
             # missing value nobody knew to set is a worse first experience than
-            # a guard that is merely adequate. Account and region are not
-            # secret, which is exactly why the comment on the listener rule
-            # below says plainly what this token is and is not.
+            # a guard that is merely adequate.
+            #
+            # Derived from the bucket name and NOT from `self.account`, which
+            # looks like the obvious ingredient and is a trap: without an
+            # account in the environment it is an unresolved token whose text
+            # is `${Token[AWS.AccountId.4]}` — and that index moves as the
+            # construct tree grows. Hashing it produces a value that silently
+            # rotates on any structural change to this file, which costs a
+            # five-minute distribution update and, worse, opens a window where
+            # the listener rule and the distribution disagree and real requests
+            # get a 403.
+            #
+            # The bucket name is a plain string at synth time and already
+            # carries the account id, so it is both stable and specific to this
+            # deployment.
             origin_secret = origin_secret or hashlib.sha256(
-                f"cma-origin/{self.account}/{self.region}/{construct_id}".encode()
+                f"cma-origin/{result_bucket}/{construct_id}".encode()
             ).hexdigest()[:32]
 
             # Public subnets and NO NAT gateway. A NAT is ~$32/month before it
@@ -624,6 +710,10 @@ class AsyncSolveStack(Stack):
                 "CMA_PLAYBOOK_ROLE_ARN": machine.role.role_arn,
                 "CMA_COGNITO_USER_POOL_ID": user_pool.user_pool_id,
                 "CMA_COGNITO_CLIENT_ID": user_pool_client.user_pool_client_id,
+                # The Hosted UI base, so /api/auth/config can hand the
+                # browser everything it needs to start the flow without the
+                # frontend bundle being rebuilt per environment.
+                "CMA_COGNITO_DOMAIN": user_pool_domain.base_url(),
                 "CMA_JOBS_REGION": self.region,
             }
 
@@ -1009,6 +1099,8 @@ class AsyncSolveStack(Stack):
                   description="CMA_COGNITO_USER_POOL_ID")
         CfnOutput(self, "UserPoolClientId", value=user_pool_client.user_pool_client_id,
                   description="CMA_COGNITO_CLIENT_ID")
+        CfnOutput(self, "CognitoDomain", value=user_pool_domain.base_url(),
+                  description="CMA_COGNITO_DOMAIN - the Hosted UI base")
         CfnOutput(self, "WorkerImageRepo", value=image_repo.repository_uri,
                   description="ECR repo for the container worker")
         CfnOutput(self, "WorkerImageBuildProject", value=builder.project_name,

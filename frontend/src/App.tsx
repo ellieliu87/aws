@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './store/authStore'
 import AppShell from './components/layout/AppShell'
 import LoginPage from './pages/Login/LoginPage'
+import CallbackPage from './pages/Login/CallbackPage'
 import HomePage from './pages/Home/HomePage'
 import WorkspacePage from './pages/Workspace/WorkspacePage'
 import SettingsPage from './pages/Settings/SettingsPage'
@@ -27,6 +28,9 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        {/* Outside the AuthGuard on purpose: this is how a token is
+            obtained, so requiring one to reach it would be a loop. */}
+        <Route path="/auth/callback" element={<CallbackPage />} />
         <Route
           path="/"
           element={

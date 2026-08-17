@@ -81,6 +81,13 @@ secrets_prefix = os.getenv("CMA_SECRETS_PREFIX", "").strip() or None
 # the listener rule for what this token is and, more importantly, is not.
 origin_secret = os.getenv("CMA_ORIGIN_SECRET", "").strip() or None
 
+# Where the app is served from, so Cognito knows which redirect back to the
+# browser it is allowed to make. Cannot be read off the distribution: the
+# client feeds the task definition, which feeds the service, the load balancer
+# and then the distribution — referencing it here would close that ring.
+# Read it from the SiteUrl output after the first deploy and set it here.
+site_url = os.getenv("CMA_SITE_URL", "").strip() or None
+
 AsyncSolveStack(
     app, "CmaWorkbenchAsync",
     result_bucket=bucket,
@@ -91,6 +98,7 @@ AsyncSolveStack(
     web_desired_count=web_desired_count,
     secrets_prefix=secrets_prefix,
     origin_secret=origin_secret,
+    site_url=site_url,
     env=Environment(region=region),
     description="CMA Workbench: async solve queue, worker, playbook orchestration, "
                 "and the web tier on Fargate",
