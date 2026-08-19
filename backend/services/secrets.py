@@ -39,11 +39,20 @@ Opt-in like everything else: with `CMA_SECRETS_PREFIX` unset this is a no-op
 and the app reads its key from `.env` as before, so a developer with no AWS
 account is unaffected.
 
-Note what this does *not* yet fix. Reading the parameter needs AWS credentials
-of its own, so on a laptop this trades a plaintext key for an AWS profile. The
-half that finishes the job is step 5 of the migration: once the API runs as an
-ECS task or an App Runner service, the task role *is* the credential, and no
-secret material exists on the host at all.
+Note the limit of what this module fixes. Reading the parameter needs AWS
+credentials of its own, so on a laptop it trades a plaintext key for an AWS
+profile.
+
+In the deployed system none of this code runs, which is the point rather than
+an oversight. `CMA_SECRETS_PREFIX` is deliberately absent from the ECS task's
+environment (see `web_env` in `infra/cdk/async_stack.py`), so `enabled()` is
+False and the app never calls SSM. The *execution* role — held by the ECS
+agent, not by the container — resolves the SecureString before the process
+starts and injects it as an ordinary environment variable. The task role the
+application actually runs under has no `ssm:GetParameter` at all: it can reach
+DynamoDB, SQS, Step Functions, S3, Cognito and Bedrock, and cannot read the
+credential it is using. That separation is the property worth keeping — the
+secret is delivered by an identity the application cannot impersonate.
 """
 from __future__ import annotations
 

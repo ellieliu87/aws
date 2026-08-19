@@ -119,7 +119,7 @@ Ordered by *what unblocks what*, not by size.
 
 | # | Step | Service | Why now, or why not yet |
 |---|---|---|---|
-| 1 | Hosted UI authorization-code flow; enable MFA | **Cognito** | `USER_PASSWORD_AUTH` is the migration step, not the destination — it keeps the password flowing through this service. Now unblocked: the transport is no longer in the clear, so moving the login flow is the whole remaining problem rather than half of it. |
+| 1 | Retire `USER_PASSWORD_AUTH`; enforce MFA | **Cognito** | The Hosted UI authorization-code flow with PKCE is deployed and a real login has now gone through it, so the password no longer passes through this service on the live path. Two things remain, both deliberate: the old password flow is still *enabled* at the pool as a rollback, and MFA is OPTIONAL rather than REQUIRED. The completed login is what unblocks removing the first. |
 | 2 | Deepen observability now that there is more than one replica | **X-Ray**, structured logs, **CloudTrail** data events | Correlating one request across replicas is a real problem; correlating it across one is not. Deliberately deferred — see [deliberately absent](#deliberately-absent). |
 
 Step 1 is written up in full, with the same number, in
@@ -387,11 +387,20 @@ the key into precisely the places this exists to keep it out of. So
 confirmed the parameter reads back is a bad afternoon. It prints the line to
 remove instead.
 
-**What this does not yet fix.** Reading the parameter needs AWS credentials of
-its own, so on a laptop it trades a plaintext key for an AWS profile. The half
-that finishes the job is step 1 of the plan: once the API runs as an ECS task or
-an App Runner service, the task role *is* the credential and no secret material
-exists on the host at all.
+**What this fixes, and where.** Reading the parameter needs AWS credentials of
+its own, so on a laptop it trades a plaintext key for an AWS profile. That is
+the limit of what this module can do.
+
+**In the deployed system none of this code runs**, which is the point rather
+than an oversight. `CMA_SECRETS_PREFIX` is deliberately absent from the ECS
+task's environment — see `web_env` in `infra/cdk/async_stack.py` — so
+`enabled()` is False and the app never calls SSM. The *execution* role, held by
+the ECS agent rather than by the container, resolves the SecureString before the
+process starts and injects it as an ordinary environment variable. The task role
+the application actually runs under has no `ssm:GetParameter` at all: it reaches
+DynamoDB, SQS, Step Functions, S3, Cognito and Bedrock, and cannot read the
+credential it is using. The secret is delivered by an identity the application
+cannot impersonate, which is a stronger property than encrypting it at rest.
 
 Note the non-secrets — `CMA_STATE_TABLE`, the queue URL, the ARNs — do not
 belong here. `infra/sync_env.py` already distributes those from stack outputs,
@@ -434,11 +443,23 @@ the user's hand lives out its TTL. Hence the 1-hour token validity: the TTL
 *is* the revocation window. A denylist would fix it and would also reintroduce
 the shared lookup this design exists to remove.
 
-**Login** uses `USER_PASSWORD_AUTH` so the existing login form keeps working —
-the frontend still posts a username and password and gets a token back. The
-production path is the Hosted UI authorization-code flow, which keeps the
-password out of this service entirely. This is the migration step, not the
-destination.
+**Login** is the Hosted UI authorization-code flow with PKCE. The browser goes
+to Cognito's own page, comes back with a single-use code, and exchanges it for
+tokens itself — nothing in the request path ever sees a password. PKCE rather
+than a client secret because the frontend is a static bundle on a CDN and
+therefore a public client by definition: it cannot keep a secret. The proof of
+"I started this flow" is a per-login random verifier of which only the SHA-256
+is sent up front, and `state` is round-tripped and checked, because without it an
+attacker can feed a victim a code of their own and log them into the attacker's
+account — a login that *succeeds*, which is what makes it easy to miss.
+
+A real login has been completed through this flow on the deployed system.
+
+`USER_PASSWORD_AUTH` remains enabled at the pool, and that is now the only part
+of this that is still the migration step rather than the destination. The CDK
+deploy, the backend image and the frontend bundle ship separately, so leaving it
+on made a broken hosted flow a rollback rather than a lockout. With a login
+proven, removing it is step 1 of [Planned](#planned-in-the-order-worth-doing-them).
 
 Without `CMA_COGNITO_USER_POOL_ID` the mock login is untouched, so local
 development needs no AWS account.
@@ -1030,15 +1051,28 @@ which is why this is a script at all.
 The detail behind [Planned](#planned-in-the-order-worth-doing-them); the
 numbers match.
 
-**1 · The password still passes through this service, and MFA is off.**
-`USER_PASSWORD_AUTH` was the migration step, not the destination: the frontend
-posts a username and password to the API, which forwards them to Cognito. The
-Hosted UI authorization-code flow keeps the password out of this service
-entirely, and MFA is a checkbox on the pool that a lab does not need and
-anything real does. Both are deliberate and both are wrong for production.
+**1 · The password path is still enabled, and MFA is not enforced.** The
+substance of this gap has closed: the Hosted UI authorization-code flow with
+PKCE is deployed, and a real login has been completed through it, so on the live
+path no password reaches this service. What is left is two switches, and it is
+worth being exact about which is which.
 
-Verification is already stateless — a JWT checked offline against the pool's
-public keys, which is what let two replicas exist at all — so this is the last
-piece of the identity story rather than a structural problem. The mock login
-remains the default only when no pool is configured, which now means local
-development and nothing else.
+`USER_PASSWORD_AUTH` is still *enabled* at the pool. Nothing uses it — the
+frontend no longer has a password form — but while it is enabled the property
+above is true of the frontend rather than enforced by the pool, and anyone
+holding a username and password can still obtain a token directly. It stayed on
+because the CDK deploy, the backend image and the frontend bundle ship as three
+separate steps, so there is no instant at which all three change together, and
+leaving it on made a broken hosted flow a rollback rather than a lockout. A
+completed login is precisely the evidence that was missing, so this is now a
+one-line change with nothing gating it.
+
+MFA is OPTIONAL with authenticator apps enabled, not REQUIRED. REQUIRED locks
+out every existing user until each enrols, and this pool's only member is the
+person running the deploy. It becomes correct the moment there is a second user
+to coordinate, and it is one word.
+
+Verification was never the problem — a JWT checked offline against the pool's
+public keys, which is what let two replicas exist at all. The mock login remains
+the default only when no pool is configured, which now means local development
+and nothing else.
