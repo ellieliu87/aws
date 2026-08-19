@@ -291,6 +291,31 @@
   .note strong { color: var(--ink); }
   .note.warn { border-left-color: var(--watch); }
 
+  /* worked example inside a decision */
+  .example {
+    margin: 0.9rem 0 0.2rem; border: 1px solid var(--rule-2);
+    border-radius: 3px; background: var(--surface-2); overflow: hidden;
+  }
+  .example > .exhead {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.66rem; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--muted); padding: 0.45rem 0.8rem;
+    border-bottom: 1px solid var(--rule);
+  }
+  .example > .exbody { padding: 0.8rem; overflow-x: auto; }
+  .example pre {
+    margin: 0; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.78rem; line-height: 1.55; color: var(--ink-2);
+    white-space: pre; tab-size: 2;
+  }
+  .example pre b { color: var(--accent); font-weight: 600; }
+  .example pre i { color: var(--muted); font-style: normal; }
+  .example pre s { color: var(--trap); text-decoration: none; }
+  .example svg { max-width: 100%; height: auto;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  .example table { min-width: 0; font-size: 0.85rem; background: transparent; }
+  .example table th, .example table td { padding: 0.4rem 0.7rem; }
+
   details {
     border: 1px solid var(--rule); border-radius: 3px;
     background: var(--surface); padding: 0.75rem 1rem; margin-bottom: 0.7rem;
@@ -344,11 +369,11 @@
         <td>The application could not run on two servers because it held its own truth in memory. No amount of load balancing fixes that, which is why hosting was done <em>last</em> — see <a href="#order">§9</a>.</td>
       </tr>
       <tr>
-        <td><a href="#decisions"><b>One table, keyed by type and id, with a sparse index</b></a> <span class="pill free">§6.2 · 6.7</span></td>
+        <td><a href="#decisions"><b>One table, keyed by type and id, with a sparse index</b></a> <span class="pill free">§6.1</span></td>
         <td>Fetching one record and listing a type are each one operation. Runs carry a second key so "newest fifty" costs the same whether ten runs exist or ten million.</td>
       </tr>
       <tr>
-        <td><a href="#decisions"><b>Signed tokens, and no password in the request path</b></a> <span class="pill free">§6.3 · 6.13</span></td>
+        <td><a href="#decisions"><b>Signed tokens, and no password in the request path</b></a> <span class="pill free">§6.2</span></td>
         <td>Nothing to look up, so nothing to share between replicas — and sign-in moved to the provider's own page, so this codebase is no longer part of the credential boundary.</td>
       </tr>
       <tr>
@@ -356,11 +381,11 @@
         <td>The internet-facing server can turn a drawing into a plan but holds no permission to create infrastructure or attach roles. The privilege lives with a separate identity.</td>
       </tr>
       <tr>
-        <td><a href="#decisions"><b>Human approval as a durable state, not application code</b></a> <span class="pill free">§6.4</span></td>
+        <td><a href="#decisions"><b>Human approval as a durable state, not application code</b></a> <span class="pill free">§6.3</span></td>
         <td>"Wait for a person" survives restarts because the waiting belongs to Step Functions. The execution history <em>is</em> the audit evidence, produced rather than assembled.</td>
       </tr>
       <tr>
-        <td><a href="#decisions"><b>An upgrade measured, and shipped switched off</b></a> <span class="pill watch">§6.11</span></td>
+        <td><a href="#decisions"><b>An upgrade measured, and shipped switched off</b></a> <span class="pill watch">§6.6</span></td>
         <td>Semantic search lost to keyword search on this corpus, so it ships disabled with the condition for revisiting written down. Building it first, before the benchmark, was the mistake.</td>
       </tr>
     </tbody>
@@ -406,7 +431,7 @@
       <dd>Runs a piece of code on demand without a server to maintain. You are billed per invocation, so idle costs nothing. Its constraint is a hard fifteen-minute ceiling per run.</dd>
 
       <dt>Fargate</dt>
-      <dd>Runs a long-lived container without a server to maintain. Suited to something that must stay up and answer requests, where Lambda suits short bursts of work. This is where the web tier runs — two replicas of it — while the solver stays on Lambda for the opposite reason. §6.12 is about why the same account uses both.</dd>
+      <dd>Runs a long-lived container without a server to maintain. Suited to something that must stay up and answer requests, where Lambda suits short bursts of work. This is where the web tier runs — two replicas of it — while the solver stays on Lambda for the opposite reason. §6.7 is about why the same account uses both.</dd>
 
       <dt>Replica</dt>
       <dd>One of several identical copies of the application running at the same time, so that one failing does not take the service down. Making more than one copy possible is what most of this document is about.</dd>
@@ -415,7 +440,7 @@
       <dd>A queue holds work to be done later so the website does not have to wait for it. A dead-letter queue is where a message goes after it has failed several times — so failures are kept for inspection rather than silently discarded.</dd>
 
       <dt>Token</dt>
-      <dd>The thing your browser sends with every request to prove who you are. The distinction that matters here: a token can be a <em>reference</em> the server must look up, or a <em>signed document</em> carrying the facts inside it. §6.3 is about moving from the first to the second.</dd>
+      <dd>The thing your browser sends with every request to prove who you are. The distinction that matters here: a token can be a <em>reference</em> the server must look up, or a <em>signed document</em> carrying the facts inside it. §6.2 is about moving from the first to the second.</dd>
 
       <dt>Role</dt>
       <dd>An identity a piece of software assumes to get permission to do something, instead of holding a stored username and password. "Passing a role" — attaching one to a resource you are creating — is a powerful permission, because whoever can pass roles can potentially attach one more privileged than they hold.</dd>
@@ -730,7 +755,7 @@
         <tr>
           <td class="svc">Cognito</td>
           <td>Identity</td>
-          <td>Issues signed tokens that carry the user's identity and permissions, so no server needs to look up a session. See §6.3.</td>
+          <td>Issues signed tokens that carry the user's identity and permissions, so no server needs to look up a session. See §6.2.</td>
         </tr>
         <tr>
           <td class="svc">S3</td>
@@ -745,7 +770,7 @@
         <tr>
           <td class="svc">Step Functions</td>
           <td>Multi-step runs with human approval</td>
-          <td>"Wait for a person" is a first-class durable state rather than a process that must stay alive. See §6.4.</td>
+          <td>"Wait for a person" is a first-class durable state rather than a process that must stay alive. See §6.3.</td>
         </tr>
         <tr>
           <td class="svc">ECR + CodeBuild</td>
@@ -888,93 +913,186 @@
   <p><b>Nor is anything an analyst creates.</b> Uploaded skills and the built search index used to sit on the disk of whichever server received them, and that is the one thing that would have made a second replica genuinely dangerous. Not a crash — two servers answering the same question differently, with nothing reporting a problem. Both now live in object storage, and each server keeps a local copy that it reconciles at startup, and for skills on a short interval afterwards. A skill is found by listing a folder rather than by name, so a missing one raises nothing. This was the last thing tying a request to a particular machine.</p>
 
   <div class="note warn">
-    <p><strong>The same service, two opposite answers.</strong> §6.12 argues the solver should stay on functions rather than containers, and that is still true: solves are short, bursty, and scale to zero. The web tier reaches the opposite conclusion about the same service, because it is a long-lived process serving requests. Both answers are in this document, and reading one as the answer to the other is the easiest mistake to make here.</p>
+    <p><strong>The same service, two opposite answers.</strong> §6.7 argues the solver should stay on functions rather than containers, and that is still true: solves are short, bursty, and scale to zero. The web tier reaches the opposite conclusion about the same service, because it is a long-lived process serving requests. Both answers are in this document, and reading one as the answer to the other is the easiest mistake to make here.</p>
   </div>
 </section>
 
 <section id="decisions">
   <h2><span class="n">6</span>Design decisions and trade-offs</h2>
-  <p class="sub">Each one gives the problem, the options, what was chosen, how it was built, and what it cost.</p>
+  <p class="sub">One entry per AWS service, because that is how the decisions actually cluster. Each gives the problem, the options, what was chosen, how it was built, what it cost, and a worked example.</p>
 
   <div class="note">
-    <p><strong>Three of these needed no AWS service at all.</strong> 6.6 is a language feature, 6.9 is twenty lines of application logic, and 6.5 uses <em>less</em> AWS than the obvious implementation. Reaching for a service is a choice like any other, and the <b>How</b> row says so when the answer was not to.</p>
+    <p><strong>Two of these argue for using less AWS, not more.</strong> 6.5 deliberately keeps a permission <em>out</em> of the web tier, and the two limits inside 6.1 were solved with a language feature and twenty lines of application logic rather than another service. Reaching for a service is a choice like any other, and the <b>How</b> row says so when the answer was not to.</p>
   </div>
 
   <div class="decision">
-    <h3>6.1 — Externalising state before changing the hosting</h3>
+    <h3>6.1 — DynamoDB: every durable record, in one table</h3>
     <dl>
-      <dt>Problem</dt><dd>The application could not run as more than one copy.</dd>
-      <dt>Options</dt><dd>Add sticky sessions at the load balancer so each user always returns to the same server; or move the state out of the process.</dd>
-      <dt class="chose">Chose</dt><dd>Move the state out. Sticky sessions hide the problem instead of solving it: a restart still loses that user's work, and an overloaded server still cannot hand anything to another.</dd>
+      <dt>Problem</dt>
+      <dd>
+        <p>The application could not run as more than one copy. Ten kinds of record — datasets, models, workflows, runs, charts, tools, layouts, playbooks, analytic definitions, warehouse connections — lived in dictionaries inside one process. A restart lost them, and a second server could not see them.</p>
+      </dd>
+      <dt>Options</dt>
+      <dd>
+        <ol>
+          <li>Sticky sessions at the load balancer, so each user always returns to the same server.</li>
+          <li>A relational database, one table per record type.</li>
+          <li>One DynamoDB table, keyed by record type plus id.</li>
+        </ol>
+      </dd>
+      <dt class="chose">Chose</dt>
+      <dd>
+        <p><b>Option 3.</b> Option 1 hides the problem instead of solving it: a restart still loses that user's work, and an overloaded server still cannot hand anything to another. Option 2 bills for an idle instance and buys flexibility this workload never uses, because nothing queries across types.</p>
+        <p>One table means fewer things to provision, monitor and back up. The access patterns were known in advance and are trivial: fetch one item by id, list all of a type, and list the newest N runs for one function.</p>
+      </dd>
       <dt class="how">How</dt>
       <dd>
-        <p><b>Amazon DynamoDB</b>, reached through one module that exposes four operations — get, put, delete, list — over plain dictionaries. Each registry gained matching accessors in place of its dictionary.</p>
-        <p>One seam, not database calls scattered through the code. It is the only place that knows storage exists, which is why the cache in 6.6 and the index in 6.7 could be added without touching a single caller. With no table configured it falls back to an in-process dictionary, so the original behaviour is still a code path that runs every day.</p>
+        <p>One table declared in <b>AWS CDK</b>, reached through a single module exposing four operations — get, put, delete, list — over plain dictionaries. That module is the only place that knows storage exists, which is what let the cache and the index below be added without touching a single caller. With no table configured it falls back to an in-process dictionary, so the original behaviour is still a code path that runs every day.</p>
+        <p><b>A sparse secondary index</b> for run history. Listing recent runs used to read every run ever recorded and sort them, because identifiers sort meaninglessly. Runs additionally carry a second key of function plus timestamp, so "the newest fifty" is a range read that stops after fifty. Only records carrying that key appear in the index, so datasets, models and workflows cost nothing there. Timestamps are stored as text in a format that sorts chronologically when sorted alphabetically, and the whole index depends on that one property.</p>
+        <p><b>Point-in-time recovery and a RETAIN removal policy.</b> The table was originally set to be deleted along with the stack. Sensible for a lab, wrong the moment it holds an audit trail — and it is not only an explicit teardown that triggers it: any change the platform treats as a <em>replacement</em> destroys and recreates the table. Two lines of infrastructure-as-code, then confirmed by querying the live table instead of trusting the deployment output.</p>
       </dd>
-      <dt class="gaveup">Gave up</dt><dd>Reads that used to be instant memory lookups became network calls. That cost was real and had to be paid back — see 6.6.</dd>
+      <dt class="gaveup">Gave up</dt>
+      <dd>
+        <p><b>Reads became network calls</b>, and that cost had to be paid back. Validating a canvas of eleven steps went from twenty instant lookups to twenty-one round trips for three distinct records. The fix needed <em>no AWS service</em>: Python's <code>contextvars</code>, which the async runtime copies per task, so every request gets its own cache for free and nothing survives into the next one. Twenty-one round trips became two. A managed cache would have added a network hop to fix a problem caused by network hops.</p>
+        <p><b>A 400 KB cap on a single item</b>, which an unusually large run exceeds — and the write fails <em>after</em> the computation has already succeeded. Also solved without a service: before writing, the record is measured, and if it is too big the row-level results are dropped and a note records how many rows were omitted. The user still gets their complete results; only the stored copy is trimmed. Failing would throw away work that succeeded, and truncating silently would leave a record that lies. Moving the payload to object storage is the right long-term answer if large runs become common.</p>
+        <p><b>Ad-hoc queries.</b> The moment somebody wants "every run that touched this dataset last quarter", this design owes them a table scan or a new index. One module owns every read, so that is a change in one file rather than everywhere — but it is a real cost of the choice, not a detail.</p>
+      </dd>
     </dl>
+
+    <div class="example">
+      <div class="exhead">Example — the key design, and the two questions it answers in one call each</div>
+      <div class="exbody">
+<pre><i># the base table: partitioned by entity type, sorted by id</i>
+pk = <b>"workflow"</b>   sk = "sw-abc123"
+pk = <b>"dataset"</b>    sk = "ds-abc123"
+pk = <b>"model"</b>      sk = "mdl-abc123"
+pk = <b>"run"</b>        sk = "run-abc123"    <i>+ gsi1pk / gsi1sk</i>
+
+get(pk=<b>"model"</b>, sk="mdl-abc123")   <i>&rarr; one item, direct lookup</i>
+list(pk=<b>"dataset"</b>)                 <i>&rarr; all datasets, one query</i>
+<i># neither scans the table</i>
+
+<i># the sparse index: only runs carry the second key</i>
+gsi1pk = <b>"run#capital_planning"</b>   gsi1sk = "2026-08-14T09:02Z"
+gsi1pk = <b>"run#capital_planning"</b>   gsi1sk = "2026-08-13T14:38Z"
+
+query(gsi1pk=<b>"run#capital_planning"</b>, limit=50, scan_forward=False)
+<i># stops after 50. Ten runs or ten million, same cost.</i>
+
+<s># before: cost grew forever</s>
+<s>sorted(every_run_ever_recorded, key=...)[:50]</s></pre>
+      </div>
+    </div>
   </div>
 
   <div class="decision">
-    <h3>6.2 — One table, not one per record type</h3>
-    <dl>
-      <dt>Problem</dt><dd>Four kinds of record needed durable storage.</dd>
-      <dt class="chose">Chose</dt><dd>A single table, where each record's key is its type plus its id. Fewer things to provision, monitor and back up. Four tables would buy separation the application never uses, because nothing queries across types.</dd>
-      <dt class="how">How</dt>
-      <dd><p>One <b>DynamoDB</b> table declared in <b>AWS CDK</b>, so the infrastructure is version-controlled alongside the application. Records are grouped by type and identified by id within it — see the diagram in §5. On-demand billing, so an idle system bills nothing.</p></dd>
-      <dt class="gaveup">Gave up</dt><dd>It is less immediately obvious to someone browsing the console. A diagram and this document are the mitigation.</dd>
-    </dl>
-  </div>
-
-  <div class="decision">
-    <h3>6.3 — Stateless tokens instead of a shared session store</h3>
+    <h3>6.2 — Cognito: identity with no session store, and no password</h3>
     <dl>
       <dt>Problem</dt>
       <dd>
         <p>Sessions lived in one server's memory, so a second server rejected tokens the first one issued.</p>
-        <p><b>An earlier version of this document called this "the last thing preventing horizontal scaling". That was wrong.</b> Six other registries still held analyst-created work in memory: charts, Python tools, dashboard layouts, playbooks, analytic definitions, warehouse connections. Auth was just the one that would have broken <em>every</em> request instead of one feature.</p>
-        <p>The lesson is about how to audit this kind of problem. "Where does state live?" has to be answered by searching, not by remembering. One search for module-level dictionaries found all six in about a minute, after I had twice claimed there were none.</p>
+        <p><b>An earlier version of this document called this "the last thing preventing horizontal scaling". That was wrong.</b> Six other registries still held analyst work in memory. Auth was just the one that would have broken <em>every</em> request instead of one feature. The lesson is about method: "where does state live?" has to be answered by searching, not remembering. One search for module-level dictionaries found all six in about a minute, after I had twice claimed there were none.</p>
+        <p>And a second problem underneath it. Even with tokens working, the browser posted a username and password to <em>this</em> service, which forwarded them on. That quietly makes this codebase part of the credential boundary: every log line, every exception handler, every piece of middleware anyone adds later sits on a path a password travels down.</p>
       </dd>
-      <dt>Options</dt><dd>Move sessions to a shared store (a database or a cache), or stop needing a session lookup at all.</dd>
+      <dt>Options</dt>
+      <dd>
+        <ol>
+          <li>Move sessions to a shared store — a database or a cache — and keep proxying the password carefully.</li>
+          <li>Stop needing a session lookup, but keep handling credentials here.</li>
+          <li>Stop both: signed tokens, and send the browser to the provider's own sign-in page.</li>
+        </ol>
+      </dd>
       <dt class="chose">Chose</dt>
       <dd>
-        <p>The second. A Cognito token is <em>signed</em> and carries the user's identity, role, department and group memberships inside it. Any server can check it against Cognito's public keys. No lookup, so nothing to share.</p>
-        <p>A shared session store is still a shared dependency — another thing to scale, another thing whose outage takes you down. Checking a signature needs only the token and a cached public key.</p>
+        <p><b>Option 3, in two steps.</b> Option 1 keeps a shared dependency — another thing to scale, another thing whose outage takes you down. Option 2 leaves the structural exposure: nothing was wrong with the implementation, but the only way to remove that risk is to stop the password arriving at all.</p>
+        <p>A Cognito token is <em>signed</em> and carries identity, role, department and group membership inside it. Any server checks it against Cognito's public keys — no lookup, so nothing to share.</p>
       </dd>
       <dt class="how">How</dt>
       <dd>
-        <p><b>Amazon Cognito</b> holds the users and issues the tokens. The application verifies them itself: it fetches the pool's public keys once, caches them, and checks each token's signature, expiry, issuer, audience and type on every request.</p>
-        <p>Job title and department ride along as custom attributes; group membership arrives as a standard claim and feeds the existing permission filter unchanged. Sixty seconds of clock tolerance, because a token issued a moment ago can look slightly future-dated to a machine whose clock differs. That one was found the hard way, against the real pool.</p>
+        <p><b>Verification.</b> The application fetches the pool's public keys once, caches them, and checks each token's signature, expiry, issuer, audience and type on every request. Sixty seconds of clock tolerance, because a token issued a moment ago can look slightly future-dated to a machine whose clock differs. That one was found the hard way, against the real pool.</p>
+        <p><b>Sign-in: authorization code flow with PKCE.</b> PKCE rather than a client secret for a structural reason: the frontend is a static bundle on a CDN, so anything it ships can be read by anyone who opens developer tools. It cannot keep a secret — that is what a public client means. The proof of "I started this flow" is a random verifier generated per login, of which only the SHA-256 hash is sent up front. A stolen code is useless without the verifier, and the verifier never leaves the tab.</p>
+        <p><b>The state parameter is round-tripped and checked.</b> This is the easy half to skip, because skipping it breaks nothing visible. Without it, an attacker can feed a victim a code of their own and log them into the <em>attacker's</em> account — a login that succeeds. Failures that look like success are the ones to name out loud.</p>
       </dd>
       <dt class="gaveup">Gave up</dt>
       <dd>
-        <p>A signed token cannot be un-signed. Signing someone out stops them getting <em>new</em> tokens, but the one already in their browser works until it expires. Hence the one-hour lifetime: the expiry window is the revocation window.</p>
-        <p>A revocation denylist would close that gap, and would put back the exact shared lookup this design removed. If instant revocation were a requirement, which is plausible for a privileged-access system, the denylist would be the right answer and that cost would be worth paying on purpose.</p>
+        <p><b>Instant revocation.</b> A signed token cannot be un-signed. Signing someone out stops them getting new tokens, but the one already in their browser works until it expires. Hence the one-hour lifetime: the expiry window is the revocation window. A denylist would close the gap and would put back the exact shared lookup this design removed.</p>
+        <p><b>Two deliberate stops short.</b> MFA is optional rather than required, because required locks out every existing user until each enrols and this pool's only member is the person running the deploy. And the old password path is still enabled at the pool, because the infrastructure, the image and the frontend bundle ship separately — leaving it on made a broken hosted flow a rollback rather than a lockout. A real login has since been completed through the hosted flow, which is the evidence that was gating its removal.</p>
       </dd>
-      <dt>Then</dt><dd>This decision settled how a token is <em>verified</em>. It left untouched the question of how one is <em>obtained</em> — which turned out to be the more interesting half, and is §6.13.</dd>
     </dl>
+
+    <div class="example">
+      <div class="exhead">Example — the sign-in flow, and where the password does not go</div>
+      <div class="exbody">
+<svg viewBox="0 0 830 300" role="img" aria-label="Sign-in sequence: the browser generates a verifier and sends only its hash to Cognito; the user authenticates on Cognito's own page; a single-use code returns; the browser exchanges code plus verifier for tokens; the API verifies the signed token offline. The application server never sees the password.">
+  <defs>
+    <marker id="sq" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+
+  <text x="70"  y="16" text-anchor="middle" font-size="10.5" fill="currentColor">Browser</text>
+  <text x="380" y="16" text-anchor="middle" font-size="10.5" fill="var(--accent)">Cognito Hosted UI</text>
+  <text x="700" y="16" text-anchor="middle" font-size="10.5" fill="currentColor">This service</text>
+
+  <line x1="70"  y1="26" x2="70"  y2="278" stroke="var(--rule-2)" stroke-width="1"/>
+  <line x1="380" y1="26" x2="380" y2="278" stroke="var(--rule-2)" stroke-width="1"/>
+  <line x1="700" y1="26" x2="700" y2="278" stroke="var(--rule-2)" stroke-width="1"/>
+
+  <text x="78" y="48" font-size="9" fill="var(--muted)">1 · generate random verifier, keep it in the tab</text>
+
+  <line x1="70" y1="70" x2="372" y2="70" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#sq)"/>
+  <text x="220" y="64" text-anchor="middle" font-size="9" fill="var(--muted)">2 · redirect with SHA-256(verifier) + state</text>
+
+  <rect x="286" y="84" width="188" height="34" rx="3" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.25"/>
+  <text x="380" y="105" text-anchor="middle" font-size="9.5" fill="var(--accent)">3 · user types password HERE</text>
+
+  <line x1="372" y1="140" x2="78" y2="140" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#sq)"/>
+  <text x="220" y="134" text-anchor="middle" font-size="9" fill="var(--muted)">4 · single-use code + state</text>
+
+  <text x="78" y="162" font-size="9" fill="var(--muted)">5 · check state matches, or abort</text>
+
+  <line x1="70" y1="184" x2="372" y2="184" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#sq)"/>
+  <text x="220" y="178" text-anchor="middle" font-size="9" fill="var(--muted)">6 · code + verifier</text>
+
+  <line x1="372" y1="212" x2="78" y2="212" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#sq)"/>
+  <text x="220" y="206" text-anchor="middle" font-size="9" fill="var(--muted)">7 · signed tokens</text>
+
+  <line x1="70" y1="244" x2="692" y2="244" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#sq)"/>
+  <text x="380" y="238" text-anchor="middle" font-size="9" fill="var(--muted)">8 · request + token &#183; verified offline against cached public keys</text>
+
+  <rect x="596" y="258" width="210" height="30" rx="3" fill="none" stroke="var(--trap)" stroke-width="1.25" stroke-dasharray="4 3"/>
+  <text x="701" y="277" text-anchor="middle" font-size="9" fill="var(--trap)">never sees a password, never looks up a session</text>
+</svg>
+      </div>
+    </div>
   </div>
 
   <div class="decision">
-    <h3>6.4 — Human approval as a durable state, not application code</h3>
+    <h3>6.3 — Step Functions: human approval as a durable state</h3>
     <dl>
       <dt>Problem</dt><dd>Model governance requires a person to review results before they are published. Written in application code, the process has to stay alive while it waits, which could be hours or days. A restart mid-wait strands the run, so you also need a repair routine to find and clean up the wreckage.</dd>
+      <dt>Options</dt>
+      <dd>
+        <ol>
+          <li>Keep the wait in application code, plus a repair routine for stranded runs.</li>
+          <li>Poll a database column from a scheduled job.</li>
+          <li>Move the sequence into a managed state machine and let the wait belong to it.</li>
+        </ol>
+      </dd>
       <dt class="chose">Chose</dt>
       <dd>
-        <p>Move the sequence into a <b>state machine</b>: a workflow written down as data, which AWS runs for you and which remembers where each execution has got to. "Wait for a human" becomes one of the steps, so the execution parks there until the reviewer answers. Restarts and deployments do not disturb it.</p>
-        <p>The approval gate is a <em>control</em>, and controls have to be evidenced. One built as a convention that a repair routine tidies up after is hard to show an examiner. One built as a state machine has an execution history showing who approved what, and when.</p>
+        <p><b>Option 3.</b> The approval gate is a <em>control</em>, and controls have to be evidenced. One built as a convention that a repair routine tidies up after is hard to show an examiner. One built as a state machine has an execution history showing who approved what, and when. Option 2 trades the repair routine for a polling job and still leaves the state in your own schema.</p>
       </dd>
       <dt class="how">How</dt>
       <dd>
-        <p><b>AWS Step Functions</b>, using its wait-for-callback pattern. At the gate the execution hands out a one-time token and stops, consuming nothing while it waits. The approval endpoint returns that token and the execution picks up exactly where it paused.</p>
-        <p>A twenty-four hour limit on the wait, with the expiry wired to its own explicit end state rather than left to time out silently.</p>
+        <p><b>AWS Step Functions</b>, using its wait-for-callback pattern. At the gate the execution hands out a one-time token and stops, consuming nothing while it waits. The approval endpoint returns that token and the execution picks up exactly where it paused. A twenty-four hour limit on the wait, wired to its own explicit end state rather than left to time out silently.</p>
       </dd>
-      <dt class="gaveup">Gave up</dt><dd>Orchestration now lives in two places: the canvas the analyst draws, and the state machine it compiles into. Kept manageable by generating the second from the first.</dd>
+      <dt class="gaveup">Gave up</dt><dd>Orchestration now lives in two places: the canvas the analyst draws, and the state machine it compiles into. Kept manageable by generating the second from the first — see 6.5.</dd>
     </dl>
-  </div>
 
-  <figure>
-    <div class="figbox">
+    <div class="example">
+      <div class="exhead">Example — every path ends somewhere explicit</div>
+      <div class="exbody">
 <svg viewBox="0 0 820 280" role="img" aria-label="The playbook state machine: a Solve step with three retries falls to an explicit Failed state; on success the execution reaches an Approval Gate which holds for up to twenty-four hours waiting for a reviewer, timing out to an Approval Expired state; on approval it proceeds to Publish.">
   <defs>
     <marker id="gh-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -1023,173 +1141,509 @@
   <line x1="20" y1="256" x2="800" y2="256" stroke="var(--rule)" stroke-width="1"/>
   <text x="20" y="272" font-size="10" fill="var(--muted)">Every path terminates explicitly. Nothing sits in limbo, so nothing needs a repair routine to find it later — and the execution history is the audit evidence.</text>
 </svg>
+      </div>
     </div>
-    <figcaption>
-      <b>The approval gate.</b> The middle state holds the execution — for up to 24 hours — until a reviewer responds. Because the wait belongs to the state machine rather than to a running process, a deployment or a restart does not disturb it, and the execution history is the audit evidence. Every path terminates explicitly; nothing sits in limbo.
-    </figcaption>
-  </figure>
+  </div>
 
   <div class="decision">
-    <h3>6.5 — Compile in the web tier, deploy from somewhere else</h3>
+    <h3>6.4 — S3: the files, and the artifacts a filed number depends on</h3>
     <dl>
       <dt>Problem</dt>
+      <dd>Moving the records to a database left the <em>files</em> — uploaded datasets, model artifacts, compiled plans — on the local disk of whichever server received the upload. That is worse than an obvious failure: the record appears everywhere, so the dataset shows up in every listing, and then reading it fails on every server but one.</dd>
+      <dt>Options</dt>
       <dd>
-        <p>When an analyst saves a pipeline, the drawing has to become something AWS can actually run — a state machine. Getting there is two separate operations:</p>
-        <p><b>Compiling</b> turns the canvas into a state machine definition. The two are already the same shape: named boxes and arrows on one side, named steps and what-comes-next on the other. So this is translation, not interpretation, and it is pure computation — data in, data out, no AWS call anywhere.</p>
-        <p><b>Deploying</b> is the call that turns that definition into a real, runnable thing in the account. It needs permission to create a state machine, and permission to attach an execution role to it.</p>
-        <p>The obvious implementation does both in the web tier, which hands the internet-facing server both of those permissions.</p>
+        <ol>
+          <li>A shared network filesystem mounted by every replica.</li>
+          <li>Read every file straight from object storage, every time.</li>
+          <li>Write to object storage <em>and</em> local disk, and treat local disk as a cache.</li>
+        </ol>
       </dd>
       <dt class="chose">Chose</dt>
       <dd>
-        <p>Split them along that seam. Saving compiles and registers a versioned plan; a separate privileged process, running under its own identity, deploys pending plans.</p>
-        <p>The internet-facing server should not hold permission to create infrastructure, because whoever compromises it inherits that permission. Attaching roles is the sharpest edge: anyone who can attach a role can potentially attach one more privileged than their own.</p>
+        <p><b>Option 3.</b> Option 1 bills for standing capacity and adds a thing whose outage is an outage. Option 2 is correct but slow in the one place it matters: model files are read repeatedly during a single run.</p>
+        <p>So uploads write to both, and any server missing a file fetches it on demand and keeps a copy.</p>
+      </dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p><b>Amazon S3</b>, with local disk demoted to a cache. The download lands under a temporary name and is then renamed into place, so a second reader never catches a half-written file. Model artifacts also trigger a listing of their folder, because they need companion files to load at all — fetch the model without them and the error names a missing <em>class</em>, not a missing <em>file</em>, which is a confusing way to find out.</p>
+        <p><b>Versioning, for evidence rather than durability.</b> It answers which version of a methodology document was in force when a number was published. Lifecycle rules are prefix-scoped so that job results expire after thirty days and superseded uploads after a hundred and eighty, while <code>models/</code> is exempt from every rule — its old versions <em>are</em> the audit trail.</p>
+      </dd>
+      <dt class="gaveup">Gave up</dt>
+      <dd>A window where two replicas disagree. A file uploaded to one is authoritative in S3 immediately, but a replica that already cached an older copy keeps serving it until it reconciles. For uploads this is fine, because a new upload gets a new id. It was <em>not</em> fine for skills and the search index, which are found by listing a folder rather than by name — those reconcile at startup and on a short interval, and that was the last thing tying a request to a particular machine.</dd>
+    </dl>
+
+    <div class="example">
+      <div class="exhead">Example — write to both, read from either, and never serve half a file</div>
+      <div class="exbody">
+<svg viewBox="0 0 830 250" role="img" aria-label="Upload writes to both local disk and S3. A second replica that does not have the file reads from S3 into a temporary name, renames it into place, and serves it from local disk afterwards.">
+  <defs>
+    <marker id="fh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+
+  <text x="14" y="16" font-size="9" letter-spacing="0.08em" fill="var(--muted)">UPLOAD &#183; REPLICA A</text>
+  <rect x="14" y="26" width="150" height="42" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  <text x="89" y="52" text-anchor="middle" font-size="11" fill="currentColor">POST /datasets</text>
+
+  <line x1="164" y1="38" x2="252" y2="38" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#fh)"/>
+  <line x1="164" y1="58" x2="252" y2="92" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#fh)"/>
+  <text x="208" y="32" text-anchor="middle" font-size="8.5" fill="var(--muted)">write</text>
+  <text x="212" y="84" text-anchor="middle" font-size="8.5" fill="var(--muted)">write</text>
+
+  <rect x="258" y="20" width="150" height="36" rx="3" fill="none" stroke="currentColor" stroke-width="1"/>
+  <text x="333" y="42" text-anchor="middle" font-size="10" fill="currentColor">local disk (cache)</text>
+
+  <rect x="258" y="76" width="150" height="42" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.75"/>
+  <text x="333" y="94" text-anchor="middle" font-size="11" fill="var(--accent)">S3</text>
+  <text x="333" y="110" text-anchor="middle" font-size="8.5" fill="var(--muted)">versioned &#183; authoritative</text>
+
+  <line x1="14" y1="140" x2="816" y2="140" stroke="var(--rule)" stroke-width="1" stroke-dasharray="3 3"/>
+
+  <text x="14" y="164" font-size="9" letter-spacing="0.08em" fill="var(--muted)">LATER &#183; REPLICA B HAS NEVER SEEN THIS FILE</text>
+
+  <rect x="14" y="176" width="150" height="42" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  <text x="89" y="202" text-anchor="middle" font-size="11" fill="currentColor">GET /datasets/&#8230;</text>
+
+  <line x1="164" y1="197" x2="238" y2="197" stroke="var(--trap)" stroke-width="1.5" marker-end="url(#fh)"/>
+  <text x="201" y="191" text-anchor="middle" font-size="8.5" fill="var(--trap)">miss</text>
+
+  <line x1="330" y1="176" x2="330" y2="124" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#fh)"/>
+  <text x="384" y="156" text-anchor="middle" font-size="8.5" fill="var(--muted)">fetch from S3</text>
+
+  <rect x="244" y="176" width="180" height="42" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="334" y="196" text-anchor="middle" font-size="10" fill="var(--accent)">download to <tspan font-style="italic">.tmp</tspan></text>
+  <text x="334" y="211" text-anchor="middle" font-size="9" fill="var(--muted)">then rename into place</text>
+
+  <line x1="424" y1="197" x2="502" y2="197" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#fh)"/>
+  <rect x="508" y="176" width="180" height="42" rx="3" fill="none" stroke="currentColor" stroke-width="1"/>
+  <text x="598" y="202" text-anchor="middle" font-size="10" fill="currentColor">served, and cached locally</text>
+
+  <text x="704" y="196" font-size="8.5" fill="var(--muted)">rename is atomic, so a</text>
+  <text x="704" y="208" font-size="8.5" fill="var(--muted)">reader never sees a partial file</text>
+</svg>
+      </div>
+    </div>
+  </div>
+
+  <div class="decision">
+    <h3>6.5 — IAM: compile in the web tier, deploy from somewhere else</h3>
+    <dl>
+      <dt>Problem</dt>
+      <dd>
+        <p>When an analyst saves a pipeline, the drawing has to become something AWS can run. That is two operations with very different permission needs. <b>Compiling</b> turns the canvas into a state machine definition — pure computation, data in, data out, no AWS call anywhere. <b>Deploying</b> creates the state machine in the account, which needs permission to create one and to attach an execution role to it.</p>
+        <p>The obvious implementation does both in the web tier, which hands the internet-facing server both permissions.</p>
+      </dd>
+      <dt>Options</dt>
+      <dd>
+        <ol>
+          <li>Do both in the web tier, with a narrowly scoped role.</li>
+          <li>Do both in the web tier, behind an internal admin endpoint.</li>
+          <li>Split them: compile on save, deploy from a separate privileged identity.</li>
+        </ol>
+      </dd>
+      <dt class="chose">Chose</dt>
+      <dd>
+        <p><b>Option 3.</b> Options 1 and 2 both leave the internet-facing process holding permission to create infrastructure, and whoever compromises it inherits that. Attaching roles is the sharpest edge: anyone who can attach a role can potentially attach one more privileged than their own. An endpoint being "internal" is not a boundary when the process serving it is the one exposed.</p>
         <p>The analyst loses nothing. A broken diagram is still rejected in under a second, while they are looking at it. Compiling is the half that produces the value, and it is the half that needs no permissions at all.</p>
       </dd>
       <dt class="how">How</dt>
       <dd>
-        <p>The compiler is ordinary Python with no AWS libraries in it: canvas in, <b>Amazon States Language</b> out (the JSON dialect Step Functions reads). That is what makes it safe to run in the web tier, and it means it can be unit-tested offline.</p>
-        <p>Compiled plans are versioned into <b>S3</b>. A separate deployment script, run under its own more privileged identity, picks up pending plans and creates the state machines. The web tier's role simply does not include permission to do that.</p>
+        <p>The compiler is ordinary Python with no AWS libraries in it: canvas in, <b>Amazon States Language</b> out. Compiled plans are versioned into S3. A separate deployment script, run under its own more privileged identity, picks up pending plans and creates the state machines. The web tier's role simply does not include permission to do that.</p>
       </dd>
       <dt>Bonus</dt>
       <dd>
-        <p>Every compiled version is retained rather than overwritten, with its hash and timestamp. That is the audit answer to "which calculation produced the number we filed?"</p>
-        <p>And because each pipeline compiles to its own state machine instead of being fed through one generic interpreter, <b>the execution graph AWS shows you is the analyst's diagram</b>. When a run fails, the console highlights the same box they drew. A generic interpreter would have moved the problem into AWS and lost that.</p>
+        <p>Every compiled version is retained with its hash and timestamp, which is the audit answer to "which calculation produced the number we filed?"</p>
+        <p>And because each pipeline compiles to its own state machine instead of being fed through one generic interpreter, <b>the execution graph AWS shows you is the analyst's diagram</b>. When a run fails, the console highlights the same box they drew.</p>
       </dd>
     </dl>
+
+    <div class="example">
+      <div class="exhead">Example — the permission the internet-facing process does not hold</div>
+      <div class="exbody">
+<svg viewBox="0 0 830 240" role="img" aria-label="The web tier compiles a canvas into a versioned plan in S3 and holds no permission to create infrastructure. A separate deployment identity reads pending plans and creates the state machines.">
+  <defs>
+    <marker id="ih" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+    </marker>
+    <marker id="ih-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--trap)"/>
+    </marker>
+  </defs>
+
+  <rect x="10" y="30" width="330" height="150" rx="4" fill="var(--surface-2)"/>
+  <text x="20" y="24" font-size="9" letter-spacing="0.08em" fill="var(--muted)">INTERNET-FACING &#183; NO INFRASTRUCTURE PERMISSIONS</text>
+
+  <rect x="26" y="52" width="136" height="46" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  <text x="94" y="72" text-anchor="middle" font-size="10.5" fill="currentColor">analyst saves</text>
+  <text x="94" y="87" text-anchor="middle" font-size="10.5" fill="currentColor">the canvas</text>
+
+  <line x1="162" y1="75" x2="196" y2="75" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ih)"/>
+
+  <rect x="202" y="46" width="126" height="58" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.75"/>
+  <text x="265" y="68" text-anchor="middle" font-size="10.5" fill="var(--accent)">compile</text>
+  <text x="265" y="83" text-anchor="middle" font-size="8.5" fill="var(--muted)">pure Python</text>
+  <text x="265" y="95" text-anchor="middle" font-size="8.5" fill="var(--muted)">no AWS calls</text>
+
+  <line x1="265" y1="104" x2="265" y2="144" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ih)"/>
+  <rect x="186" y="148" width="158" height="26" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.25"/>
+  <text x="265" y="166" text-anchor="middle" font-size="9.5" fill="var(--accent)">versioned plan in S3</text>
+
+  <line x1="352" y1="105" x2="352" y2="30" stroke="var(--trap)" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <line x1="352" y1="105" x2="352" y2="180" stroke="var(--trap)" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="360" y="122" font-size="9" fill="var(--trap)">the permission</text>
+  <text x="360" y="134" font-size="9" fill="var(--trap)">boundary</text>
+
+  <rect x="446" y="30" width="374" height="150" rx="4" fill="var(--surface-2)"/>
+  <text x="456" y="24" font-size="9" letter-spacing="0.08em" fill="var(--muted)">SEPARATE IDENTITY &#183; OPERATOR SHELL OR CI</text>
+
+  <line x1="344" y1="161" x2="470" y2="123" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ih)"/>
+  <text x="404" y="156" text-anchor="middle" font-size="8.5" fill="var(--muted)">reads pending</text>
+
+  <rect x="476" y="90" width="150" height="52" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="551" y="112" text-anchor="middle" font-size="10.5" fill="var(--accent)">deploy script</text>
+  <text x="551" y="128" text-anchor="middle" font-size="8.5" fill="var(--muted)">may attach roles</text>
+
+  <line x1="626" y1="116" x2="666" y2="116" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ih)"/>
+  <rect x="672" y="90" width="136" height="52" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="740" y="112" text-anchor="middle" font-size="10.5" fill="var(--accent)">state machine</text>
+  <text x="740" y="128" text-anchor="middle" font-size="8.5" fill="var(--muted)">runnable in the account</text>
+
+  <line x1="10" y1="202" x2="820" y2="202" stroke="var(--rule)" stroke-width="1"/>
+  <text x="10" y="220" font-size="9.5" fill="var(--muted)">Compromising the web tier gets you the ability to write a plan. It does not get you the ability to make one real.</text>
+</svg>
+      </div>
+    </div>
   </div>
 
   <div class="decision">
-    <h3>6.6 — Accepting a performance cost, then paying it back</h3>
-    <dl>
-      <dt>Problem</dt><dd>After 6.1, a page that used to do twenty instant memory lookups was making twenty network calls. Validating a canvas of eleven steps cost twenty-one round trips to fetch three distinct records.</dd>
-      <dt class="chose">Chose</dt>
-      <dd>
-        <p>Remember records for the duration of a single request. Twenty-one round trips became two.</p>
-        <p>One request only, on purpose. A longer-lived cache brings staleness: one server showing an old version of a model another server just updated. Scoped this way the data is consistent within the operation and fresh on the next one.</p>
-      </dd>
-      <dt class="how">How</dt>
-      <dd>
-        <p><b>No AWS service — a language feature.</b> Python's <code>contextvars</code>, which the async runtime copies for each task. The web framework runs every request in its own task, so per-request isolation comes for free: concurrent requests cannot see each other's entries and nothing survives into the next one.</p>
-        <p>It lives in the storage module, so writes refresh it automatically and no caller can forget to invalidate it. Every hit returns a copy, so code that modifies what it got cannot corrupt the next reader. Misses are remembered too, because validation asks about the same missing reference over and over.</p>
-        <p>Worth stating plainly: a managed cache would have added a network hop to fix a problem caused by network hops.</p>
-      </dd>
-      <dt class="gaveup">Gave up</dt><dd>Within one long operation the data is a snapshot. For a workflow run that is arguably what you want anyway — the run should not see a model change underneath it halfway through.</dd>
-    </dl>
-  </div>
-
-  <div class="decision">
-    <h3>6.7 — Designing for the query, not the storage</h3>
-    <dl>
-      <dt>Problem</dt><dd>Listing recent runs meant reading <em>every run ever recorded</em> and sorting them, because records were organised by identifier and identifiers sort meaninglessly. The cost grew forever.</dd>
-      <dt class="chose">Chose</dt><dd>A secondary index organising the same records by function and time, so "the newest fifty" is a range read that stops after fifty. The cost of a page no longer depends on how many runs exist. Ten runs or ten million, the same.</dd>
-      <dt class="how">How</dt>
-      <dd>
-        <p>A <b>DynamoDB global secondary index</b>: a second, automatically maintained view of the same records, keyed by function and timestamp instead of by id. Added in CDK, and DynamoDB backfills it.</p>
-        <p>Reads walk it newest-first and stop at the page size, returning a marker for the next page. That marker travels in an HTTP header, not the response body, so existing callers that expect a plain list carry on working.</p>
-        <p>Timestamps are stored as text in a format that sorts chronologically when sorted alphabetically. The whole index depends on that one property.</p>
-      </dd>
-      <dt class="gaveup">Gave up</dt><dd>Nothing on the read path. But it fixed only half the problem: making a read cheap says nothing about how much there is to read. Retention was a separate question with a separate answer, settled later — see §7.4.</dd>
-    </dl>
-  </div>
-
-  <div class="decision">
-    <h3>6.8 — Protecting the records from the deployment that manages them</h3>
-    <dl>
-      <dt>Problem</dt><dd>The records database was set to be deleted along with the stack that creates it. Sensible for a lab, wrong the moment the database holds an audit trail. And it is not only an explicit teardown that triggers it: any change the platform treats as a <em>replacement</em> destroys and recreates the table, taking the contents with it.</dd>
-      <dt class="chose">Chose</dt><dd>Retain the database independently of the stack, and enable point-in-time recovery — 35 days of second-granularity restore, the only defence against a bad write rather than a lost resource.</dd>
-      <dt class="how">How</dt><dd>Two lines of infrastructure-as-code, deployed and then confirmed by querying the live database instead of trusting the deployment output. The same change covers the replacement case as well as deliberate teardown.</dd>
-      <dt class="gaveup">Gave up</dt><dd>A teardown now leaves an orphaned database to remove by hand. That is the correct direction to fail: recovering from an unwanted leftover is tedious, recovering from a deleted audit trail is impossible.</dd>
-      <dt>Note</dt><dd>This sat open longer than it should have. Everything built on top of that database assumed it mattered. The configuration said otherwise, and the gap between those two was the real risk.</dd>
-    </dl>
-  </div>
-
-  <div class="decision">
-    <h3>6.9 — Keeping the record when the payload will not fit</h3>
-    <dl>
-      <dt>Problem</dt><dd>The database caps a single record at 400 KB. A run carries its full result set, so an unusually large run exceeds that, and the write fails <em>after</em> the computation has already succeeded.</dd>
-      <dt>Options</dt><dd>Fail the request; silently truncate; or store the result elsewhere and link to it.</dd>
-      <dt class="chose">Chose</dt><dd>Keep the run record, drop the row-level detail, and note how many rows were omitted. The user still gets their complete results; only the stored copy is trimmed. Failing would throw away work that succeeded. Truncating silently would leave a record that lies.</dd>
-      <dt class="how">How</dt>
-      <dd><p><b>Application logic, no service.</b> Before writing, the record is measured; if it exceeds the limit the row-level results are dropped and a note recording how many rows were omitted is attached. The complete results still go back to the caller — only the stored history is trimmed.</p></dd>
-      <dt class="gaveup">Gave up</dt><dd>Full history for outsized runs. Storing the payload in object storage is the right long-term answer and is the next step if large runs become common — this is a deliberate, documented interim.</dd>
-    </dl>
-  </div>
-
-  <div class="decision">
-    <h3>6.10 — Records are durable; so are the files</h3>
-    <dl>
-      <dt>Problem</dt><dd>Moving the records to a database left the <em>files</em> — uploaded datasets, model artifacts — on the local disk of whichever server received the upload. That is worse than an obvious failure. The record appears everywhere, so the dataset shows up in every listing, and then reading it fails on every server but one.</dd>
-      <dt class="chose">Chose</dt><dd>Uploads write to object storage as well as local disk, and any server missing a file fetches it on demand and keeps a copy. A cache, not a direct read every time, because model files are read repeatedly during a run.</dd>
-      <dt class="how">How</dt>
-      <dd>
-        <p><b>Amazon S3</b>, with local disk demoted to a cache. Uploads write to both. Reads take the local file if it exists; if not, the file is fetched, saved locally, and used from there onwards.</p>
-        <p>The download lands under a temporary name and is then renamed into place, so a second reader never catches a half-written file. Model artifacts also trigger a listing of their folder, so the companion files come along.</p>
-      </dd>
-      <dt>Detail</dt><dd>Model artifacts need their companion files to load at all. Fetch the model without them and the error names a missing <em>class</em>, not a missing <em>file</em>, which is a confusing way to find out. So the fetch brings the companions with it.</dd>
-    </dl>
-  </div>
-
-  <div class="decision">
-    <h3>6.11 — Measuring an upgrade, and shipping it turned off</h3>
+    <h3>6.6 — Bedrock: measuring an upgrade, and shipping it turned off</h3>
     <dl>
       <dt>Problem</dt><dd>The document search behind the AI agents used keyword matching. The obvious upgrade is semantic search using embeddings.</dd>
-      <dt>What happened</dt>
+      <dt>Options</dt>
       <dd>
-        <p>It was built, measured against a test set, and it <em>lost</em>. Keyword matching found the right document first every time. The semantic version managed three out of five.</p>
-        <p>Every document in the corpus describes deposit balance modelling, so every passage looks like every other one and semantic similarity has almost nothing to separate. Analysts also search using the corpus's own vocabulary, which is exactly where keyword matching is strongest.</p>
+        <ol>
+          <li>Ship semantic search, because it is the modern answer.</li>
+          <li>Keep keyword matching and skip the work.</li>
+          <li>Build it, measure it against a fixed query set, and let the result decide.</li>
+        </ol>
       </dd>
-      <dt class="chose">Chose</dt><dd>Ship it switched off, one setting away, with the condition for revisiting written down: a larger, more varied corpus. That is exactly the regulatory-filings case, where many agencies across decades describe the same ideas in different words.</dd>
+      <dt class="chose">Chose</dt>
+      <dd>
+        <p><b>Option 3 — and the measurement said keyword search wins here.</b> Every document in the corpus describes deposit balance modelling, so every passage looks like every other one and semantic similarity has almost nothing to separate on. Analysts also search using the corpus's own vocabulary, which is exactly where keyword matching is strongest.</p>
+        <p>So it ships switched off, one setting away, with the condition for revisiting written down: a larger, more varied corpus. That is exactly the regulatory-filings case, where many agencies across decades describe the same ideas in different words.</p>
+      </dd>
       <dt class="how">How</dt>
       <dd><p><b>Amazon Bedrock</b> for the embedding model, with vectors cached by content hash so re-indexing an unchanged document costs nothing. Results are combined with the existing keyword ranking, then both are measured against the same query set. The whole path sits behind one environment variable, which is what makes "built but off" a real state instead of a claim.</p></dd>
+      <dt class="gaveup">Gave up</dt><dd>The effort, mostly. Building it before defining the benchmark meant discovering it lost after the work was spent — a day writing the evaluation set first would have reached the same answer sooner. That is the single thing I would do differently on this project.</dd>
       <dt>Caveat</dt><dd>Five queries, written by the same person who chose the expected answers. A defensible benchmark needs analyst-written queries with blind relevance labels. This was enough to decline an upgrade. It was not enough to call the question settled.</dd>
     </dl>
+
+    <div class="example">
+      <div class="exhead">Example — the measurement that decided it</div>
+      <div class="exbody">
+<table>
+  <thead><tr><th>Query</th><th>Keyword</th><th>Semantic (Titan embeddings)</th></tr></thead>
+  <tbody>
+    <tr><td>deposit beta methodology</td><td><span class="pill free">rank 1</span></td><td><span class="pill free">rank 1</span></td></tr>
+    <tr><td>non-maturity deposit assumptions</td><td><span class="pill free">rank 1</span></td><td><span class="pill trap">rank 4</span></td></tr>
+    <tr><td>NII sensitivity to rate shocks</td><td><span class="pill free">rank 1</span></td><td><span class="pill free">rank 1</span></td></tr>
+    <tr><td>attrition curve calibration</td><td><span class="pill free">rank 1</span></td><td><span class="pill trap">rank 3</span></td></tr>
+    <tr><td>CCAR severely adverse scenario</td><td><span class="pill free">rank 1</span></td><td><span class="pill free">rank 1</span></td></tr>
+    <tr><td><b>correct document ranked first</b></td><td><b>5 / 5</b></td><td><b>3 / 5</b></td></tr>
+  </tbody>
+</table>
+      </div>
+    </div>
   </div>
 
   <div class="decision">
-    <h3>6.12 — Lambda now; containers when the constraints change</h3>
+    <h3>6.7 — Lambda and Fargate: the same question, two opposite answers</h3>
     <dl>
-      <dt class="chose">Chose</dt><dd>Lambda for computation. Runs are short, bursty and event-driven, and it costs nothing when idle.</dd>
+      <dt>Problem</dt><dd>Two workloads need somewhere to run: the numerical solver, and the web tier. They look similar and want opposite things.</dd>
+      <dt>Options</dt>
+      <dd>
+        <ol>
+          <li>Put both on functions, and accept a cold start on every request.</li>
+          <li>Put both on containers, and pay for the solver to sit idle.</li>
+          <li>Match each to its own shape: functions for the solver, containers for the web tier.</li>
+        </ol>
+      </dd>
+      <dt class="chose">Chose</dt>
+      <dd>
+        <p><b>Option 3.</b> Solves are short, bursty and event-driven, and scale to zero — a function's shape exactly, and scaling to zero is what holds an idle account at no cost. The web tier is a long-lived process that serves requests and holds connections open while agent replies stream back word by word — a container's shape, and a cold start per request would be visible to every user.</p>
+        <p><b>Reading one of these as the answer to the other is the easiest mistake to make in this document.</b> Same service family, opposite conclusions, because the workloads differ.</p>
+      </dd>
       <dt class="how">How</dt>
       <dd>
-        <p><b>AWS Lambda</b>, running a container image so the scientific-computing libraries and the model files fit. <b>AWS CodeBuild</b> builds the image and <b>Amazon ECR</b> stores it, so no developer needs Docker locally. The image tag is a hash of the source, which gives "what exactly is running?" an answer.</p>
-        <p>Work reaches it from an <b>SQS</b> queue; AWS delivers messages to the function and scales it on queue depth. One image serves every job type, selected by a mode field in the message.</p>
+        <p><b>AWS Lambda</b> for the solver, running a container image so the scientific-computing libraries fit. Work reaches it from an <b>SQS</b> queue; AWS delivers messages and scales the function on queue depth. Failures retry three times, then land in a dead-letter queue rather than disappearing.</p>
+        <p><b>AWS Fargate</b> for the web tier, two tasks behind a load balancer, one in each of two availability zones. Both images are built by <b>AWS CodeBuild</b> into <b>Amazon ECR</b>, so no developer needs Docker and the image tag is a hash of the source.</p>
       </dd>
+      <dt class="gaveup">Gave up</dt>
+      <dd>Two images to build rather than one. Shipping one image everywhere would have worked and would have made every solver cold start pull an image several times larger for the sake of one file.</dd>
       <dt>Revisit when</dt>
-      <dd>
-        <p>None of these is true yet, and any one of them would flip the decision: a single run passes fifteen minutes, which is Lambda's hard limit; the image passes ten gigabytes; a model needs more memory than Lambda offers, or a GPU; or cold-start latency stops being acceptable.</p>
-        <p>The migration would be contained. Step Functions invokes container tasks the same way it invokes Lambda, so the state machine design survives the change.</p>
-      </dd>
+      <dd>None of these is true yet, and any one would move the solver to containers: a single run passes fifteen minutes, which is Lambda's hard limit; the image passes ten gigabytes; a model needs more memory than Lambda offers, or a GPU; or cold-start latency stops being acceptable. The migration would be contained, because Step Functions invokes container tasks the same way it invokes Lambda.</dd>
     </dl>
+
+    <div class="example">
+      <div class="exhead">Example — what decided each one</div>
+      <div class="exbody">
+<table>
+  <thead><tr><th></th><th>Solver &rarr; Lambda</th><th>Web tier &rarr; Fargate</th></tr></thead>
+  <tbody>
+    <tr><td>Shape of the work</td><td>short, bursty, event-driven</td><td>long-lived, always answering</td></tr>
+    <tr><td>Idle cost</td><td><span class="pill free">zero &#183; scales to zero</span></td><td><span class="pill watch">~$34/month for two tasks</span></td></tr>
+    <tr><td>Cold start</td><td>acceptable &#183; nobody is waiting</td><td><span class="pill trap">visible to every user</span></td></tr>
+    <tr><td>Holds connections open</td><td>no</td><td>yes &#183; streaming agent replies</td></tr>
+    <tr><td>Hard ceiling</td><td><span class="pill watch">15 min per run</span></td><td>none that binds here</td></tr>
+    <tr><td>Image retained</td><td>1 &#183; a bad solve is retryable</td><td>2 &#183; a bad image takes the app down</td></tr>
+  </tbody>
+</table>
+      </div>
+    </div>
   </div>
 
   <div class="decision">
-    <h3>6.13 — Taking the password out of the request path</h3>
+    <h3>6.8 — CloudFront: one distribution, and the certificate the load balancer cannot have</h3>
     <dl>
       <dt>Problem</dt>
       <dd>
-        <p>§6.3 stopped the application from <em>storing</em> sessions. It still had the application <em>handling</em> credentials: the browser posted a username and password to an endpoint here, which forwarded them to the identity service and passed the tokens back.</p>
-        <p>That works, and it quietly makes this codebase part of the credential boundary. Every log line, every exception handler, every piece of middleware anyone adds later sits on a path a password travels down. Nothing was wrong with the implementation. The exposure is structural, and the only way to remove it is to stop the password arriving at all.</p>
+        <p>Three things were outstanding and looked unrelated: the compiled frontend had nowhere to be served from, the API answered over plain HTTP, and cross-origin permissions were configured for a developer's laptop.</p>
+        <p>The encryption one has a structural cause worth stating, because it decides the answer. A load balancer <em>cannot</em> carry a certificate here: certificates are issued against domain names, and nobody owns the <code>*.elb.amazonaws.com</code> name AWS hands out. No amount of configuring the load balancer fixes that.</p>
       </dd>
-      <dt>Options</dt><dd>Keep proxying and be careful: audit the logging, scrub the traces, and review anything added near that route forever. Or send the browser to the identity provider's own page and never see the credential at all.</dd>
+      <dt>Options</dt>
+      <dd>
+        <ol>
+          <li>Buy a domain, get a certificate, and terminate TLS at the load balancer. Serve the frontend from a separate S3 website and configure CORS between the two origins.</li>
+          <li>Put API Gateway in front for TLS and a stable front door.</li>
+          <li>One CloudFront distribution serving both the frontend and the API.</li>
+        </ol>
+      </dd>
       <dt class="chose">Chose</dt>
       <dd>
-        <p>The hosted page. The browser goes to Cognito, authenticates there, and comes back with a single-use code that it exchanges for tokens itself. <b>Nothing in the request path ever sees a password</b>, which is a property of the design rather than a discipline anyone has to maintain.</p>
+        <p><b>Option 3, and it collapsed three problems into one purchase.</b> The distribution supplies a certificate, serves the compiled frontend, and puts the application and the API on a single address — which does not so much configure cross-origin permissions as delete the question. At this volume it is free.</p>
+        <p>Option 1 costs a domain and still leaves two origins to keep in step. Option 2 bills per request for a front door already being paid for, and adds nothing here that CloudFront does not do — see the API Gateway answer in §11 for when that flips.</p>
+        <p><b>The reason to look for that shape is not elegance.</b> Three separate efforts would each have been justified on their own and wasteful together, and nothing in the three items, read individually, would have shown it.</p>
       </dd>
       <dt class="how">How</dt>
       <dd>
-        <p><b>Authorization code flow with PKCE.</b> PKCE rather than a client secret for a structural reason, not a preference: the frontend is a static bundle on a CDN, so anything it ships can be read by anyone who opens developer tools. It cannot keep a secret. That is what a public client means.</p>
-        <p>So the proof of "I am the one who started this flow" is a random verifier generated for each login, of which only the SHA-256 hash is sent up front. A stolen code is useless without the verifier, and the verifier never leaves the tab.</p>
-        <p><b>The state parameter is round-tripped and checked.</b> This is the easy half to skip, because skipping it breaks nothing visible. Without it, an attacker can feed a victim a code of their own and log them into the <em>attacker's</em> account — a login that succeeds. Failures that look like success are the ones to name out loud.</p>
-        <p><b>The configuration is fetched, not compiled in.</b> The bundle is built once and served everywhere, but the pool and client ids are chosen by CloudFormation. A build-time constant would mean one build per environment, for values you cannot know at build time. So a small endpoint reports them, and it is unauthenticated on purpose: a client id is an identifier, the hosted domain is where the browser is about to be sent in plain sight, and a public client has no secret to leak.</p>
+        <p><b>Two behaviours on one distribution.</b> The default behaviour serves the site bucket, which stays private and is reached through origin access control rather than being made public. <code>/api/*</code> goes to the load balancer, with all methods allowed, because a read-only API is not an API.</p>
+        <p><b>Caching disabled on the API behaviour</b>, and that is not a tuning choice: caching an authenticated response would serve one analyst's data to another. The origin request policy forwards Authorization, cookies and query strings, minus the host header, so the load balancer sees its own hostname rather than the distribution's.</p>
+        <p><b>The load balancer refuses anything that did not come through the distribution.</b> CloudFront attaches a secret header; the listener returns 403 without it. Stated precisely, because it matters to anyone assessing this: it is a <em>guard</em>, not a boundary. The value has to be a literal in the configuration, so it stops direct access and casual scanning without being a real secret. Making the origin genuinely unreachable needs a private subnet and a gateway this design deliberately avoided — see 6.11.</p>
       </dd>
       <dt class="gaveup">Gave up</dt>
       <dd>
-        <p><b>Two deliberate stops short of the destination, both recorded rather than glossed.</b></p>
-        <p>Multi-factor authentication is <em>optional</em>, not required. Required locks out every existing user until each one enrols, and this pool's only member is the person running the deploy. It is one word to change on the day there is more than one user to coordinate. Authenticator apps only, not SMS: SMS bills per message and is the weaker factor, which is why NIST stopped recommending it.</p>
-        <p>And the old username-and-password path is still enabled at the identity service. The infrastructure, the container image and the frontend bundle ship as three separate steps, so there is no instant at which all three change together; leaving it on made a broken hosted flow a rollback rather than a lockout. <b>That hold has now expired in the useful sense</b> — a real login has gone through the hosted flow, which is the evidence the rollback was insurance against needing. Until the switch is actually thrown, the headline property is true of <em>this service</em> and not enforced by the pool: nothing in the request path handles a password, and someone holding a username and password could still obtain a token directly.</p>
+        <p><b>A memorable near-miss.</b> Client-side routing needs a bookmarked page to be answerable directly, and the obvious lever is mapping 404 to <code>index.html</code>. That is a <em>distribution-wide</em> setting, so it would have rewritten genuine API 404s into an HTML page returning 200 — a working application in front of an API that lies, with nothing failing anywhere. A CloudFront function attaches to <em>one</em> behaviour, so the rewrite reaches the site and never the API. <b>A setting documented as whole-system while reading like a per-section option is worth checking before you rely on it.</b></p>
+        <p>And a five-minute deploy for any distribution change, which is the price of a global edge network and is felt on every configuration tweak.</p>
       </dd>
-      <dt>Note</dt><dd>Verified first as far as was possible without a human at a browser: the hosted page serves for this client and challenge, an unregistered redirect address is rejected, the callback survives the CDN's history fallback, the configuration endpoint answers from the deployed containers, and MFA reads as available with authenticator apps enabled. <b>A real login has since been completed through the flow on the deployed system</b>, which is the one part of it no automated check could reach — and which converts the second "stop short" above from a deliberate hold into a pending one-line change.</dd>
     </dl>
+
+    <div class="example">
+      <div class="exhead">Example — two behaviours, and the one that must not cache</div>
+      <div class="exbody">
+<svg viewBox="0 0 830 260" role="img" aria-label="One CloudFront distribution with two behaviours. The default behaviour serves a private S3 bucket through origin access control with a history-fallback function attached. The slash-api behaviour forwards to the load balancer with a secret header, caching disabled, all methods allowed.">
+  <defs>
+    <marker id="ch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+
+  <rect x="12" y="88" width="120" height="46" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  <text x="72" y="108" text-anchor="middle" font-size="11" fill="currentColor">Browser</text>
+  <text x="72" y="123" text-anchor="middle" font-size="8.5" fill="var(--muted)">https only</text>
+
+  <line x1="132" y1="111" x2="176" y2="111" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ch)"/>
+
+  <rect x="182" y="76" width="150" height="70" rx="3" fill="none" stroke="var(--accent)" stroke-width="2"/>
+  <text x="257" y="100" text-anchor="middle" font-size="11" fill="var(--accent)">CloudFront</text>
+  <text x="257" y="116" text-anchor="middle" font-size="8.5" fill="var(--muted)">supplies the certificate</text>
+  <text x="257" y="130" text-anchor="middle" font-size="8.5" fill="var(--muted)">http &#8594; https redirect</text>
+
+  <line x1="332" y1="96" x2="392" y2="52" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ch)"/>
+  <text x="360" y="62" font-size="8.5" fill="var(--muted)">default</text>
+
+  <line x1="332" y1="126" x2="392" y2="180" stroke="var(--accent)" stroke-width="1.5" marker-end="url(#ch)"/>
+  <text x="356" y="168" font-size="8.5" fill="var(--muted)">/api/*</text>
+
+  <rect x="398" y="20" width="230" height="62" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="513" y="42" text-anchor="middle" font-size="10.5" fill="var(--accent)">S3 site bucket &#183; private</text>
+  <text x="513" y="57" text-anchor="middle" font-size="8.5" fill="var(--muted)">origin access control, not public</text>
+  <text x="513" y="71" text-anchor="middle" font-size="8.5" fill="var(--muted)">cache: optimised</text>
+
+  <rect x="644" y="20" width="174" height="62" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.25" stroke-dasharray="4 3"/>
+  <text x="731" y="40" text-anchor="middle" font-size="9" fill="var(--accent)">history fallback fn</text>
+  <text x="731" y="54" text-anchor="middle" font-size="8.5" fill="var(--muted)">no dot in path &#8594; index.html</text>
+  <text x="731" y="70" text-anchor="middle" font-size="8.5" fill="var(--muted)">attached to THIS behaviour only</text>
+
+  <rect x="398" y="152" width="230" height="76" rx="3" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+  <text x="513" y="174" text-anchor="middle" font-size="10.5" fill="var(--accent)">ALB &#8594; Fargate &#215;2</text>
+  <text x="513" y="189" text-anchor="middle" font-size="8.5" fill="var(--muted)">+ X-Origin-Verify header</text>
+  <text x="513" y="203" text-anchor="middle" font-size="8.5" fill="var(--muted)">all methods allowed</text>
+  <text x="513" y="219" text-anchor="middle" font-size="8.5" fill="var(--trap)">cache: DISABLED</text>
+
+  <rect x="644" y="152" width="174" height="76" rx="3" fill="none" stroke="var(--trap)" stroke-width="1.25" stroke-dasharray="4 3"/>
+  <text x="731" y="176" text-anchor="middle" font-size="8.5" fill="var(--trap)">403 to anything arriving</text>
+  <text x="731" y="189" text-anchor="middle" font-size="8.5" fill="var(--trap)">without the header</text>
+  <text x="731" y="208" text-anchor="middle" font-size="8.5" fill="var(--muted)">a guard, not a boundary:</text>
+  <text x="731" y="220" text-anchor="middle" font-size="8.5" fill="var(--muted)">the value is a config literal</text>
+
+  <line x1="12" y1="246" x2="818" y2="246" stroke="var(--rule)" stroke-width="1"/>
+  <text x="12" y="258" font-size="9" fill="var(--muted)">One address for both, so there is no cross-origin question to configure. Caching the API would serve one analyst's data to another.</text>
+</svg>
+      </div>
+    </div>
+  </div>
+
+  <div class="decision">
+    <h3>6.9 — SQS: taking the computation out of the request</h3>
+    <dl>
+      <dt>Problem</dt>
+      <dd>The numerical solve ran inside the HTTP request that asked for it, in a subprocess with a thirty-second cap. Two failures follow. A heavy solve occupies a web server for its whole duration, so enough of them take the API down for everyone. And a solve that outlives the cap is lost with nothing to inspect, because the only record of it was the request.</dd>
+      <dt>Options</dt>
+      <dd>
+        <ol>
+          <li>Keep it in the request and raise the timeout.</li>
+          <li>Hand it to a background thread in the same process and poll for the result.</li>
+          <li>Put the work on a queue, answer immediately, and let a separate worker consume it.</li>
+        </ol>
+      </dd>
+      <dt class="chose">Chose</dt>
+      <dd>
+        <p><b>Option 3.</b> Option 1 makes the failure worse: a longer timeout holds the server longer. Option 2 looks cheaper and reintroduces the whole problem this architecture exists to remove — the work lives in one process's memory, so a restart loses it and a second replica cannot see it.</p>
+        <p>A queue makes the work a durable object independent of any process. The request returns an acknowledgement, and the worker scales on queue depth without the web tier knowing.</p>
+      </dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p><b>Amazon SQS</b> delivering to a Lambda worker, one message at a time. Three failed receives and the message moves to a dead-letter queue instead of disappearing, so a failure is something you can go and look at.</p>
+        <p><b>Two retention periods, deliberately different.</b> The main queue keeps messages one day; the dead-letter queue keeps them fourteen. Work is only worth retrying while somebody is still waiting for it, but a failure is worth keeping long enough to be noticed on a Monday.</p>
+        <p><b>Visibility timeout is the worker's timeout plus sixty seconds</b>, and this is not a guess: SQS rejects an event source mapping whose visibility timeout is shorter than the function's, because that combination guarantees a message is redelivered while the first attempt is still running.</p>
+      </dd>
+      <dt class="gaveup">Gave up</dt>
+      <dd>
+        <p><b>A synchronous answer.</b> The caller now receives an acknowledgement and has to come back for the result, which is more work in the browser and a real change to the API's shape.</p>
+        <p><b>At-least-once delivery.</b> A message can be delivered more than once, so a solve has to tolerate running twice. That is acceptable here because a solve is a pure function of its inputs and the result is written under the run's own id — but it is a property the worker has to keep, not one the queue guarantees.</p>
+      </dd>
+    </dl>
+
+    <div class="example">
+      <div class="exhead">Example — the same request, before and after</div>
+      <div class="exbody">
+<pre><i># before — the solve is inside the request</i>
+POST /api/runs   <s>&#8230; 28s &#8230;</s>  200 OK
+                 <s>web server occupied the whole time</s>
+                 <s>over 30s: killed, and nothing is left to look at</s>
+
+<i># after — the request only enqueues</i>
+POST /api/runs   <b>&#8594; 202 Accepted</b>  {"run_id": "run-abc123"}   <i>~40ms</i>
+   │
+   └─ SQS ──&#8594; Lambda worker   <i>scales on queue depth, zero when idle</i>
+                 │
+                 ├─ success ──&#8594; result written under run-abc123
+                 │
+                 └─ fails 3&#215; ──&#8594; <b>dead-letter queue</b>   <i>kept 14 days</i>
+                                    <i>an alarm fires; the message is still there</i>
+
+GET  /api/runs/run-abc123        <i>&#8594; status, then the result</i>
+
+<i># visibility timeout = worker timeout + 60s</i>
+<i># SQS rejects the mapping otherwise: a shorter one guarantees</i>
+<i># redelivery while the first attempt is still running.</i></pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="decision">
+    <h3>6.10 — Parameter Store: the one credential that cannot come from a role</h3>
+    <dl>
+      <dt>Problem</dt>
+      <dd>Everything inside the account authenticates by role, with no stored credentials anywhere. One thing cannot: the AI provider's API key, because it belongs to a third party. It sat in plaintext in a file beside the code, copied onto every machine that ran the application, one <code>git add -A</code> away from the repository.</dd>
+      <dt>Options</dt>
+      <dd>
+        <ol>
+          <li>Leave it in the environment file and keep that file out of version control.</li>
+          <li>AWS Secrets Manager.</li>
+          <li>SSM Parameter Store, as an encrypted SecureString.</li>
+        </ol>
+      </dd>
+      <dt class="chose">Chose</dt>
+      <dd>
+        <p><b>Option 3, and the reasoning against Option 2 is the interesting one.</b> Secrets Manager charges $0.40 per secret per month, and what that buys is rotation machinery — worth paying for a credential that <em>can</em> rotate automatically. A provider API key is not one of those. Rotating it means logging into the provider's console. Paying a subscription for automation that cannot apply is the definition of a service chosen by reputation rather than fit.</p>
+        <p>Parameter Store SecureString gives the same KMS encryption and the same access control, free at any volume this reaches.</p>
+      </dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p><b>The last path segment becomes the environment variable</b>, so the mapping is visible in the console without reading any code: <code>/cma/workbench/OPENAI_API_KEY</code> becomes <code>OPENAI_API_KEY</code>. A variable already exported in the real process environment always wins, because that is a human or a container runtime being explicit.</p>
+        <p><b>And in the deployed system, none of that code runs.</b> The container is never told where the parameter lives. The container runtime resolves the SecureString before the process starts and injects it as an ordinary environment variable, using the execution role — held by the platform, not by the container. The task role the application runs under has no permission to read parameters at all: it can reach the database, the queue, the state machine, object storage, sign-in and the model endpoint, and cannot read the credential it is holding. <b>The secret is delivered by an identity the process cannot impersonate.</b></p>
+      </dd>
+      <dt class="gaveup">Gave up</dt>
+      <dd>
+        <p><b>Automatic rotation</b>, which was the point — but see above: there was none available to give up.</p>
+        <p><b>And it is not declared in infrastructure-as-code</b>, deliberately. The template format has no encrypted-value type, and a template is a plaintext document that appears in the console, in change sets and in every diff. Putting the secret there would write it into exactly the places this exercise exists to keep it out of. A secret whose value you did not generate can never originate in infrastructure code — something has to carry it in from outside, exactly once, and the only real question is whether the codebase says so out loud.</p>
+      </dd>
+    </dl>
+
+    <div class="example">
+      <div class="exhead">Example — what each option actually buys</div>
+      <div class="exbody">
+<table>
+  <thead><tr><th></th><th>.env file</th><th>Secrets Manager</th><th>Parameter Store</th></tr></thead>
+  <tbody>
+    <tr><td>Encrypted at rest</td><td><span class="pill trap">no</span></td><td><span class="pill free">yes</span></td><td><span class="pill free">yes &#183; KMS</span></td></tr>
+    <tr><td>Cost per secret</td><td>free</td><td><span class="pill watch">$0.40 / month</span></td><td><span class="pill free">free</span></td></tr>
+    <tr><td>Automatic rotation</td><td>no</td><td>yes</td><td>no</td></tr>
+    <tr><td><b>Rotation usable here?</b></td><td>&#8212;</td><td><b>no &#183; vendor console only</b></td><td>&#8212;</td></tr>
+    <tr><td>On disk beside the code</td><td><span class="pill trap">yes</span></td><td>no</td><td>no</td></tr>
+    <tr><td>Injected by execution role</td><td>no</td><td>yes</td><td><span class="pill free">yes</span></td></tr>
+  </tbody>
+</table>
+      </div>
+    </div>
+  </div>
+
+  <div class="decision">
+    <h3>6.11 — VPC: no NAT gateway, and saying plainly what that costs</h3>
+    <dl>
+      <dt>Problem</dt>
+      <dd>The Fargate tasks need to reach S3, DynamoDB, Bedrock and the container registry. The textbook answer puts them in private subnets behind a NAT gateway, so nothing in the account is addressable from the internet.</dd>
+      <dt>Options</dt>
+      <dd>
+        <ol>
+          <li>Private subnets with a NAT gateway.</li>
+          <li>Private subnets with VPC endpoints for each service.</li>
+          <li>Public subnets with no NAT, with a security group as the only thing keeping the tasks private.</li>
+        </ol>
+      </dd>
+      <dt class="chose">Chose</dt>
+      <dd>
+        <p><b>Option 3, on a cost argument that has to be stated with the trade attached or it is not an argument.</b> A NAT gateway is roughly $32 a month before it passes a byte. On a stack whose entire budget is $5, that is the single largest line item by a wide margin — more than the compute it exists to serve. Option 2 avoids the NAT but bills per endpoint per hour, and this account needs several.</p>
+        <p><b>The trade, plainly:</b> the tasks are addressable from the internet at the network level, and only their security group keeps them private. That group allows ingress from the load balancer alone. A production account puts the tasks in private subnets and pays for the NAT, or uses endpoints. This is a lab, and the honest version of the decision is written down rather than discovered later in a bill.</p>
+      </dd>
+      <dt class="how">How</dt>
+      <dd>
+        <p>Two availability zones with one public subnet in each — the load balancer requires two, which is what forces the second, and it is also what makes the two Fargate tasks land in different zones. No NAT gateways. Tasks are assigned public IPs, which is required without a NAT: a task in a public subnet needs one to reach anything at all, including the registry it pulls its own image from.</p>
+      </dd>
+      <dt class="gaveup">Gave up</dt>
+      <dd>
+        <p><b>Defence in depth at the network layer.</b> With a NAT, a misconfigured security group is one mistake in front of a second barrier. Here it is the only barrier. That is a real reduction in margin for error, and it is the first thing I would change if this carried production traffic — it is also why the load balancer's origin guard in 6.8 is described as a guard rather than a boundary.</p>
+      </dd>
+    </dl>
+
+    <div class="example">
+      <div class="exhead">Example — the $32 the design does not spend, and what it buys instead</div>
+      <div class="exbody">
+<table>
+  <thead><tr><th></th><th>Private + NAT</th><th>Private + endpoints</th><th>Public, no NAT &#183; chosen</th></tr></thead>
+  <tbody>
+    <tr><td>Monthly cost at zero traffic</td><td><span class="pill trap">~$32</span></td><td><span class="pill watch">per endpoint, per hour</span></td><td><span class="pill free">$0</span></td></tr>
+    <tr><td>Share of a $5 budget</td><td><span class="pill trap">640%</span></td><td>varies</td><td><span class="pill free">0%</span></td></tr>
+    <tr><td>Task reachable from internet</td><td>no</td><td>no</td><td><span class="pill watch">at network level, yes</span></td></tr>
+    <tr><td>What keeps it private</td><td>routing + security group</td><td>routing + security group</td><td><span class="pill watch">security group alone</span></td></tr>
+    <tr><td>Barriers before exposure</td><td>2</td><td>2</td><td><span class="pill watch">1</span></td></tr>
+    <tr><td>Right for production?</td><td><span class="pill free">yes</span></td><td><span class="pill free">yes</span></td><td><span class="pill trap">no &#183; change this first</span></td></tr>
+  </tbody>
+</table>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -1205,9 +1659,7 @@
 
   <h3>7.3 What can each component do if compromised?</h3>
   <p>Permissions are scoped to intent, not convenience. The worker can write results and read model files. It cannot read the document corpus, which sits in the same bucket under a different prefix, so the boundary is the permission rather than the bucket. The internet-facing web tier holds no permission to create infrastructure at all. Components reach each other by role, never by stored credentials.</p>
-  <p>One credential cannot come from a role, because it belongs to a third party: the AI provider's API key. It used to sit in plaintext in a file beside the code, copied onto every machine that ran the application. It now lives in an encrypted parameter store and reaches the process at startup, so no secret sits on disk. On a developer's laptop that is <em>most</em> of the fix, not all of it: reading the parameter needs cloud credentials of its own, so it trades a plaintext key for a local profile.</p>
-  <p>The hosting step closed the rest, and the obvious description of how is wrong. It is not that the application now reads the parameter with better credentials. The container is never told where the parameter lives, so the secret-fetching code does not run at all. The container runtime pulls the value before the process starts and hands it over as an ordinary environment variable, using a role held by the platform rather than by the application.</p>
-  <p>The role the application runs under can reach the records database, the queue, the state machine, object storage, sign-in and the model endpoint. It has no permission to read the secret it is holding. <b>The credential is delivered by an identity the process cannot impersonate</b>, which is stronger than encrypting it at rest, and why this is the last word on the subject rather than another interim.</p>
+  <p>One credential cannot come from a role, because it belongs to a third party: the AI provider's API key. The short answer for an examiner is that the application cannot read it. It is injected before the process starts by the platform's own identity, and the role the application runs under has no permission to fetch parameters at all — so <b>the credential is delivered by an identity the process cannot impersonate</b>, which is stronger than encrypting it at rest. §6.10 has the mechanism and the reasoning behind the store it lives in.</p>
 
   <h3>7.4 What is your retention policy?</h3>
   <div class="note">
@@ -1220,7 +1672,7 @@
 
   <h3>7.5 Is the connection encrypted, and can it be bypassed?</h3>
   <p>Yes, and no. The second half is the part usually left out. The platform is reached over HTTPS through a content delivery network, which supplies the certificate, and plain HTTP is redirected rather than served. That on its own is half an answer, because the load balancer behind it was still answering the same requests unencrypted to anyone who found its address. "Encryption is available" and "encryption is enforced" are different claims.</p>
-  <p>So the load balancer now refuses any request that did not arrive through the network. One distinction matters to anyone assessing this: it is a <em>guard</em>, not a boundary. The token it checks has to be a literal value in the configuration, so it stops direct access and casual scanning without being a secret. Making the origin genuinely unreachable means putting it on a private network, which costs real money for a gateway this design chose to avoid.</p>
+  <p>So the load balancer now refuses any request that did not arrive through the network. One distinction matters to anyone assessing this: it is a <em>guard</em>, not a boundary — the value it checks is a literal in the configuration, so it stops direct access and casual scanning without being a secret. Making the origin genuinely unreachable needs a private subnet and a gateway this design chose not to buy, and §6.8 and §6.11 give both halves of that trade.</p>
 
   <h3>7.6 Where does the data live?</h3>
   <p>One region, deliberately. Nothing is replicated across regions, so there is no question about where a given record resides. Data residency requirements are met by choosing the region, not by configuring replication.</p>
@@ -1373,7 +1825,7 @@
     <p>Take the tiers separately, because they answer differently.</p>
     <p><b>The state tier needs nothing.</b> On-demand DynamoDB, S3 and SQS absorb it, and the read path was built so page cost does not grow with history. This is the half that was expensive to build and is now free.</p>
     <p><b>The web tier is a number.</b> Two replicas becomes more replicas, because the process holds nothing. That is the entire return on the migration — and say plainly that it became true only after the state work, not because of any hosting choice.</p>
-    <p><b>The solver is where I would look first</b>, and the constraint is not throughput. It is the fifteen-minute function ceiling. A thousand analysts running small solves scales fine. One analyst running a solve that grows past fifteen minutes does not, and no amount of concurrency helps. That is a migration to container tasks, and §6.12 already names the trigger conditions.</p>
+    <p><b>The solver is where I would look first</b>, and the constraint is not throughput. It is the fifteen-minute function ceiling. A thousand analysts running small solves scales fine. One analyst running a solve that grows past fifteen minutes does not, and no amount of concurrency helps. That is a migration to container tasks, and §6.7 already names the trigger conditions.</p>
     <p>What breaks before any of that is the model sandbox. Third-party artifacts run in subprocesses on the web tier, which is a per-replica resource cost, and at that scale it belongs on the worker with everything else.</p>
   </details>
 
@@ -1459,7 +1911,7 @@
     <summary>Dive Deep — "tell me about a time you found a problem others missed."</summary>
     <p>I had twice written that the state migration was complete. It was not. Instead of trying to recall which registries had been moved, I searched the codebase for module-level dictionaries, and found six still holding analyst work in process memory: charts, Python tools, dashboard layouts, playbooks, analytic definitions, warehouse connections.</p>
     <p><b>The transferable part is the method, not the finding.</b> "Where does state live?" cannot be answered from memory, because the thing that breaks you is the thing you have forgotten. One search took about a minute and overturned a claim I had put in writing twice. I now treat any claim that something is complete as owing a search.</p>
-    <p>Outcome: the six were migrated, and the earlier claim was retracted in the document instead of quietly edited away. <a href="#decisions">§6.3</a> still carries the correction, because a document that silently repairs its own errors teaches nobody anything.</p>
+    <p>Outcome: the six were migrated, and the earlier claim was retracted in the document instead of quietly edited away. <a href="#decisions">§6.2</a> still carries the correction, because a document that silently repairs its own errors teaches nobody anything.</p>
   </details>
 
   <details>
@@ -1508,7 +1960,7 @@
 
   <details>
     <summary>Earn Trust — "how do you handle being wrong in public?"</summary>
-    <p>This document carries its own corrections instead of being edited to look consistent. §6.3 still contains the sentence saying an earlier version of this page was wrong about what blocked horizontal scaling. The build log records "two replicas are healthy", then records separately underneath that a person later signed in, instead of editing the first claim upward to look better.</p>
+    <p>This document carries its own corrections instead of being edited to look consistent. §6.2 still contains the sentence saying an earlier version of this page was wrong about what blocked horizontal scaling. The build log records "two replicas are healthy", then records separately underneath that a person later signed in, instead of editing the first claim upward to look better.</p>
     <p><b>A document that records only its successes is one nobody can learn from.</b> And practically: a reader who catches one unmarked overclaim has to re-check everything else. Keeping the retraction visible is cheaper than being audited.</p>
   </details>
 
